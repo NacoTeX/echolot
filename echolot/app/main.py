@@ -732,7 +732,11 @@ async def api_reachability(device_id: str, host: str | None = None) -> dict:
     if not target:
         raise HTTPException(status_code=422, detail="Keine Adresse angegeben")
     result = await reachability.check(target)
-    return {**result, "message": reachability.explain(result)}
+    return {
+        **result,
+        "message": reachability.explain(result),
+        "direct_message": reachability.explain_direct(result),
+    }
 
 
 @app.post("/api/devices/{device_id}/ota", status_code=202)

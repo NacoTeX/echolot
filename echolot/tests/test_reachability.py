@@ -88,3 +88,40 @@ def test_every_verdict_has_a_message():
     """A verdict with no explanation would reach the UI as a bare word."""
     for verdict in ("unresolved", "silent", "web_only", "ok"):
         assert reachability.VERDICT_MESSAGES[verdict].strip()
+
+
+def test_the_direct_port_is_reported_when_it_answers(monkeypatch, listener):
+    """Port 62587 decides whether the Calibration Lab has any data.
+
+    It was probed from the start but never made it into a message, so the
+    add-on measured the answer and then discarded it.
+    """
+    monkeypatch.setattr(reachability, "API_PORT", listener.port)
+    monkeypatch.setattr(reachability, "DIRECT_PORT", listener.port)
+    result = asyncio.run(reachability.check("127.0.0.1", timeout=2.0))
+    assert result["direct"] is True
+    assert "62587" in reachability.explain_direct(result)
+    assert "Calibration Lab" in reachability.explain_direct(result)
+
+
+def test_a_device_answering_without_the_direct_port_is_told_what_that_costs():
+    result = {"verdict": "ok", "direct": False, "host": "h", "resolved": "h"}
+    message = reachability.explain_direct(result)
+    assert "direct_api" in message
+    assert "Neubau" in message
+
+
+def test_the_direct_port_stays_quiet_when_nothing_answered_at_all():
+    """On a silent or unresolvable device it would read as a second fault."""
+    for verdict in ("unresolved", "silent"):
+        result = {"verdict": verdict, "direct": False, "host": "h", "resolved": None}
+        assert reachability.explain_direct(result) is None
+
+
+def test_the_verdict_does_not_turn_on_the_direct_port(monkeypatch, listener):
+    """Home Assistant needs 6053; a device serving only 62587 is not "ok"."""
+    monkeypatch.setattr(reachability, "DIRECT_PORT", listener.port)
+    result = asyncio.run(reachability.check("127.0.0.1", timeout=2.0))
+    assert result["direct"] is True
+    assert result["api"] is False
+    assert result["verdict"] == "web_only"

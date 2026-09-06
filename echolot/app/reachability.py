@@ -112,5 +112,36 @@ VERDICT_MESSAGES = {
 }
 
 
+#: The direct port is probed but deliberately kept out of the verdict: the
+#: verdict answers "can Home Assistant reach this device", and only 6053
+#: settles that. Port 62587 answers a different question — whether the
+#: Calibration Lab and the live dashboard can pull samples from the device
+#: itself — so it gets its own sentence rather than muddying the first one.
+DIRECT_MESSAGES = {
+    True: (
+        "Port 62587 antwortet: das Gerät liefert Direkt-Telemetrie. "
+        "Calibration Lab und Live-Dashboard können Samples davon beziehen."
+    ),
+    False: (
+        "Port 62587 antwortet nicht. Calibration Lab und Live-Dashboard "
+        "bleiben damit ohne Daten — sie holen ihre Samples direkt vom Gerät, "
+        "nicht über Home Assistant. Meist wurde die Firmware ohne "
+        "`direct_api` gebaut; ein Neubau schaltet es ein."
+    ),
+}
+
+
 def explain(result: dict) -> str:
     return VERDICT_MESSAGES[result["verdict"]].format(host=result.get("resolved") or result["host"])
+
+
+def explain_direct(result: dict) -> str | None:
+    """What the direct port says, or None when nothing answered at all.
+
+    On an unresolved or silent device the direct port tells you nothing
+    the verdict has not already said, and repeating it would read as a
+    second, separate fault.
+    """
+    if result["verdict"] in ("unresolved", "silent"):
+        return None
+    return DIRECT_MESSAGES[bool(result.get("direct"))]
