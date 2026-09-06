@@ -443,6 +443,33 @@ the known event routes automatically. For an upstream build with a different
 route, set `ESPECTRE_DIRECT_PATHS` in the container environment to a
 comma-separated list such as `/events,/api/events`.
 
+### Was auf der Direkt-Telemetrie liegt
+
+Der Hub verbindet sich pro Gerät auf **`/espectre/v1/events`**
+(`runtime/direct_http_protocol.h`, `ESPECTRE_DIRECT_HTTP_EVENTS_ENDPOINT`).
+Die übrigen Pfade in `DEFAULT_PATHS` sind nur Rückfallebenen.
+
+ESPectre teilt die Werte auf mehrere Ereignisse auf, und das ist beim
+Lesen der Aufzeichnungen wichtig:
+
+| Event | Nutzdaten |
+| --- | --- |
+| `motion` | `{"timestamp_ms":…,"state":"motion"\|"idle","score":…}` |
+| `sensing` | Profil, `threshold`, `motion_on_hits`, Verkehrsmodus |
+| `health`, `wifi`, `diagnostics` | Laufzeitwerte ohne Messgrößen |
+
+Der Bewegungswert heißt also `score`, der Bewegungszustand ist ein
+Textzustand unter `state` — kein Boolean —, und die Schwelle steht
+**nie** im selben Ereignis wie ein Messwert. Echolot merkt sich deshalb
+die zuletzt gesehene Schwelle je Gerät und schreibt sie an die
+nachfolgenden Messpunkte; ein Ereignis, das nur die Schwelle meldet, wird
+selbst nicht als Messpunkt aufgezeichnet, sonst stünde in jeder CSV eine
+leere Zeile.
+
+`timestamp_ms` zählt ab dem Start des Geräts, nicht ab 1970. Wörtlich
+genommen läge jeder Messpunkt im Jahr 1970 und vor denen aller anderen
+Geräte; Echolot nimmt deshalb die Ankunftszeit.
+
 ### Calibration Lab
 
 The **Kalibrierung** tab turns live telemetry into a labelled room dataset:

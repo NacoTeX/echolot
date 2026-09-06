@@ -43,10 +43,49 @@ async function loadCalibrationLab() {
   }
 }
 
+// An empty recording used to be indistinguishable from a working one: the
+// sample counter simply stayed at 0 and nothing said why. Three sessions
+// were recorded and exported before anyone noticed there had never been
+// any data. So once a recording has run a few polls without a single
+// sample, ask the device's telemetry status and say what it reports.
+const NO_SAMPLE_POLLS = 3;
+let emptyPolls = 0;
+
+async function warnIfNothingArrives(panel) {
+  const warning = panel.querySelector("[data-no-samples]");
+  if (!warning) return;
+  if (activeCalibration.sample_count > 0) {
+    emptyPolls = 0;
+    warning.hidden = true;
+    return;
+  }
+  emptyPolls += 1;
+  if (emptyPolls < NO_SAMPLE_POLLS) return;
+
+  let reason = "";
+  try {
+    const status = await calibrationJson(
+      `api/devices/${activeCalibration.device_id}/telemetry?seconds=60`,
+    );
+    reason = status.error || "";
+  } catch (err) {
+    /* Leave the reason out rather than replacing it with a fetch error. */
+  }
+  warning.textContent = reason
+    ? `Es kommen keine Samples an: ${reason}`
+    : "Es kommen keine Samples an. Prüfe auf der Gerätekarte mit " +
+      "„Erreichbarkeit prüfen“, ob Port 62587 antwortet.";
+  warning.hidden = false;
+}
+
 function renderActiveCalibration() {
   const panel = document.getElementById("active-calibration");
   panel.hidden = !activeCalibration;
-  if (!activeCalibration) return;
+  if (!activeCalibration) {
+    emptyPolls = 0;
+    return;
+  }
+  warnIfNothingArrives(panel);
   panel.querySelector("[data-session-name]").textContent = activeCalibration.name;
   panel.querySelector("[data-sample-count]").textContent = activeCalibration.sample_count;
   panel.querySelector("[data-current-label]").textContent = LABEL_NAMES[activeCalibration.label] || activeCalibration.label;
