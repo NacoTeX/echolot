@@ -132,7 +132,8 @@ function renderDevice(device) {
           href="api/devices/${device.id}/firmware.bin"
           download="${escapeHtml(c.name)}-firmware.bin"
           title="Zum Flashen mit einem anderen Werkzeug, etwa web.esphome.io oder esptool"
-          >Firmware herunterladen${escapeHtml(sizeLabel)}</a>`
+          >Firmware herunterladen${escapeHtml(sizeLabel)}</a>
+       <p class="flash-progress" hidden></p>`
     : "";
 
   const liveBlock = built

@@ -1210,3 +1210,20 @@ esp-web-install-button { display: inline-flex; }
   align-items: center;
   text-decoration: none;
 }
+
+/* Welcher Schritt des Flashens gerade läuft. Der Dialog von ESP Web Tools
+   nennt Handshake und Download beide "Preparing installation"; diese Zeile
+   trennt sie und blendet nach einer Weile ohne Fortschritt den Hinweis ein,
+   der zum jeweiligen Schritt gehört. */
+.flash-progress {
+  display: block;
+  margin: 0.5rem 0 0;
+  max-width: 46rem;
+}
+
+.flash-progress .flash-hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--faint);
+  font-weight: normal;
+}

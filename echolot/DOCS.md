@@ -214,6 +214,12 @@ install state is either `initializing` — talking to the chip over serial
 — or `preparing`, downloading the firmware. Neither has a timeout, so
 either can sit there indefinitely.
 
+**The device card now names the step.** Underneath the flash button,
+Echolot shows which of the two is running, and after about twenty seconds
+without progress it adds the advice that belongs to that step. The
+Network-tab check below is the same answer from the other side, and works
+even on an older add-on version.
+
 **Which one it is, in five seconds:** open the browser's developer tools,
 Network tab, and look for `firmware.bin`.
 
@@ -222,21 +228,57 @@ Network tab, and look for `firmware.bin`.
 | `firmware.bin` pending, bytes not climbing | the download from this add-on |
 | `firmware.bin` finished, or never requested | the serial handshake with the chip |
 
-**If it is the chip.** Unplug and replug the board, then start the install
-again. On boards without native USB, hold BOOT while clicking INSTALL.
-Close anything else holding the serial port — an open ESPHome log viewer,
-the Arduino IDE, a terminal.
+#### An existing firmware is never the reason
 
-**If it is the download.** The device card shows the image's size next to
-**Firmware herunterladen**. That link is the way around the built-in
-flasher entirely: download the `.bin` and install it with
+A chip that already carries a firmware is not harder to flash than a blank
+one, and erasing it first is not a prerequisite. Writing goes through the
+ROM bootloader, which sits in mask ROM: no firmware can overwrite it, and
+`esptool` never asks the running application for permission. Erasing
+happens *through* that same bootloader — so if an install will not start,
+an erase will not either. They fail for one shared reason, and it is the
+next section.
+
+#### If it is the chip: download mode by hand
+
+Auto-reset over DTR/RTS does not work on every board, and on chips with
+native USB the running firmware owns the USB port until it lets go. Put
+the chip into download mode yourself:
+
+1. Hold **BOOT** down. That is `GPIO0` on the ESP32, ESP32-S2 and
+   ESP32-S3, and `GPIO9` on the C3, C5 and C6.
+2. Tap **RESET** (also labelled **EN**) — or, on a board without a reset
+   button, plug the USB cable in while still holding BOOT.
+3. Release BOOT.
+
+**Then pick the port again.** In download mode a native-USB chip
+re-enumerates as a *different* USB device, so the port the browser was
+already granted no longer exists. Start the install fresh and choose the
+port from the dialog.
+
+Also close anything else holding the port — an open ESPHome log viewer,
+the Arduino IDE, a terminal — and rule out a charge-only USB cable, which
+has no data lines and cannot be told apart from a broken board.
+
+#### If it is the download, or nothing else worked
+
+The device card shows the image's size next to **Firmware
+herunterladen**. That link is the way around the built-in flasher
+entirely: download the `.bin` and install it with
 [web.esphome.io](https://web.esphome.io) or `esptool`, writing it at
 offset `0` — it is a full factory image, bootloader and partition table
 included.
 
 ```sh
-esptool.py --chip esp32c6 write_flash 0x0 firmware.bin
+# optional, and only ever useful for leftover state such as stored
+# Wi-Fi credentials — never as a precondition for writing
+esptool --chip esp32c6 --port /dev/ttyACM0 erase-flash
+
+esptool --chip esp32c6 --port /dev/ttyACM0 write-flash 0x0 firmware.bin
 ```
+
+On esptool 4 and earlier the subcommands are spelled `erase_flash` and
+`write_flash`; on Windows the port is `COM3` or similar. `--port` can be
+left out when exactly one board is attached.
 
 ### Wenn ein Gerät nach dem Flashen „nicht verfügbar" bleibt
 
