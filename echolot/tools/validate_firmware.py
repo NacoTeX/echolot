@@ -30,14 +30,19 @@ def main() -> int:
     from app.builder import render_yaml
     from app.devices import Device, DeviceCreate
 
-    # Every board, plus one with the optional blocks switched off — those
-    # branches are otherwise never exercised.
-    cases = [(key, True, True) for key in BOARDS]
-    cases.append(("esp32c6", False, False))
+    # Every board, plus the variants whose branches are otherwise never
+    # exercised: the optional blocks off, and API encryption on.
+    cases = [(key, True, True, False) for key in BOARDS]
+    cases.append(("esp32c6", False, False, False))
+    cases.append(("esp32c6", True, True, True))
 
     failures = []
-    for board, web, diag in cases:
-        name = f"probe-{board}" + ("" if web and diag else "-minimal")
+    for board, web, diag, encryption in cases:
+        name = f"probe-{board}"
+        if not (web and diag):
+            name += "-minimal"
+        if encryption:
+            name += "-encrypted"
         device = Device(
             id=name,
             created_at=0,
@@ -50,6 +55,7 @@ def main() -> int:
                 wifi_password="passwort123",
                 web_server=web,
                 diagnostics=diag,
+                api_encryption=encryption,
             ),
         )
         path = workdir / f"{name}.yaml"
@@ -61,7 +67,7 @@ def main() -> int:
             text=True,
             cwd=workdir,
         )
-        label = f"{board:9s} web_server={int(web)} diagnostics={int(diag)}"
+        label = f"{board:9s} web_server={int(web)} diagnostics={int(diag)} encryption={int(encryption)}"
         if result.returncode == 0:
             print(f"  ok   {label}")
         else:

@@ -156,6 +156,21 @@
                   </span>
                 </span>
               </label>
+              <label class="checkbox-field">
+                <input type="checkbox" name="api_encryption">
+                <span>API-Verschlüsselung
+                  <span class="field-hint">
+                    Verschlüsselt die Verbindung zu Home Assistant. Zurzeit
+                    <strong>aus</strong>, weil die Firmware damit nicht
+                    kompiliert: ESPHome zieht dafür libsodium herein, dessen
+                    C-Quellen eine <code>utils.h</code> suchen und ESPectres
+                    gleichnamigen C++-Header finden. Das ist ein Fehler bei
+                    ESPectre, kein Wahlrecht — wieder einschalten, sobald er
+                    behoben ist. Der Schlüssel wird trotzdem erzeugt und
+                    behalten.
+                  </span>
+                </span>
+              </label>
               <label>Protokollstufe des Geräts
                 <select name="log_level">
                   <option value="NONE">NONE — nichts</option>

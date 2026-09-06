@@ -35,12 +35,22 @@ wifi:
 
 captive_portal:
 
-# The key is generated per device and stored by the add-on, which shows it
-# for pasting into Home Assistant. Without it anyone on the network could
-# read the sensor and drive the device.
 api:
+{% if api_encryption %}
+  # The key is generated per device and stored by the add-on, which shows
+  # it for pasting into Home Assistant. Without it anyone on the network
+  # could read the sensor and drive the device.
+  #
+  # Off by default, and not because encryption is optional in principle:
+  # `encryption:` makes ESPHome pull in noise-c/libsodium, and libsodium's
+  # C sources include a bare "utils.h". ESPectre registers its own
+  # src/cpp/core as a *public* ESP-IDF include directory and there is a
+  # C++ utils.h in it, so the C compiler picks that one up and dies on
+  # `#include <cstdint>`. The build cannot finish while both are present.
+  # Turn this on once ESPectre stops publishing that directory.
   encryption:
     key: {{ api_encryption_key | tojson }}
+{% endif %}
 
 # Password-protected so the same is true of firmware updates.
 ota:
