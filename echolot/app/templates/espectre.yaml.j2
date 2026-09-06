@@ -22,6 +22,28 @@ esp32:
 {% endif %}
   framework:
     type: esp-idf
+{% if direct_api %}
+    sdkconfig_options:
+      # ESPHome sizes CONFIG_LWIP_MAX_SOCKETS from the components that call
+      # consume_sockets() during validation, and logs the itemised budget
+      # ("TCP=11 [api=3, captive_portal=3, web_server=5] ..."). ESPectre is
+      # an external component and does not take part in that count, so its
+      # direct HTTP/SSE server on port 62587 asks the same shared LWIP pool
+      # for up to seven more sockets than ESPHome budgeted:
+      # direct_http_service_esp_idf.cpp sets max_open_sockets to
+      # max_event_clients + 5, with max_event_clients capped at 2.
+      #
+      # It is one pool for TCP, UDP and listeners alike, so the overcommit
+      # surfaces as socket exhaustion under load — and the first thing to
+      # fail is the SSE stream the Calibration Lab and the live dashboard
+      # depend on, which looks like a recording that simply stops.
+      #
+      # 24 = ESPHome's own worst case observed so far (17, with web_server
+      # and captive_portal on) plus ESPectre's 7. A user-provided value
+      # takes precedence over ESPHome's calculation; if ESPHome ever needs
+      # more than this it says so at build time with the exact number.
+      CONFIG_LWIP_MAX_SOCKETS: "24"
+{% endif %}
 
 wifi:
   ssid: {{ wifi_ssid | tojson }}
