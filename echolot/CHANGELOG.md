@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.12.5
+
+Prompted by a chip that would not take a new firmware and would not let
+go of the old one — and by the reasonable but wrong conclusion that the
+second fact explains the first.
+
+- **The flash step is named while it runs.** ESP Web Tools shows the same
+  sentence, "Preparing installation", for the serial handshake with the
+  chip and for downloading the image, and puts a timeout on neither. The
+  device card now shows which of the two is running, and after about
+  twenty seconds without progress adds the advice belonging to that
+  step — download mode for the one, the download link for the other.
+  They need opposite responses, so telling them apart is the whole point.
+- The percentage of a write resets that clock, so a slow flash is never
+  called stalled; a frozen one is.
+- DOCS.md says plainly that an existing firmware never blocks a new one.
+  Writing goes through the ROM bootloader, which no firmware can
+  overwrite, and erasing goes through that same bootloader — so an erase
+  that will not start and an install that will not start have one cause,
+  not two. The manual download-mode procedure (BOOT, RESET, release, and
+  then *pick the port again*, because a native-USB chip re-enumerates as
+  a different device) and the `esptool` erase and write commands are
+  spelled out.
+
+Verified in Chromium against a synthetic dialog: the right card, the
+right step, the hint only once a step is genuinely stuck, the line
+cleared when the dialog closes, and nothing rendered at all if a future
+ESP Web Tools bundle renames the property this reads.
+
 ## 0.12.4
 
 Prompted by a flash that sat on "Preparing installation" for ten minutes.

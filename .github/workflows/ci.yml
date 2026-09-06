@@ -55,3 +55,21 @@ jobs:
       - run: pip install pyyaml
       - name: Check config.yaml, build.yaml and repository.yaml
         run: python echolot/tools/check_metadata.py
+
+  frontend:
+    name: Browser scripts parse and their logic holds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # The dashboard is four plain scripts with no build step, so nothing
+      # else would notice a syntax error before it reached the browser.
+      - name: Parse every script
+        run: |
+          for f in echolot/app/static/*.js; do node --check "$f"; done
+      # flash_watch.js decides which advice a stalled flash gets. Getting
+      # that backwards sends someone to the wrong half of the problem.
+      - name: Flash-step logic
+        run: node echolot/tools/test_flash_watch.js
