@@ -1,5 +1,47 @@
 // Guided ground-truth recording for transparent threshold recommendations.
 
+function installCalibrationPanel() {
+  const dashboardButton = document.querySelector('.tab-btn[data-tab="dashboard"]');
+  const dashboardPanel = document.getElementById("tab-dashboard");
+  if (!dashboardButton || !dashboardPanel || document.getElementById("tab-calibration")) return;
+  dashboardButton.insertAdjacentHTML(
+    "afterend",
+    '<button class="tab-btn" data-tab="calibration">Kalibrierung</button>'
+  );
+  dashboardPanel.insertAdjacentHTML("afterend", `
+    <section id="tab-calibration" class="tab-panel" hidden>
+      <section class="card calibration-intro">
+        <h2>Calibration Lab</h2>
+        <p>Zeichne echte Situationen im Raum auf. Echolot verbindet die direkte
+          ESPectre-Telemetrie mit deinen Markierungen und berechnet daraus eine
+          nachvollziehbare Schwellenwert-Empfehlung.</p>
+        <form id="calibration-form" class="calibration-form">
+          <label>Gerät<select name="device_id" id="calibration-device" required></select></label>
+          <label>Name der Messung<input name="name" maxlength="100" placeholder="z. B. Wohnzimmer am Abend"></label>
+          <button type="submit">Aufzeichnung starten</button>
+        </form>
+        <p id="calibration-error" class="status status-err" hidden></p>
+      </section>
+      <section id="active-calibration" class="card" hidden>
+        <div class="calibration-heading"><div><h2>Aufzeichnung läuft</h2>
+          <strong data-session-name></strong></div><span class="recording-indicator">● LIVE</span></div>
+        <p class="hint">Markiere immer den Zustand, der im Raum gerade tatsächlich gilt.</p>
+        <div class="label-buttons">
+          <button type="button" data-label="empty">Raum leer</button>
+          <button type="button" data-label="moving">Person bewegt sich</button>
+          <button type="button" data-label="still">Person sitzt still</button>
+          <button type="button" data-label="interference">Störquelle aktiv</button>
+        </div>
+        <div class="calibration-live"><span><b data-sample-count>0</b> Samples</span>
+          <span>Aktuelles Label: <b data-current-label>noch nicht markiert</b></span></div>
+        <button type="button" id="stop-calibration" class="btn-secondary">Aufzeichnung beenden</button>
+      </section>
+      <section><h2>Messungen</h2><div id="calibration-list" class="device-list"></div></section>
+    </section>`);
+}
+
+installCalibrationPanel();
+
 const CALIBRATION_REFRESH_MS = 2000;
 let activeCalibration = null;
 let calibrationTimer = null;
@@ -148,6 +190,10 @@ document.getElementById("stop-calibration").addEventListener("click", async () =
 });
 
 document.querySelector('.tab-btn[data-tab="calibration"]').addEventListener("click", () => {
+  for (const button of document.querySelectorAll(".tab-btn")) button.classList.remove("active");
+  document.querySelector('.tab-btn[data-tab="calibration"]').classList.add("active");
+  for (const panel of document.querySelectorAll(".tab-panel")) panel.hidden = true;
+  document.getElementById("tab-calibration").hidden = false;
   loadCalibrationLab();
   if (!calibrationTimer) calibrationTimer = setInterval(loadCalibrationLab, CALIBRATION_REFRESH_MS);
 });
