@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.10
+
+Aus einem erfolgreichen Build-Log gelesen — dem ersten vollständigen
+ESP-IDF-Compile, den dieses Projekt zu sehen bekommen hat (48 s, Flash
+70,2 %, RAM 17,5 %).
+
+- **Das Socket-Budget deckt jetzt ESPectres Direct-Server mit ab.** Im Log
+  steht ESPHomes Rechnung offen da: `CONFIG_LWIP_MAX_SOCKETS to 17
+  (TCP=11 [api=3, captive_portal=3, web_server=5], UDP=3, TCP_LISTEN=3)`.
+  ESPectre kommt darin nicht vor — als externe Komponente meldet es keinen
+  Bedarf an —, fordert aus demselben Pool aber bis zu sieben weitere
+  Sockets für seinen HTTP/SSE-Server auf Port 62587. Ein Pool, zwei
+  Rechnungen. Beim Bauen fällt das nicht auf; unter Last stirbt zuerst der
+  SSE-Strom, von dem Calibration Lab und Live-Dashboard leben, und das
+  sähe aus wie eine Aufzeichnung, die einfach aufhört. Die Firmware setzt
+  den Wert jetzt selbst auf 24, sobald `direct_api` an ist. Ohne
+  `direct_api` bleibt ESPHomes Rechnung unberührt.
+
+Zur API-Verschlüsselung, die seit 0.12.3 abgeschaltet ist: der Grund
+besteht upstream unverändert. `src/cpp/core` ist weiterhin öffentlicher
+`INCLUDE_DIRS`-Eintrag und enthält weiterhin `utils.h`, das libsodiums
+C-Dateien statt ihres eigenen finden. Neu ist aber, dass sich das jetzt
+in einer knappen Minute überprüfen statt herleiten lässt — der Build
+läuft.
+
+Geprüft: 153 Tests. Alle acht Firmware-Varianten rendern gültiges YAML mit
+der Option, und ohne `direct_api` erscheint sie nicht.
+
 ## 0.12.9
 
 Vor dem Gehtest die Frage geklärt, ob die Geräte überhaupt Direkt-Telemetrie

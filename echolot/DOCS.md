@@ -501,6 +501,34 @@ defaults), *Sparsam* (less than half the radio load), *Empfindlich*
 (the neural-network algorithm, which needs no settling period). Editing
 any of the values leaves the preset and switches to custom.
 
+### Warum die Firmware das Socket-Budget anhebt
+
+ESPHome berechnet `CONFIG_LWIP_MAX_SOCKETS` aus den Komponenten, die sich
+während der Validierung dafür anmelden, und schreibt das Ergebnis ins
+Build-Log:
+
+```
+Setting CONFIG_LWIP_MAX_SOCKETS to 17
+  (TCP=11 [api=3, captive_portal=3, web_server=5], UDP=3, TCP_LISTEN=3)
+```
+
+ESPectre taucht darin nicht auf — es ist eine externe Komponente und
+nimmt an dieser Zählung nicht teil. Sein Direct-HTTP/SSE-Server auf Port
+62587 fordert aber aus demselben Pool bis zu sieben weitere Sockets
+(`max_open_sockets = max_event_clients + 5`, `max_event_clients` ist auf 2
+begrenzt). Es ist **ein** Pool für TCP, UDP und Listener zusammen.
+
+Die Folge wäre keine Fehlermeldung beim Bauen, sondern Socket-Knappheit
+unter Last — und als Erstes stirbt der SSE-Strom, von dem Calibration Lab
+und Live-Dashboard leben. Das sähe aus wie eine Aufzeichnung, die einfach
+aufhört.
+
+Echolot setzt deshalb `CONFIG_LWIP_MAX_SOCKETS: "24"`, sobald `direct_api`
+an ist: ESPHomes bisher beobachteter Höchstwert plus ESPectres sieben. Ein
+selbst gesetzter Wert hat Vorrang vor ESPHomes Rechnung; sollte ESPHome
+jemals mehr brauchen, sagt es das beim Bauen mit der genauen Zahl. Ohne
+`direct_api` bleibt die Rechnung unangetastet.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second
