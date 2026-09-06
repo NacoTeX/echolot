@@ -142,6 +142,16 @@ class ZoneBridge:
             if self.connected:
                 self.error = None
                 _client.publish(AVAILABILITY_TOPIC, "online", retain=True)
+                # Forget what we believe the broker knows. Discovery is
+                # published retained, so it normally survives — but a broker
+                # that was restarted without persistence, or had its topics
+                # cleared, has forgotten every zone while this set still
+                # says they were announced. Nothing would then re-announce
+                # them and the entities would stay gone until the add-on
+                # restarted. Clearing here costs one repeat publish per
+                # zone on reconnect and makes the bridge self-healing.
+                with self._lock:
+                    self._announced.clear()
                 logger.info("MQTT connected to %s", config["host"])
             else:
                 self.error = f"Verbindung abgelehnt (Code {rc})"
@@ -171,29 +181,50 @@ class ZoneBridge:
         self._client = None
         self.connected = False
 
+    def _publish(self, topic: str, payload: str, *, retain: bool = True) -> bool:
+        """Publish and say whether the broker accepted it.
+
+        paho returns an MQTTMessageInfo whose rc tells you the message was
+        dropped — queue full, or not connected after all. Discarding that
+        turns a silent failure into a zone that quietly stops updating in
+        Home Assistant, with nothing anywhere saying why.
+        """
+        info = self._client.publish(topic, payload, retain=retain)
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            logger.warning("MQTT publish to %s rejected (rc=%s)", topic, info.rc)
+            return False
+        return True
+
     def publish_zone(self, zone_id: str, zone_name: str, occupied: bool, available: bool) -> None:
         if not self._client or not self.connected:
             return
+
         with self._lock:
             first_time = zone_id not in self._announced
-            self._announced.add(zone_id)
+
         if first_time:
-            self._client.publish(
+            # Only remember the announcement once the broker has taken it;
+            # a rejected discovery message that we recorded as sent would
+            # never be retried.
+            if not self._publish(
                 zone_discovery_topic(zone_id),
                 json.dumps(zone_discovery_payload(zone_id, zone_name)),
-                retain=True,
-            )
+            ):
+                return
+            with self._lock:
+                self._announced.add(zone_id)
+
         # An unreachable zone publishes nothing, so Home Assistant keeps the
         # last value rather than reporting a confident "clear".
         if available:
-            self._client.publish(zone_state_topic(zone_id), "ON" if occupied else "OFF", retain=True)
+            self._publish(zone_state_topic(zone_id), "ON" if occupied else "OFF")
 
     def forget_zone(self, zone_id: str) -> None:
         """Empty retained config message removes the entity from HA."""
         if not self._client or not self.connected:
             return
-        self._client.publish(zone_discovery_topic(zone_id), "", retain=True)
-        self._client.publish(zone_state_topic(zone_id), "", retain=True)
+        self._publish(zone_discovery_topic(zone_id), "")
+        self._publish(zone_state_topic(zone_id), "")
         with self._lock:
             self._announced.discard(zone_id)
 

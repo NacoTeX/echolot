@@ -178,17 +178,34 @@ class Device(BaseModel):
     def ota_address(self) -> str:
         return self.address or f"{self.config.name}.local"
 
-    def public(self) -> dict:
-        """Serialize with the Wi-Fi password masked.
+    #: Never leave the process except through credentials(), which is
+    #: reached one device at a time and on purpose.
+    _SECRET_FIELDS = ("api_encryption_key", "ota_password")
 
-        The API key and OTA password are *not* masked: the whole point of
-        storing them is that the user has to paste the key into Home
-        Assistant, and hiding it would only mean regenerating the device.
-        Both are per-device and never leave this add-on's own UI.
+    def public(self) -> dict:
+        """Serialize without anything secret.
+
+        The API key is only needed once, when Home Assistant adopts the
+        device — so it does not belong in the payload that draws the
+        device list. Handing every key out on every page load makes the
+        blast radius of one leaked response the whole fleet instead of
+        one device.
         """
         data = self.model_dump()
         data["config"]["wifi_password"] = "********" if self.config.wifi_password else ""
+        for field in self._SECRET_FIELDS:
+            data.pop(field, None)
+        # Enough for the UI to know there is something to show, without
+        # showing it.
+        data["has_credentials"] = bool(self.api_encryption_key)
         return data
+
+    def credentials(self) -> dict:
+        """The secrets, for the one endpoint whose job is to reveal them."""
+        return {
+            "api_encryption_key": self.api_encryption_key,
+            "ota_password": self.ota_password,
+        }
 
     def apply_update(self, patch: DeviceUpdate) -> None:
         for field, value in patch.model_dump(exclude_unset=True).items():

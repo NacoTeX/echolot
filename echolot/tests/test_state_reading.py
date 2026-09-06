@@ -2,12 +2,14 @@
 
 Two properties matter here and neither is obvious from the code:
 
-  * A zone reads every member from one snapshot, not three requests per
-    device. That was measured at fifteen requests down to one for a
-    five-device zone, and it is easy to reintroduce by accident.
-  * If the snapshot request fails, reading must fall back to individual
-    entity lookups rather than declaring every device unavailable. A
-    partial Home Assistant outage should degrade, not black out.
+  * Reading state uses targeted entity lookups, never /api/states. That
+    endpoint returns every entity in the installation — fine once, for
+    discovery; ruinous on a ten-second timer in a house with thousands of
+    entities. An earlier version did exactly that, because one request
+    looked cheaper than fifteen. It is not, once you count the bytes.
+  * Those targeted reads go out concurrently, which is what makes them
+    affordable: a five-device zone costs one round-trip of latency, not
+    fifteen.
 """
 
 import asyncio
@@ -59,7 +61,8 @@ def no_persistence(monkeypatch):
     monkeypatch.setattr("app.main.devices.save_device", lambda device: None)
 
 
-def test_a_zone_reads_every_member_from_one_snapshot(monkeypatch, no_persistence):
+def test_reading_a_zone_never_pulls_every_entity(monkeypatch, no_persistence):
+    """/api/states is for discovery. On a timer it is megabytes per tick."""
     devices_ = [make_device(f"dev{i}") for i in range(5)]
     all_states = [s for d in devices_ for s in states_for(d)]
     calls = {"list": 0, "single": 0}
@@ -80,39 +83,51 @@ def test_a_zone_reads_every_member_from_one_snapshot(monkeypatch, no_persistence
                 device_ids=[d.id for d in devices_])
     result = asyncio.run(main.compute_zone_state(zone))
 
-    assert calls["list"] == 1
-    assert calls["single"] == 0, "a zone must not fall back to per-entity reads"
+    assert calls["list"] == 0, "steady-state reads must not call /api/states"
+    assert calls["single"] == 15, "three targeted reads per device"
     assert result["occupied"] is True
     assert len(result["members"]) == 5
 
 
-def test_a_failing_snapshot_degrades_to_individual_reads(monkeypatch, no_persistence):
-    """Home Assistant refusing /states must not black out every device."""
-    device = make_device()
-    entities = {s["entity_id"]: s for s in states_for(device)}
-    calls = {"single": 0}
-
-    async def failing_list():
-        raise ha_client.HomeAssistantUnavailable("500 from /states")
+def test_a_zones_reads_are_issued_concurrently(monkeypatch, no_persistence):
+    """Fifteen sequential round-trips would make a five-device zone slow
+    enough to matter on every tick."""
+    devices_ = [make_device(f"dev{i}") for i in range(5)]
+    all_states = {s["entity_id"]: s for d in devices_ for s in states_for(d)}
+    in_flight = 0
+    peak = 0
 
     async def fake_get(entity_id):
-        calls["single"] += 1
-        return entities.get(entity_id)
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0)  # yield, so overlap is observable
+            return all_states.get(entity_id)
+        finally:
+            in_flight -= 1
 
-    monkeypatch.setattr(ha_client, "list_states", failing_list)
     monkeypatch.setattr(ha_client, "get_state", fake_get)
-    monkeypatch.setattr(main.devices, "get_device", lambda i: device)
+    monkeypatch.setattr(main.devices, "get_device", lambda i: next(d for d in devices_ if d.id == i))
 
-    zone = Zone(id="z", created_at=0, updated_at=0, name="Zone", device_ids=[device.id])
+    zone = Zone(id="z", created_at=0, updated_at=0, name="Zone",
+                device_ids=[d.id for d in devices_])
+    asyncio.run(main.compute_zone_state(zone))
+
+    assert peak > 1, "reads ran one after another"
+
+
+def test_a_deleted_device_does_not_break_its_zone(monkeypatch, no_persistence):
+    """A zone can outlive one of its members."""
+    monkeypatch.setattr(main.devices, "get_device", lambda i: None)
+    zone = Zone(id="z", created_at=0, updated_at=0, name="Zone", device_ids=["weg"])
     result = asyncio.run(main.compute_zone_state(zone))
-
-    assert calls["single"] == 3
-    assert result["available"] is True
-    assert result["occupied"] is True
+    assert result["available"] is False
+    assert result["members"][0]["available"] is False
 
 
 def test_a_single_device_card_does_not_pull_every_state(monkeypatch, no_persistence):
-    """One card asking for every entity in Home Assistant is the worse trade."""
+    """The same rule as for zones, at the smallest scale."""
     device = make_device()
     entities = {s["entity_id"]: s for s in states_for(device)}
     calls = {"list": 0, "single": 0}
@@ -136,16 +151,22 @@ def test_a_single_device_card_does_not_pull_every_state(monkeypatch, no_persiste
     assert result["movement_score"] == 4.2
 
 
-def test_the_snapshot_path_also_relearns_a_wrong_entity_id(monkeypatch, no_persistence):
-    """The self-healing from 0.10.2 must survive the batching change."""
+def test_a_wrong_entity_id_is_still_relearned(monkeypatch, no_persistence):
+    """Self-healing from 0.10.2 must survive every change to how state is
+    read — and this is the one place /api/states is still the right call."""
     device = make_device()
     real = states_for(device)
     device.entity_motion = "binary_sensor.falscher_name"
+    by_id = {s["entity_id"]: s for s in real}
 
     async def fake_list():
         return real
 
+    async def fake_get(entity_id):
+        return by_id.get(entity_id)
+
     monkeypatch.setattr(ha_client, "list_states", fake_list)
+    monkeypatch.setattr(ha_client, "get_state", fake_get)
     monkeypatch.setattr(main.devices, "get_device", lambda i: device)
 
     zone = Zone(id="z", created_at=0, updated_at=0, name="Zone", device_ids=[device.id])

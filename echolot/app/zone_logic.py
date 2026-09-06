@@ -24,11 +24,30 @@ returns the new state. `main.py` owns the per-zone memory, so the logic
 here can be tested without Home Assistant, MQTT, or a clock.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 CLEAR = "clear"
 DETECTED = "detected"
 HOLDING = "holding"
+
+
+@dataclass(frozen=True)
+class ZoneEvaluation:
+    """What one evaluation concluded.
+
+    A dataclass rather than a dict so callers get a contract instead of
+    four string keys to misspell. `as_dict()` keeps the JSON shape the API
+    already publishes.
+    """
+
+    state: str
+    occupied: bool
+    hold_remaining: float
+    raw_motion: bool
+    score: float | None
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass
@@ -76,12 +95,17 @@ def evaluate(
     exit_threshold: float | None,
     hold_seconds: float,
     now: float,
-) -> dict:
+) -> ZoneEvaluation:
     """Advance the machine and describe the result.
 
-    `runtime` is mutated in place. Returns the fields the API and the MQTT
-    bridge publish.
+    `runtime` is mutated in place.
     """
+    # The zone schema already bounds this, but the machine should not
+    # depend on its caller for an invariant it can state itself: a
+    # negative hold would expire in the past and quietly disable the
+    # feature rather than fail.
+    hold_seconds = max(0.0, hold_seconds)
+
     raw = _raw_decision(runtime, motion, score, enter_threshold, exit_threshold)
     runtime.raw = raw
 
@@ -99,10 +123,10 @@ def evaluate(
         runtime.state = CLEAR
 
     remaining = max(0.0, runtime.hold_until - now) if runtime.state == HOLDING else 0.0
-    return {
-        "state": runtime.state,
-        "occupied": runtime.state in (DETECTED, HOLDING),
-        "hold_remaining": round(remaining, 1),
-        "raw_motion": raw,
-        "score": score,
-    }
+    return ZoneEvaluation(
+        state=runtime.state,
+        occupied=runtime.state in (DETECTED, HOLDING),
+        hold_remaining=round(remaining, 1),
+        raw_motion=raw,
+        score=score,
+    )

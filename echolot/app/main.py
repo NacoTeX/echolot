@@ -77,6 +77,7 @@ async def lifespan(_app: FastAPI):
             except asyncio.CancelledError:
                 pass
         mqtt_bridge.bridge.stop()
+        await ha_client.close_client()
 
 
 app = FastAPI(title="Echolot", lifespan=lifespan)
@@ -140,50 +141,38 @@ async def _autodetect_entities(device: devices.Device) -> bool:
     return _adopt_entities(device, states)
 
 
-async def _states_snapshot() -> dict[str, dict] | None:
-    """One /api/states call, indexed by entity id.
-
-    Reading a zone used to cost three round-trips per member device, so a
-    zone of five devices spent fifteen requests per poll — and the MQTT
-    loop polls every zone, every ten seconds, forever. One snapshot serves
-    all of them.
-    """
-    try:
-        return {s["entity_id"]: s for s in await ha_client.list_states() if "entity_id" in s}
-    except ha_client.HomeAssistantUnavailable:
-        return None
-
-
-async def _read_device_state(
-    device: devices.Device,
-    states: dict[str, dict] | None = None,
-    allow_detect: bool = True,
-) -> dict:
+async def _read_device_state(device: devices.Device, allow_detect: bool = True) -> dict:
     """Current motion/score/threshold for one device.
 
-    With `states` given, answers from that snapshot without touching the
-    network; without it, fetches the three entities individually, which is
-    cheaper than pulling every state in Home Assistant for a single card.
+    The three entities are read concurrently, so this costs one round-trip
+    of latency rather than three, and a few hundred bytes rather than the
+    whole state machine of the installation.
+
+    An earlier version fetched /api/states once and served every device
+    from that snapshot. It looked like a win — fifteen requests down to
+    one for a five-device zone — but that one request carries *every*
+    entity Home Assistant knows about, on a timer, forever. On a large
+    installation that is megabytes every ten seconds to read a handful of
+    numbers. Targeted reads, issued together, are the better trade;
+    /api/states is kept for discovery, where it earns its size.
     """
     if not device.entity_motion:
         return {"available": False, "error": "Für dieses Gerät ist keine Bewegungs-Entity konfiguriert"}
 
-    if states is not None:
-        motion = states.get(device.entity_motion)
-        score = states.get(device.entity_movement_score) if device.entity_movement_score else None
-        threshold = states.get(device.entity_threshold) if device.entity_threshold else None
-        if motion is None and allow_detect and _adopt_entities(device, list(states.values())):
-            return await _read_device_state(device, states, allow_detect=False)
-    else:
-        try:
-            motion = await ha_client.get_state(device.entity_motion)
-            if motion is None and allow_detect and await _autodetect_entities(device):
-                # Entities were just relearned — read once more before giving up.
-                return await _read_device_state(device, allow_detect=False)
-            score = await ha_client.get_state(device.entity_movement_score) if device.entity_movement_score else None
-            threshold = await ha_client.get_state(device.entity_threshold) if device.entity_threshold else None
-        except ha_client.HomeAssistantUnavailable as err:
-            return {"available": False, "error": str(err)}
+    async def read(entity_id: str | None):
+        return await ha_client.get_state(entity_id) if entity_id else None
+
+    try:
+        motion, score, threshold = await asyncio.gather(
+            read(device.entity_motion),
+            read(device.entity_movement_score),
+            read(device.entity_threshold),
+        )
+        if motion is None and allow_detect and await _autodetect_entities(device):
+            # Entities were just relearned — read once more before giving up.
+            return await _read_device_state(device, allow_detect=False)
+    except ha_client.HomeAssistantUnavailable as err:
+        return {"available": False, "error": str(err)}
     if motion is None:
         return {
             "available": False,
@@ -212,7 +201,32 @@ def forget_zone_runtime(zone_id: str) -> None:
     _zone_runtimes.pop(zone_id, None)
 
 
-async def compute_zone_state(zone: zones.Zone, states: dict[str, dict] | None = None) -> dict:
+async def _read_devices(device_ids: list[str]) -> list[tuple[str, devices.Device | None, dict]]:
+    """Read several devices at once.
+
+    Concurrency is what makes targeted reads affordable: a zone of five
+    devices is fifteen small requests, but they all go out together over
+    one pooled connection, so it costs one round-trip of latency rather
+    than fifteen.
+    """
+    resolved = [(device_id, devices.get_device(device_id)) for device_id in device_ids]
+    states = await asyncio.gather(
+        *(
+            _read_device_state(device)
+            if device is not None
+            else _missing_device_state()
+            for _, device in resolved
+        )
+    )
+    return [(device_id, device, state) for (device_id, device), state in zip(resolved, states)]
+
+
+async def _missing_device_state() -> dict:
+    """A zone member whose device was deleted out from under it."""
+    return {"available": False, "motion": None, "error": "Gerät existiert nicht mehr"}
+
+
+async def compute_zone_state(zone: zones.Zone) -> dict:
     """Aggregate a zone's members and run its presence state machine.
 
     Shared by the API route and the MQTT publisher, so what Home Assistant
@@ -221,19 +235,14 @@ async def compute_zone_state(zone: zones.Zone, states: dict[str, dict] | None = 
     means the zone sees movement — but hysteresis and hold time now sit
     between that and the published `occupied` flag (see zone_logic).
     """
-    if states is None and zone.device_ids:
-        states = await _states_snapshot()
-
     members = []
     raw_motion = False
     any_available = False
     best_score: float | None = None
-    for device_id in zone.device_ids:
-        device = devices.get_device(device_id)
+    for device_id, device, state in await _read_devices(zone.device_ids):
         if device is None:
-            members.append({"device_id": device_id, "name": None, "available": False, "motion": None})
+            members.append({"device_id": device_id, "name": None, **state})
             continue
-        state = await _read_device_state(device, states)
         if state.get("available"):
             any_available = True
             if state.get("motion"):
@@ -259,18 +268,18 @@ async def compute_zone_state(zone: zones.Zone, states: dict[str, dict] | None = 
         hold_seconds=zone.hold_seconds,
         now=time.monotonic(),
     )
-    return {"available": any_available, "members": members, **verdict}
+    return {"available": any_available, "members": members, **verdict.as_dict()}
 
 
 async def compute_all_zone_states(zone_list: list) -> list[tuple]:
-    """Every zone's state from a single Home Assistant snapshot.
+    """Every zone's state, evaluated concurrently.
 
-    The MQTT loop walks every zone on every tick, so fetching per zone
-    would multiply one round-trip into one per zone — and each of those
-    into three per member device.
+    The MQTT loop walks every zone on every tick. Walking them in sequence
+    would add up their latencies; running them together means the whole
+    cycle costs about as long as its slowest zone.
     """
-    states = await _states_snapshot()
-    return [(zone, await compute_zone_state(zone, states)) for zone in zone_list]
+    states = await asyncio.gather(*(compute_zone_state(zone) for zone in zone_list))
+    return list(zip(zone_list, states))
 
 
 @app.get("/api/health")
@@ -280,26 +289,29 @@ def health() -> dict:
 
 @app.get("/api/overview")
 async def api_overview() -> dict:
-    """Everything the first screen needs, from one Home Assistant snapshot.
+    """Everything the first screen needs, in one request.
 
-    Assembled here rather than in the browser because the alternative is
-    one request per zone plus three per device, on a page whose whole job
-    is to load fast.
+    Assembled here rather than in the browser: the alternative is one
+    request per zone plus three per device from a page whose whole job is
+    to load fast. Devices and zones are read concurrently, so the page
+    costs roughly one round-trip regardless of how many there are.
     """
     device_list = devices.list_devices()
     zone_list = zones.list_zones()
-    states = await _states_snapshot() if device_list else None
 
-    device_states = []
-    for device in device_list:
-        state = None
-        if str(device.status) == "success":
-            state = await _read_device_state(device, states)
-        device_states.append((device, state))
+    built = [d for d in device_list if str(d.status) == "success"]
+    built_states = dict(
+        zip(
+            (d.id for d in built),
+            await asyncio.gather(*(_read_device_state(d) for d in built)),
+        )
+    )
+    device_states = [(d, built_states.get(d.id)) for d in device_list]
+
+    zone_verdicts = await asyncio.gather(*(compute_zone_state(z) for z in zone_list))
 
     zone_views = []
-    for zone in zone_list:
-        verdict = await compute_zone_state(zone, states)
+    for zone, verdict in zip(zone_list, zone_verdicts):
         zone_views.append(
             {
                 "id": zone.id,
@@ -541,6 +553,20 @@ async def api_detect_entities(device_id: str) -> dict:
         setattr(device, field, entity_id)
     devices.save_device(device)
     return {"detected": found}
+
+
+@app.get("/api/devices/{device_id}/credentials")
+def api_device_credentials(device_id: str) -> dict:
+    """The device's API key and OTA password.
+
+    Separated from the device payload so that drawing the device list
+    does not hand out every key in the installation. This is reached one
+    device at a time, when someone opens the credentials section.
+    """
+    device = devices.get_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    return device.credentials()
 
 
 @app.get("/api/devices/{device_id}/reachability")

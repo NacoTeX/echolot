@@ -22,7 +22,7 @@ def step(runtime, now, *, motion=False, score=None, enter=None, exit_=None, hold
         exit_threshold=exit_,
         hold_seconds=hold,
         now=now,
-    )
+    ).as_dict()
 
 
 def test_without_hold_it_is_plain_or_logic():
@@ -113,3 +113,28 @@ if __name__ == "__main__":
             print(f"ok   {name}")
     print("\n" + ("alle Tests bestanden" if not failures else f"{failures} fehlgeschlagen"))
     sys.exit(1 if failures else 0)
+
+
+def test_a_negative_hold_time_cannot_disable_the_feature():
+    """The zone schema bounds this, but the machine states its own
+    invariant: a negative hold would expire in the past, silently turning
+    a configured hold time into none at all."""
+    rt = ZoneRuntime()
+    step(rt, 0, motion=True, hold=-10)
+    assert step(rt, 1, motion=False, hold=-10)["state"] == CLEAR
+
+
+def test_the_result_is_a_typed_value_not_a_bag_of_keys():
+    from app.zone_logic import ZoneEvaluation
+
+    rt = ZoneRuntime()
+    result = evaluate(
+        rt, motion=True, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0, now=0,
+    )
+    assert isinstance(result, ZoneEvaluation)
+    assert result.state == DETECTED
+    # The JSON shape the API publishes has to stay the same.
+    assert set(result.as_dict()) == {
+        "state", "occupied", "hold_remaining", "raw_motion", "score",
+    }

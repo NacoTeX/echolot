@@ -127,7 +127,9 @@ network could read the sensor, drive it, and overwrite its firmware.
 
 The consequence is that **Home Assistant asks for the key** when it adopts
 the device. It is on the device card under *Verschlüsselungscode für Home
-Assistant*, with a copy button. (Ingress usually runs over plain HTTP,
+Assistant*, with a copy button. The key is fetched only when that section
+is opened — the device list itself carries no credentials, so one leaked
+response is one device rather than the whole installation. (Ingress usually runs over plain HTTP,
 which is not a secure context, so the clipboard API may be unavailable —
 the button then selects the text instead.)
 
