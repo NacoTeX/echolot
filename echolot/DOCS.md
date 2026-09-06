@@ -188,6 +188,19 @@ device Home Assistant has not adopted and a device that never joined the
 network both look like "nicht verfügbar" and need entirely different
 fixes.
 
+Die Prüfung testet drei Ports: **6053** (ESPHome-API, die Home Assistant
+braucht), **80** (die Statusseite des Geräts) und **62587** (ESPectres
+direkte HTTP/SSE-Schnittstelle). Über 6053 entscheidet sich das Urteil —
+nur dieser Port beantwortet „kann Home Assistant das Gerät erreichen".
+
+Port 62587 bekommt eine eigene Zeile, weil er eine andere Frage
+beantwortet: ob **Calibration Lab und Live-Dashboard** Daten bekommen.
+Beide holen ihre Samples direkt vom Gerät, nicht über Home Assistant. Ein
+Gerät kann in Home Assistant tadellos laufen und für das Calibration Lab
+trotzdem stumm sein. Antwortet der Port nicht, wurde die Firmware ohne
+`direct_api` gebaut — die Voreinstellung ist an, ein Neubau schaltet es
+also ein.
+
 ### Was auf dem Gerät selbst läuft
 
 Two firmware options on the device form, both on by default:

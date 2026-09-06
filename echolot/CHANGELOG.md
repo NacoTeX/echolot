@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.12.9
+
+Vor dem Gehtest die Frage geklärt, ob die Geräte überhaupt Direkt-Telemetrie
+liefern — und dabei gefunden, dass das Add-on die Antwort seit jeher misst
+und wegwirft.
+
+- **Die Erreichbarkeitsprüfung sagt jetzt, was Port 62587 geantwortet hat.**
+  Sie hat ihn von Anfang an mitgeprüft, aber keine der vier Meldungen
+  erwähnte ihn; das Ergebnis stand nur unbenutzt in der JSON-Antwort. Das
+  ist genau die Frage, die vor dem Calibration Lab zu klären ist: beide
+  neuen Ansichten holen ihre Samples direkt vom Gerät, nicht über Home
+  Assistant, und ein Gerät kann in Home Assistant tadellos laufen und für
+  sie trotzdem stumm sein.
+- Der Port bekommt eine **eigene Zeile**, nicht ein verändertes Urteil. Über
+  das Urteil entscheidet weiter Port 6053 — das ist der, den Home Assistant
+  braucht. Die beiden Fragen zu vermischen hätte beide unschärfer gemacht.
+- Antwortet er nicht, nennt die Meldung die Folge (Calibration Lab und
+  Live-Dashboard ohne Daten) und den Grund (Firmware ohne `direct_api`,
+  Voreinstellung ist an, Neubau genügt).
+
+Geprüft: 15 Reachability-Tests, darunter der Fall, dass ein Gerät *nur* auf
+62587 antwortet und trotzdem nicht „ok" heißen darf; die Karte in echtem
+Chromium mit beiden Fällen.
+
 ## 0.12.8
 
 Eine Korrektur. In 0.12.6 stand, ein Gerät habe seine drei Sensing-Entities

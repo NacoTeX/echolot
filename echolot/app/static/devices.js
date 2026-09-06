@@ -169,6 +169,7 @@ function renderDevice(device) {
              : ""}
          </div>
          <p class="probe-result status" hidden></p>
+         <p class="probe-direct status status-pending" hidden></p>
        </div>
        <details class="key-block">
          <summary>Verschlüsselungscode für Home Assistant</summary>
@@ -219,9 +220,11 @@ function addressOf(card) {
 
 async function probeDevice(id, card) {
   const out = card.querySelector(".probe-result");
+  const direct = card.querySelector(".probe-direct");
   const button = card.querySelector(".probe-btn");
   button.disabled = true;
   out.hidden = false;
+  direct.hidden = true;
   out.className = "probe-result status status-pending";
   out.textContent = "Wird geprüft…";
 
@@ -242,6 +245,13 @@ async function probeDevice(id, card) {
     // is a caveat, not a success, so it is not painted green.
     out.className = `probe-result status ${body.api ? "status-ok" : "status-warn"}`;
     out.textContent = body.message;
+    // Port 62587 is a separate question from "can Home Assistant reach it",
+    // and it is the one that decides whether the Calibration Lab has data.
+    if (body.direct_message) {
+      direct.className = `probe-direct status ${body.direct ? "status-ok" : "status-warn"}`;
+      direct.textContent = body.direct_message;
+      direct.hidden = false;
+    }
   } catch (err) {
     out.className = "probe-result status status-err";
     out.textContent = "Backend nicht erreichbar";
