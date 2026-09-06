@@ -123,9 +123,7 @@ function renderDevice(device) {
          <button slot="activate">Über USB flashen</button>
          <span slot="unsupported">Dieser Browser unterstützt kein Web Serial (nutze Chrome oder Edge).</span>
          <span slot="not-allowed">Web Serial benötigt HTTPS oder localhost — siehe Hinweis oben.</span>
-       </esp-web-install-button>
-       <a class="btn-secondary firmware-download" href="api/devices/${device.id}/firmware.bin"
-          download="${escapeHtml(c.name)}-firmware.bin">Firmware herunterladen</a>`
+       </esp-web-install-button>`
     : "";
 
   const liveBlock = built
