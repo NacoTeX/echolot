@@ -132,6 +132,7 @@ class CalibrationStore:
                 "ended_at": None,
                 "segments": [{"label": "unlabelled", "started_at": now, "ended_at": None}],
                 "samples": [],
+                "recommendation": None,
             }
             self._sessions[session_id] = session
             self._save()
@@ -159,6 +160,7 @@ class CalibrationStore:
                 session["status"] = "complete"
                 session["ended_at"] = now
                 session["segments"][-1]["ended_at"] = now
+                session["recommendation"] = recommendation(session["samples"])
                 self._save()
             return self.public(session)
 
@@ -204,13 +206,32 @@ class CalibrationStore:
         counts = {label: 0 for label in LABELS}
         for row in session["samples"]:
             counts[row["label"]] = counts.get(row["label"], 0) + 1
-        return {
+        result = {
             key: value for key, value in session.items() if key != "samples"
-        } | {
+        }
+        if session["status"] == "recording" or "recommendation" not in session:
+            result["recommendation"] = recommendation(session["samples"])
+        return result | {
             "sample_count": len(session["samples"]),
             "label_counts": counts,
-            "recommendation": recommendation(session["samples"]),
         }
+
+    def latest_profiles(self) -> dict[str, dict]:
+        """Newest completed recommendation per device, calculated once."""
+        with self._lock:
+            profiles = {}
+            ordered = sorted(
+                self._sessions.values(), key=lambda session: session["started_at"], reverse=True
+            )
+            for session in ordered:
+                if session["device_id"] in profiles or session["status"] == "recording":
+                    continue
+                profile = session.get("recommendation")
+                if profile is None and "recommendation" not in session:
+                    profile = recommendation(session["samples"])
+                if profile:
+                    profiles[session["device_id"]] = profile
+            return profiles
 
     def csv(self, session_id: str) -> str:
         with self._lock:

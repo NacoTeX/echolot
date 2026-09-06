@@ -4,6 +4,7 @@
 
 const liveSources = new Map();
 let liveGeneration = 0;
+let fusionTimer = null;
 
 function applyLiveSample(id, sample) {
   const tile = document.querySelector(`[data-dash-id="${id}"]`);
@@ -80,12 +81,89 @@ async function startLiveDashboard() {
     };
     liveSources.set(device.id, source);
   }
+  await refreshFusion();
+  if (generation === liveGeneration && !fusionTimer) {
+    fusionTimer = setInterval(refreshFusion, FUSION_POLL_MS);
+  }
+}
+
+// --- Confidence fusion ------------------------------------------------------
+//
+// A second opinion on each zone, computed from direct telemetry and the
+// Calibration Lab profiles rather than from Home Assistant.
+//
+// It gets its own line and deliberately does NOT write [data-zone-state],
+// [data-dot] or the member chips. dashboard.js writes those every POLL_MS
+// from the zone state machine, and that machine — with its hold time — is
+// what actually drives Home Assistant and the MQTT export. Two timers
+// writing one element would flip the tile between two verdicts, and it
+// would overwrite the very value the fusion is worth comparing against.
+
+const FUSION_POLL_MS = 2000;
+
+function fusionStateLabel(result) {
+  const percent = Math.round(result.confidence * 100);
+  if (result.state === "occupied") return `belegt · ${percent} %`;
+  if (result.state === "vacant") return `frei · ${100 - percent} %`;
+  return `unsicher · ${percent} %`;
+}
+
+function fusionDetail(result) {
+  return result.members
+    .map((member) =>
+      member.reliability > 0
+        ? `${member.name}: ${Math.round(member.probability * 100)} % Präsenz, ` +
+          `${Math.round(member.reliability * 100)} % Verlässlichkeit (${member.basis})`
+        : `${member.name}: keine aktuellen Direktdaten`,
+    )
+    .join("\n");
+}
+
+function fusionNote(tile) {
+  let note = tile.querySelector(".fusion-note");
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "tile-note fusion-note";
+    tile.appendChild(note);
+  }
+  return note;
+}
+
+async function refreshFusion() {
+  let results;
+  try {
+    const response = await fetch("api/fusion/zones", { cache: "no-store" });
+    results = await response.json();
+    if (!response.ok || !Array.isArray(results)) return;
+  } catch (err) {
+    return; // The zone state machine on the tile is unaffected.
+  }
+  for (const result of results) {
+    const tile = document.querySelector(`[data-dash-zone="${result.zone_id}"]`);
+    if (!tile) continue;
+    const note = fusionNote(tile);
+    if (!result.available) {
+      note.textContent = "Direkt-Fusion wartet auf aktuelle Samples";
+      note.title = fusionDetail(result);
+      note.hidden = false;
+      continue;
+    }
+    note.textContent =
+      `Direkt-Fusion: ${fusionStateLabel(result)} · ` +
+      `Übereinstimmung ${Math.round(result.agreement * 100)} %`;
+    note.title = fusionDetail(result);
+    note.hidden = false;
+  }
 }
 
 function stopLiveDashboard() {
   liveGeneration += 1;
   for (const source of liveSources.values()) source.close();
   liveSources.clear();
+  if (fusionTimer) {
+    clearInterval(fusionTimer);
+    fusionTimer = null;
+  }
 }
 
 document.querySelector('.tab-btn[data-tab="dashboard"]').addEventListener("click", () => {

@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.12.7
+
+Confidence fusion, lifted out of a pull request that could no longer be
+merged. Its branch was cut before six other merges, and the same
+telemetry and Calibration Lab work had meanwhile reached main from a
+different branch — so seven files existed on both sides with no common
+ancestor. Nothing about the fusion itself was in conflict; only its base.
+
+- **`GET /api/fusion/zones`** combines each zone's devices into an
+  explainable presence confidence: a probability per device from its
+  calibration profile (falling back to the device threshold, then to the
+  motion boolean), weighted by calibration quality and sample age. Samples
+  lose weight after five seconds and expire after twenty, so a silent
+  device makes the result *unavailable* rather than voting the room empty.
+  Disagreement is reported as **uncertain** instead of being resolved by
+  OR logic.
+- The dashboard shows it as **its own line** on the zone tile. The dot and
+  the state text stay with the zone state machine, which is what feeds
+  Home Assistant and the MQTT export. In the original pull request both
+  wrote the same elements on separate timers — five seconds against two —
+  which would have flipped the tile between two verdicts and wiped the
+  per-device tooltips. Seeing both at once is the useful part.
+- Left behind deliberately: a middleware that injected two script tags
+  into the page. It existed because that branch's `index.html` predated
+  them; on main those tags are already there, so it would only have loaded
+  both scripts twice. Its `style.css` was likewise the older file — taking
+  it would have deleted the firmware download link, the flash-step display
+  and the diagnosis styling.
+- New: `tests/test_fusion_routes.py`. The fusion functions were tested,
+  the routes that reach the telemetry hub and the calibration profiles
+  were not.
+
+Verified: 144 tests, and the tile driven in real Chromium with the two
+verdicts deliberately opposed — after both timers had fired, each still
+said its own thing.
+
 ## 0.12.6
 
 Die erste Sitzung mit laufender Hardware — und drei Wege, auf denen ein

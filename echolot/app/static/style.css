@@ -1340,3 +1340,13 @@ esp-web-install-button { display: inline-flex; }
 .health-numbers dd {
   margin: 0;
 }
+
+/* Die Fusion ist eine zweite Meinung, nicht das Urteil der Kachel: sie kommt
+   aus der Direkt-Telemetrie, während Punkt und Zustandstext von der
+   Zonen-Zustandsmaschine stammen, die auch Home Assistant und den
+   MQTT-Export speist. Deshalb eigene Zeile, abgesetzt statt hervorgehoben. */
+.fusion-note {
+  border-top: 1px solid var(--hairline);
+  padding-top: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
