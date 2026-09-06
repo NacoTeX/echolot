@@ -57,6 +57,13 @@ class DeviceCreate(BaseModel):
     #: ESPectre's own HTTP/SSE surface on port 62587. Leaving it on gives
     #: the reachability check a second thing to probe.
     direct_api: bool = True
+    #: Encrypt the Home Assistant API connection. Off by default only
+    #: because it currently makes the firmware fail to compile — see the
+    #: comment in templates/espectre.yaml.j2 — not because it is optional
+    #: in principle. The key is generated and kept either way, so turning
+    #: this on later needs no new key and no change in Home Assistant
+    #: beyond entering it.
+    api_encryption: bool = False
     #: Serve a status page on the device at http://<ip>/. Costs flash and a
     #: little RAM, and is the only way to check a device from a browser
     #: that has no Web Serial — everything on iPadOS, for instance.
