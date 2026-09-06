@@ -14,7 +14,7 @@ import os
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import httpx
 
@@ -24,7 +24,18 @@ DIRECT_PORT = 62587
 RECONCILE_SECONDS = 10
 RECONNECT_MAX_SECONDS = 30
 MAX_POINTS = 3_600
-DEFAULT_PATHS = ("/events", "/api/events", "/stream", "/api/v1/events")
+#: The first entry is ESPectre's own, from `runtime/direct_http_protocol.h`:
+#: ESPECTRE_DIRECT_HTTP_EVENTS_ENDPOINT = "/espectre/v1/events". The rest
+#: were guesses made before that was checked, and none of them matched —
+#: the collector connected, took a 404 on every path, and recorded nothing.
+#: They stay only as fallbacks for firmware that serves somewhere else.
+DEFAULT_PATHS = (
+    "/espectre/v1/events",
+    "/events",
+    "/api/events",
+    "/stream",
+    "/api/v1/events",
+)
 
 
 @dataclass(frozen=True)
@@ -92,11 +103,21 @@ def parse_payload(payload: str, *, now: float | None = None) -> Sample | None:
     threshold = _first(
         data, ("threshold", "detection_threshold", "detectionThreshold"), _number
     )
-    motion = _first(data, ("motion", "detected", "presence", "occupied"), _boolean)
+    # ESPectre's motion event is {"timestamp_ms":…,"state":"motion"|"idle",
+    # "score":…} — the state lives under `state`, and _boolean already
+    # maps those two words.
+    motion = _first(
+        data, ("motion", "state", "detected", "presence", "occupied"), _boolean
+    )
     if score is None and threshold is None and motion is None:
         return None
     received_at = now or time.time()
-    stamp = _number(data.get("timestamp")) or _number(data.get("t")) or received_at
+    stamp = (
+        _number(data.get("timestamp"))
+        or _number(data.get("timestamp_ms"))
+        or _number(data.get("t"))
+        or received_at
+    )
     # Millisecond epoch values are common in browser-oriented APIs.
     if stamp > 10_000_000_000:
         stamp /= 1000
@@ -116,6 +137,8 @@ class TelemetryHub:
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
         self._listeners: set[Callable[[str, Sample], None]] = set()
         self._status: dict[str, dict] = {}
+        #: Last threshold seen per device, to fill in on motion events.
+        self._last_threshold: dict[str, float] = {}
 
     async def start(self, provider: Callable[[], Iterable]) -> None:
         if self._supervisor is not None:
@@ -214,6 +237,22 @@ class TelemetryHub:
         sample = parse_payload(payload, now=now)
         if sample is None:
             return None
+        # ESPectre splits the two values across two events: the motion event
+        # carries `score` but no threshold, the sensing event carries the
+        # threshold and no score. Remembering the last threshold lets a
+        # motion sample say what it was measured against — which is what the
+        # calibration export and the fusion's device_threshold basis need.
+        if sample.threshold is not None:
+            self._last_threshold[device_id] = sample.threshold
+            if sample.movement_score is None and sample.motion is None:
+                # A configuration echo, not a measurement. Recording it
+                # would put a blank row in every calibration export and a
+                # gap in the dashboard trace.
+                return None
+        else:
+            carried = self._last_threshold.get(device_id)
+            if carried is not None:
+                sample = replace(sample, threshold=carried)
         self._samples.setdefault(device_id, deque(maxlen=MAX_POINTS)).append(sample)
         self._status[device_id] = {
             **self._status.get(device_id, {}),

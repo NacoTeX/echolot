@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.12.11
+
+Drei Aufzeichnungen im Calibration Lab kamen als CSV mit Kopfzeile und
+**null Zeilen** zurück. Der Grund war kein Messproblem: der
+Telemetrie-Adapter war gegen eine Vermutung geschrieben, nicht gegen die
+Firmware.
+
+- **Der Endpunkt stimmte nicht.** ESPectre bedient
+  `/espectre/v1/events` (`runtime/direct_http_protocol.h`). Keiner der
+  vier Pfade, mit denen dieses Modul ausgeliefert wurde — `/events`,
+  `/api/events`, `/stream`, `/api/v1/events` — traf das. Der Collector
+  verband sich, kassierte auf jedem Pfad ein 404 und zeichnete nichts
+  auf. Das allein erklärt die leeren Dateien.
+- **Der Bewegungszustand wurde nicht gelesen.** Er steht unter `state`
+  mit den Werten `"motion"` und `"idle"`, nicht unter `motion` als
+  Boolean.
+- **Die Schwelle stand nie in derselben Nachricht wie ein Messwert.**
+  ESPectre teilt sie auf: `motion` trägt `score`, `sensing` trägt
+  `threshold`. Der Hub merkt sie sich jetzt je Gerät und schreibt sie an
+  die folgenden Messpunkte. Ein Ereignis, das nur die Schwelle meldet,
+  wird selbst nicht als Messpunkt geführt — es ist ein
+  Konfigurations-Echo, keine Messung, und stünde sonst als leere Zeile in
+  jeder CSV.
+- **`timestamp_ms` zählt ab Gerätestart**, nicht ab 1970, und wurde gar
+  nicht gelesen. Wörtlich genommen läge jeder Messpunkt vor denen aller
+  anderen Geräte.
+
+- **Eine leere Aufzeichnung sagt das jetzt.** Sie war von einer
+  funktionierenden nicht zu unterscheiden: der Zähler blieb bei 0, sonst
+  nichts. Nach drei Abfragen ohne Sample nennt der Kalibrierungs-Tab den
+  Grund, den der Hub ohnehin protokolliert („Kein
+  ESPectre-Telemetrie-Endpunkt erreichbar"), sonst den Verweis auf die
+  Erreichbarkeitsprüfung.
+
+Geprüft: 165 Tests. Neu ist `tests/test_calibration_capture.py`, das
+einen SSE-Server mit ESPectres echten Frames aufsetzt und die Kette bis
+zur CSV durchmisst — inklusive eines Tests, der den falschen Pfad
+absichtlich benutzt und damit exakt die Datei erzeugt, die den Anlass
+gab. Die Warnung in echtem Chromium geprüft, in beide Richtungen.
+
 ## 0.12.10
 
 Aus einem erfolgreichen Build-Log gelesen — dem ersten vollständigen
