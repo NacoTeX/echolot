@@ -182,6 +182,21 @@ class Device(BaseModel):
     #: <node name>.local", which is right whenever mDNS works.
     address: str | None = None
 
+    def firmware_size(self) -> int | None:
+        """Bytes of the built image, or None when there is none.
+
+        Shown next to the download link so a slow flash can be told apart
+        from a large one — the built-in flasher gives no size feedback
+        while it downloads.
+        """
+        if not self.firmware_bin:
+            return None
+        path = device_dir(self.id) / self.firmware_bin
+        try:
+            return path.stat().st_size
+        except OSError:
+            return None
+
     def ota_address(self) -> str:
         return self.address or f"{self.config.name}.local"
 
@@ -205,6 +220,7 @@ class Device(BaseModel):
         # Enough for the UI to know there is something to show, without
         # showing it.
         data["has_credentials"] = bool(self.api_encryption_key)
+        data["firmware_size"] = self.firmware_size()
         return data
 
     def credentials(self) -> dict:

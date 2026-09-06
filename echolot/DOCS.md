@@ -206,6 +206,38 @@ mount anything.
 
 Both cost flash space. Turn them off if a build runs out of room.
 
+### Wenn „Preparing installation“ nicht weitergeht
+
+That message covers two separate steps, which is why it is unhelpful on
+its own. Reading ESP Web Tools' own code: the dialog shows it while the
+install state is either `initializing` — talking to the chip over serial
+— or `preparing`, downloading the firmware. Neither has a timeout, so
+either can sit there indefinitely.
+
+**Which one it is, in five seconds:** open the browser's developer tools,
+Network tab, and look for `firmware.bin`.
+
+| What you see | Where it is stuck |
+| --- | --- |
+| `firmware.bin` pending, bytes not climbing | the download from this add-on |
+| `firmware.bin` finished, or never requested | the serial handshake with the chip |
+
+**If it is the chip.** Unplug and replug the board, then start the install
+again. On boards without native USB, hold BOOT while clicking INSTALL.
+Close anything else holding the serial port — an open ESPHome log viewer,
+the Arduino IDE, a terminal.
+
+**If it is the download.** The device card shows the image's size next to
+**Firmware herunterladen**. That link is the way around the built-in
+flasher entirely: download the `.bin` and install it with
+[web.esphome.io](https://web.esphome.io) or `esptool`, writing it at
+offset `0` — it is a full factory image, bootloader and partition table
+included.
+
+```sh
+esptool.py --chip esp32c6 write_flash 0x0 firmware.bin
+```
+
 ### Wenn ein Gerät nach dem Flashen „nicht verfügbar" bleibt
 
 Flashing puts the firmware on the chip; it does not put the device into

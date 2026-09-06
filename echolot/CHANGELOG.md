@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.12.4
+
+Prompted by a flash that sat on "Preparing installation" for ten minutes.
+Measured first: serving a 3 MB image from this add-on takes ten
+milliseconds, and the manifest is correct — so that message is not about
+the download. Reading ESP Web Tools' own code, it covers *two* steps with
+no timeout on either: the serial handshake with the chip
+(`initializing`) and the firmware download (`preparing`). Nothing in the
+dialog distinguishes them.
+
+- **Firmware herunterladen** on the device card, with the image's size.
+  The built-in flasher is no longer the only way in: the same `.bin` can
+  be installed with `web.esphome.io` or `esptool` at offset 0. When the
+  in-page flash stalls, that is a way forward rather than a dead end.
+- The size also makes a large image distinguishable from a stalled one,
+  which the flasher itself never says.
+- `HEAD` on the firmware endpoint answered 405. Flashers other than the
+  built-in one ask for the size before fetching, and a 405 reads to them
+  as a broken link. It now answers with the length.
+- DOCS.md gains the five-second test for which of the two steps is stuck
+  (look for `firmware.bin` in the browser's Network tab) and what to do
+  in each case.
+
 ## 0.12.3
 
 **Builds failed again**, this time deep into the compile:

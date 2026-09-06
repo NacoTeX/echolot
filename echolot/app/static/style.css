@@ -1201,3 +1201,12 @@ esp-web-install-button { display: inline-flex; }
 .device-extras .hint {
   margin-top: 0.5rem;
 }
+
+/* Der Download ist der Ausweg, wenn der eingebaute Flasher hängt: dieselbe
+   .bin, aber mit einem beliebigen anderen Werkzeug zu benutzen. Sekundär
+   gestaltet, weil der normale Weg der Knopf daneben bleibt. */
+.download-fw-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}

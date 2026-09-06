@@ -118,12 +118,20 @@ function renderDevice(device) {
     ? `<button class="repair-btn btn-secondary" ${canBuild ? "" : "disabled"}>Toolchain zurücksetzen</button>`
     : "";
 
+  const sizeLabel = device.firmware_size
+    ? ` (${(device.firmware_size / 1048576).toFixed(1)} MB)`
+    : "";
+
   const flashBlock = built
     ? `<esp-web-install-button manifest="api/devices/${device.id}/manifest.json">
          <button slot="activate">Über USB flashen</button>
          <span slot="unsupported">Dieser Browser unterstützt kein Web Serial (nutze Chrome oder Edge).</span>
          <span slot="not-allowed">Web Serial benötigt HTTPS oder localhost — siehe Hinweis oben.</span>
-       </esp-web-install-button>`
+       </esp-web-install-button>
+       <a class="download-fw-link btn-secondary" download="firmware.bin"
+          href="api/devices/${device.id}/firmware.bin"
+          title="Zum Flashen mit einem anderen Werkzeug, etwa web.esphome.io oder esptool"
+          >Firmware herunterladen${escapeHtml(sizeLabel)}</a>`
     : "";
 
   const liveBlock = built
