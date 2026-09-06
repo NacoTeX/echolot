@@ -2,51 +2,6 @@
 
 ## 0.12.3
 
-**Builds failed again**, this time deep into the compile:
-
-```
-external_components/…/src/cpp/core/utils.h:14:10:
-  fatal error: cstdint: No such file or directory
-   14 | #include <cstdint>
-```
-
-A *C* file — libsodium's `aead_chacha20poly1305.c` — was including
-ESPectre's *C++* header. The chain, traced through the sources rather
-than guessed:
-
-1. `api: encryption:` makes ESPHome add `esphome/noise-c`, which compiles
-   libsodium (`components/api/__init__.py`, `cg.add_library`).
-2. libsodium's C sources include a bare `"utils.h"`.
-3. ESPectre registers `src/cpp/core` as a **public** ESP-IDF
-   `INCLUDE_DIRS` entry (`src/cpp/CMakeLists.txt`), and that directory
-   contains `utils.h` — a C++ header.
-4. The C compiler finds ESPectre's before libsodium's own, and `<cstdint>`
-   does not exist in C.
-
-This is a bug in ESPectre's build definition: a component should not
-publish a generically named header on the global include path. Nothing in
-the add-on can reorder those include paths from YAML.
-
-- **API encryption is now a per-device option, default off.** Not a
-  judgement that it is optional — with it on, the firmware does not
-  compile at all. The key is still generated and stored, so it can be
-  switched back on without generating anything new the moment upstream
-  fixes the include. The device card and the firmware options say why.
-- The OTA password is unaffected and stays on.
-- `tools/validate_firmware.py` now covers eight configurations rather than
-  seven: the encrypted variant is exercised too, since that is the branch
-  that broke.
-
-Honest limit: this environment cannot complete a full ESP-IDF compile (the
-toolchain download is blocked), so the *fix* is verified by construction
-and by config validation, not by a completed build. That the encrypted
-variant fails to compile is established from the upstream sources quoted
-above, not from a run here.
-
-This is a *second*, unrelated build blocker: 0.12.2 fixed ESPectre's
-CMake failing on a tagless checkout, which stopped the build before it
-ever reached a compiler. This one stops it during compilation.
-
 ## 0.12.2
 
 - **Firmware builds work with ESPHome's shallow ESPectre checkout.** The
