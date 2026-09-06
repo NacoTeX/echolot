@@ -22,6 +22,10 @@ dialog distinguishes them.
 - DOCS.md gains the five-second test for which of the two steps is stuck
   (look for `firmware.bin` in the browser's Network tab) and what to do
   in each case.
+- The buffered, `no-store` firmware response from 0.12.3 stays exactly as
+  it is; the `HEAD` handler was folded into it rather than replacing it.
+  The two changes address different halves of the same symptom, and only
+  a flash on real hardware can say which half was actually stuck.
 
 ## 0.12.3
 
@@ -69,6 +73,19 @@ above, not from a run here.
 This is a *second*, unrelated build blocker: 0.12.2 fixed ESPectre's
 CMake failing on a tagless checkout, which stopped the build before it
 ever reached a compiler. This one stops it during compilation.
+
+### Auslieferung der Firmware
+
+- Firmware downloads are now sent as finite, non-cached responses through
+  Home Assistant Ingress. This prevents ESP Web Tools from waiting forever at
+  “Preparing installation”; a direct download remains available as a fallback.
+- The dashboard no longer depends on the unrelated board-list request. It now
+  validates API responses and shows a useful error with a retry button instead
+  of becoming an empty panel when an endpoint fails or returns malformed data.
+
+Both change sets carry the number 0.12.3: they were released one after the
+other without a bump in between, and the merge that brought them together
+had dropped the text of both.
 
 ## 0.12.2
 

@@ -145,10 +145,8 @@ function relativeTime(ms) {
   return m < 60 ? `${m} min` : `${Math.round(m / 60)} h`;
 }
 
-function renderDeviceTile(device, boardsByKey, zoneNamesByDevice) {
+function renderDeviceTile(device, zoneNamesByDevice) {
   const c = device.config;
-  const board = boardsByKey[c.board];
-  // Comes from the board registry, which also decides whether the
   const zoneNames = zoneNamesByDevice[device.id] || [];
 
   if (device.status !== "success") {
@@ -195,20 +193,24 @@ function renderZoneTile(zone) {
 
 async function loadDashboard() {
   const grid = document.getElementById("dashboard-grid");
+  grid.innerHTML = '<p class="status status-pending">Dashboard wird geladen…</p>';
 
-  let deviceList, zoneList, boards;
+  let deviceList, zoneList;
   try {
-    [deviceList, zoneList, boards] = await Promise.all([
-      fetch("api/devices").then((r) => r.json()),
-      fetch("api/zones").then((r) => r.json()),
-      fetch("api/boards").then((r) => r.json()),
+    [deviceList, zoneList] = await Promise.all([
+      fetchDashboardList("api/devices", "Geräte"),
+      fetchDashboardList("api/zones", "Zonen"),
     ]);
   } catch (err) {
-    grid.innerHTML = '<p class="status status-err">Dashboard-Daten konnten nicht geladen werden</p>';
+    grid.innerHTML = `<div class="card dashboard-error">
+      <h2>Dashboard nicht verfügbar</h2>
+      <p class="status status-err">${escapeHtml(err.message)}</p>
+      <button type="button" class="dashboard-retry">Erneut laden</button>
+    </div>`;
+    grid.querySelector(".dashboard-retry").addEventListener("click", loadDashboard);
     return;
   }
 
-  const boardsByKey = Object.fromEntries(boards.map((b) => [b.key, b]));
   const zoneNamesByDevice = {};
   for (const zone of zoneList) {
     for (const id of zone.device_ids) (zoneNamesByDevice[id] ||= []).push(zone.name);
@@ -217,7 +219,7 @@ async function loadDashboard() {
   const sections = [];
   if (deviceList.length) {
     sections.push(`<section class="dash-section"><h2 class="dash-heading">Geräte</h2>
-      <div class="dashboard-grid">${deviceList.map((d) => renderDeviceTile(d, boardsByKey, zoneNamesByDevice)).join("")}</div>
+      <div class="dashboard-grid">${deviceList.map((d) => renderDeviceTile(d, zoneNamesByDevice)).join("")}</div>
     </section>`);
   }
   if (zoneList.length) {
@@ -228,9 +230,6 @@ async function loadDashboard() {
   grid.innerHTML = sections.length
     ? sections.join("")
     : '<p class="status status-pending">Lege zuerst Geräte und Zonen in den anderen Tabs an.</p>';
-
-  for (const el of grid.querySelectorAll("[data-dash-id]")) {
-  }
 
   // Seed each chart from recorded history so it opens with context.
   await Promise.all(
@@ -249,6 +248,24 @@ async function loadDashboard() {
   );
 
   refreshAll();
+}
+
+async function fetchDashboardList(url, label) {
+  const response = await fetch(url, { cache: "no-store" });
+  let body;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new Error(`${label} lieferten keine gültige Antwort (HTTP ${response.status}).`);
+  }
+  if (!response.ok) {
+    const detail = typeof body.detail === "string" ? `: ${body.detail}` : "";
+    throw new Error(`${label} konnten nicht geladen werden (HTTP ${response.status})${detail}`);
+  }
+  if (!Array.isArray(body)) {
+    throw new Error(`${label} lieferten ein unerwartetes Datenformat.`);
+  }
+  return body;
 }
 
 /* ---------- live updates ---------- */

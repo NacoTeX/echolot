@@ -128,8 +128,9 @@ function renderDevice(device) {
          <span slot="unsupported">Dieser Browser unterstützt kein Web Serial (nutze Chrome oder Edge).</span>
          <span slot="not-allowed">Web Serial benötigt HTTPS oder localhost — siehe Hinweis oben.</span>
        </esp-web-install-button>
-       <a class="download-fw-link btn-secondary" download="firmware.bin"
+       <a class="download-fw-link btn-secondary"
           href="api/devices/${device.id}/firmware.bin"
+          download="${escapeHtml(c.name)}-firmware.bin"
           title="Zum Flashen mit einem anderen Werkzeug, etwa web.esphome.io oder esptool"
           >Firmware herunterladen${escapeHtml(sizeLabel)}</a>`
     : "";

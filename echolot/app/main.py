@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -689,14 +689,18 @@ def api_device_manifest(device_id: str) -> JSONResponse:
             }
         ],
     }
-    return JSONResponse(manifest)
+    # Neither the manifest nor its relative firmware URL may be reused after
+    # a rebuild.  In particular, ESP Web Tools otherwise has no visible way
+    # to distinguish a stale service-worker/browser response while it says
+    # only "Preparing installation".
+    return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
 
 
 # HEAD as well as GET: flashers other than the built-in one — web.esphome.io,
 # esptool wrappers, plain download managers — ask for the size before
 # fetching, and a 405 there looks to them like a broken link.
 @app.api_route("/api/devices/{device_id}/firmware.bin", methods=["GET", "HEAD"])
-def api_device_firmware(device_id: str) -> FileResponse:
+def api_device_firmware(device_id: str) -> Response:
     device = devices.get_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
@@ -705,7 +709,25 @@ def api_device_firmware(device_id: str) -> FileResponse:
     path = devices.device_dir(device_id) / device.firmware_bin
     if not path.exists():
         raise HTTPException(status_code=404, detail="Firmware-Datei fehlt auf der Festplatte")
-    return FileResponse(path, media_type="application/octet-stream", filename="firmware.bin")
+    # Serve a finite response rather than FileResponse's streamed ASGI body.
+    # The Home Assistant Ingress proxy has to relay this request to ESP Web
+    # Tools' fetch(), and a stream left open by either hop leaves its dialog
+    # indefinitely at "Preparing installation". Factory images are small
+    # enough to read once here (normally about 1–2 MB), while Content-Length
+    # lets every hop know exactly where the response ends.
+    try:
+        content = path.read_bytes()
+    except OSError as err:
+        logger.exception("Could not read firmware for device %s", device_id)
+        raise HTTPException(status_code=500, detail="Firmware-Datei konnte nicht gelesen werden") from err
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'inline; filename="firmware.bin"',
+        },
+    )
 
 
 @app.get("/api/zones")
