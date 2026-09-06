@@ -391,11 +391,12 @@ drawn across it** — that is the view that tells you whether the threshold
 sits in a sensible place and whether the signal is steady or flickering,
 which a bare on/off indicator cannot.
 
-The chart opens pre-filled from Home Assistant's recorded history (the
-last 30 minutes, if the recorder keeps that entity) and then keeps
-extending live, so it is useful the moment you open the tab rather than
-starting blank. Below it sit the current score and threshold; zone tiles
-highlight *which* member device is currently tripping.
+The chart opens pre-filled from Echolot's bounded direct-data buffer. If no
+direct samples are available yet, it falls back to Home Assistant's recorded
+history (the last 30 minutes, if the recorder keeps that entity), so it is
+useful immediately rather than starting blank. Below it sit the current score
+and threshold; zone tiles highlight *which* member device is currently
+tripping.
 
 Device tiles used to offer a **Live** button that opened a Web Bluetooth
 connection straight to the device for a ~10–50 ms stream. ESPectre removed
@@ -403,10 +404,39 @@ that GATT service when it restructured in September 2026, so the button is
 gone rather than left to fail against firmware that no longer answers.
 
 Its successor is ESPectre's Direct HTTP/SSE surface on port 62587, enabled
-by the `direct_api` option (on by default). Using it from this page would
-mean a cross-origin request from the Ingress origin to the device, so it
-needs proxying through the add-on first — that is not built yet, and the
-chart currently runs on Home Assistant polling alone.
+by the `direct_api` option (on by default). Echolot now keeps one connection
+to that local stream per built device, retains a bounded in-memory history,
+and fans it out through its own same-origin SSE endpoint. The browser never
+connects to a device directly, so this also works through Home Assistant
+Ingress. Device tiles mark the stream as **Direkt verbunden**; Home Assistant
+history and polling remain the automatic fallback while a device is offline.
+
+ESPectre has used more than one route shape during development. Echolot probes
+the known event routes automatically. For an upstream build with a different
+route, set `ESPECTRE_DIRECT_PATHS` in the container environment to a
+comma-separated list such as `/events,/api/events`.
+
+### Calibration Lab
+
+The **Kalibrierung** tab turns live telemetry into a labelled room dataset:
+
+1. Select a built device and start a recording.
+2. Mark the real situation as **room empty**, **person moving**, **person
+   sitting still**, or **interference active**. Every direct sample receives
+   the label that was active when it arrived.
+3. Collect at least 20 empty and 20 occupied samples, then stop the recording.
+
+Echolot calculates the empty-room median, robust noise (MAD), class separation,
+recommended enter/exit thresholds, and estimated false-positive and
+false-negative rates. Interference samples remain in the export but do not
+silently train the presence threshold. Recommendations are deliberately shown
+for review rather than pushed onto the device automatically.
+
+Sessions survive add-on restarts; an open recording is marked **interrupted**
+after a restart so new measurements can never inherit an old label unnoticed.
+Use **CSV exportieren** to inspect the timestamp, movement score, device
+threshold, motion decision, and ground-truth label for every sample.
+
 ### Zones in Home Assistant
 
 Zones would otherwise exist only inside this add-on — visible here, but
