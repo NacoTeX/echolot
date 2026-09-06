@@ -10,12 +10,43 @@ number.set_value / switch.turn_on for runtime parameter pushes, rather than
 re-implementing the ESPHome native API's device encryption ourselves.
 """
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
 
 DEFAULT_BASE_URL = "http://supervisor/core/api"
+
+#: One client for the process, so repeated polling reuses connections
+#: instead of completing a TCP (and, off-Supervisor, TLS) handshake for
+#: every entity read. Created lazily because the base URL and token are
+#: only known once the environment is set up.
+_client: httpx.AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        async with _client_lock:
+            if _client is None or _client.is_closed:
+                _client = httpx.AsyncClient(
+                    base_url=_base_url(),
+                    timeout=httpx.Timeout(10.0, connect=5.0),
+                    # A zone with several devices reads them at once; the
+                    # pool has to be able to hold those open together.
+                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+                )
+    return _client
+
+
+async def close_client() -> None:
+    """Release the pooled connections on shutdown."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
 
 
 class HomeAssistantUnavailable(Exception):
@@ -37,8 +68,8 @@ async def get_state(entity_id: str) -> dict | None:
     """Returns the entity's state object, or None if it doesn't exist (yet)."""
     headers = _headers()
     try:
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=5.0) as client:
-            resp = await client.get(f"/states/{entity_id}", headers=headers)
+        client = await get_client()
+        resp = await client.get(f"/states/{entity_id}", headers=headers)
     except httpx.HTTPError as err:
         raise HomeAssistantUnavailable(str(err)) from err
     if resp.status_code == 404:
@@ -51,13 +82,20 @@ async def get_state(entity_id: str) -> dict | None:
 async def list_states() -> list[dict]:
     """Every entity Home Assistant currently knows about.
 
-    Used to find a device's entities by what Home Assistant actually named
-    them, instead of predicting the name and being wrong.
+    **For discovery only.** This is one response carrying every entity in
+    the installation — a few hundred kilobytes on a small setup, several
+    megabytes on a large one. It is the right call when the question is
+    "what did Home Assistant name this device's entities?", which is asked
+    once per device and then remembered.
+
+    It is the wrong call for reading state on a timer: three targeted
+    reads issued concurrently are a fraction of the bytes and no more
+    round-trips. See main._read_device_state.
     """
     headers = _headers()
     try:
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=15.0) as client:
-            resp = await client.get("/states", headers=headers)
+        client = await get_client()
+        resp = await client.get("/states", headers=headers, timeout=30.0)
     except httpx.HTTPError as err:
         raise HomeAssistantUnavailable(str(err)) from err
     if resp.status_code != 200:
@@ -81,8 +119,8 @@ async def get_history(entity_id: str, minutes: int) -> list[dict]:
         "no_attributes": "",
     }
     try:
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=10.0) as client:
-            resp = await client.get(f"/history/period/{start}", headers=headers, params=params)
+        client = await get_client()
+        resp = await client.get(f"/history/period/{start}", headers=headers, params=params)
     except httpx.HTTPError as err:
         raise HomeAssistantUnavailable(str(err)) from err
     if resp.status_code != 200:
@@ -99,8 +137,8 @@ async def call_service(domain: str, service: str, entity_id: str, **extra) -> No
     headers = _headers()
     payload = {"entity_id": entity_id, **extra}
     try:
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=5.0) as client:
-            resp = await client.post(f"/services/{domain}/{service}", headers=headers, json=payload)
+        client = await get_client()
+        resp = await client.post(f"/services/{domain}/{service}", headers=headers, json=payload)
     except httpx.HTTPError as err:
         raise HomeAssistantUnavailable(str(err)) from err
     if resp.status_code not in (200, 201):

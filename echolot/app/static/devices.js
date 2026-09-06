@@ -163,7 +163,7 @@ function renderDevice(device) {
            den Code kann niemand im Netz das Gerät auslesen oder steuern.
          </p>
          <div class="key-row">
-           <code class="api-key">${escapeHtml(device.api_encryption_key || "")}</code>
+           <code class="api-key">— aufklappen zum Anzeigen —</code>
            <button type="button" class="copy-key-btn btn-secondary">Kopieren</button>
          </div>
        </details>
@@ -261,6 +261,24 @@ async function startOta(id, card) {
     alert("Backend nicht erreichbar");
   } finally {
     button.disabled = false;
+  }
+}
+
+async function revealKey(id, card) {
+  const target = card.querySelector(".api-key");
+  if (target.dataset.loaded) return;
+  target.textContent = "wird geladen…";
+  try {
+    const res = await fetch(`api/devices/${id}/credentials`);
+    const body = await res.json();
+    if (!res.ok) {
+      target.textContent = body.detail || "konnte nicht geladen werden";
+      return;
+    }
+    target.textContent = body.api_encryption_key;
+    target.dataset.loaded = "1";
+  } catch (err) {
+    target.textContent = "Backend nicht erreichbar";
   }
 }
 
@@ -387,6 +405,13 @@ async function loadDevices() {
 
     const otaBtn = el.querySelector(".ota-btn");
     if (otaBtn) otaBtn.addEventListener("click", () => startOta(id, el));
+
+    const keyBlock = el.querySelector(".key-block");
+    if (keyBlock) {
+      keyBlock.addEventListener("toggle", () => {
+        if (keyBlock.open) revealKey(id, el);
+      });
+    }
 
     const copyKeyBtn = el.querySelector(".copy-key-btn");
     if (copyKeyBtn) copyKeyBtn.addEventListener("click", () => copyKey(el, copyKeyBtn));

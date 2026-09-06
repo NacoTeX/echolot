@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.12.1
+
+Hardening pass over the five core modules, from an external code review.
+Findings were verified against the code before acting on them; two did
+not survive that check and are noted at the end.
+
+### Sicherheit
+
+- **`GET /api/devices` no longer returns any device's API key or OTA
+  password.** Drawing the device list handed out every credential in the
+  installation; one leaked response was the whole fleet rather than one
+  device. There is now a `GET /api/devices/{id}/credentials` endpoint,
+  reached one device at a time when someone opens that section.
+- **The generated ESPHome YAML is deleted after the build.** It carries
+  the Wi-Fi password, API key and OTA password in clear text, is
+  regenerated on every build and OTA push, and was previously kept
+  forever under `/data/devices/<id>/`. While it exists it is now
+  owner-only (0600). This does not make the add-on secret-free —
+  `devices.json` holds the same values, because the add-on has to be able
+  to rebuild a device and show its key — but the secrets no longer have a
+  second home that also lands in add-on backups.
+
+### Zuverlässigkeit
+
+- **At most one ESPHome compile runs at a time.** The old guard stopped
+  one device building twice but said nothing about four devices building
+  at once — four C++ toolchain runs on the hardware Home Assistant
+  usually lives on. Later builds queue instead of competing. Measured: 4
+  started, 1 ran.
+- **A stale firmware image can no longer be reported as a build's
+  output.** `_find_factory_bin` took the newest matching file; a compile
+  that failed after an earlier success would hand back the *old* image
+  and report success, and the user would flash firmware predating their
+  change. It now only accepts images newer than the build's start.
+- **MQTT re-announces its zones after a reconnect.** Discovery is
+  retained, so it normally survives — but a broker restarted without
+  persistence has forgotten every zone while the bridge still believed it
+  announced them, and the entities would have stayed missing until the
+  add-on restarted.
+- **Rejected MQTT publishes are noticed.** paho's return value was
+  discarded, so a dropped discovery message was recorded as sent and
+  never retried. A rejected announcement now stays un-announced and is
+  retried next cycle.
+
+### Leistung
+
+- **One pooled HTTP client** instead of a fresh `AsyncClient` per request.
+- **Reading state no longer calls `/api/states`.** 0.11.0 replaced fifteen
+  targeted reads with one snapshot call, which looked like a clear win —
+  but that one response carries *every* entity in the installation, on a
+  ten-second timer, forever. On a large install that is megabytes to read
+  a handful of numbers. Targeted reads are back, now issued concurrently,
+  so a five-device zone costs one round-trip of latency rather than
+  fifteen. `/api/states` is kept for entity discovery, where its size
+  buys something.
+
+### Typen
+
+- `zone_logic.evaluate` returns a frozen `ZoneEvaluation` rather than a
+  dict of four stringly-typed keys; `as_dict()` keeps the published JSON
+  identical.
+- It also clamps a negative hold time itself rather than trusting its
+  caller — a negative hold would expire in the past and quietly turn a
+  configured hold into none at all.
+
+### Zwei Befunde, die nicht zutrafen
+
+- *"`DeviceUpdate` mixes runtime and build configuration"* — it does not.
+  It contains `friendly_name`, the four entity ids and `address`, all of
+  which apply without a rebuild. Board, Wi-Fi and detection settings are
+  not in it.
+- *"`get_history` should validate `minutes`"* — already clamped to
+  1–1440 at the route.
+
 ## 0.12.0
 
 **Builds were broken.** ESPectre restructured its repository in September

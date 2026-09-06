@@ -27,6 +27,19 @@ _env = Environment(
 _building: set[str] = set()
 _building_lock = threading.Lock()
 
+#: How many ESPHome compiles may run at once, across all devices.
+#:
+#: The per-device guard above stops the same device building twice, but
+#: said nothing about four devices building at once — and an ESPHome
+#: compile is a full C++ toolchain run. Four of those on the kind of
+#: hardware Home Assistant usually lives on (a Pi, an old NUC) will swap,
+#: thrash, or be killed by the OOM reaper mid-build.
+#:
+#: One at a time. Later builds wait rather than compete, which is both
+#: faster overall and far less likely to fail.
+MAX_CONCURRENT_BUILDS = 1
+_build_slots = threading.Semaphore(MAX_CONCURRENT_BUILDS)
+
 _LOG_TAIL_CHARS = 20_000
 
 # The line CMake prints when the cross compiler is missing from PATH. It is
@@ -121,15 +134,41 @@ def _finish_build(device_id: str) -> None:
         _building.discard(device_id)
 
 
-def _find_factory_bin(build_dir: Path) -> Path | None:
+def _find_factory_bin(build_dir: Path, not_before: float) -> Path | None:
+    """The firmware image this build produced.
+
+    `not_before` is the timestamp the build started. Without it, a compile
+    that failed after an earlier one succeeded would hand back the *old*
+    image and report success — the user would then flash firmware that
+    silently predates their changes.
+    """
     if not build_dir.exists():
         return None
-    candidates = sorted(
-        build_dir.rglob("firmware.factory.bin"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
+    candidates = [
+        path
+        for path in build_dir.rglob("firmware.factory.bin")
+        if path.stat().st_mtime >= not_before
+    ]
+    return max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+
+
+def _discard_rendered_config(device_id: str) -> None:
+    """Remove the generated YAML once ESPHome is done with it.
+
+    It carries the Wi-Fi password, the API key and the OTA password in
+    plain text. Keeping it afterwards buys nothing — it is regenerated
+    from the stored device on every build and every OTA push.
+
+    This does not make the add-on secret-free: /data/devices.json still
+    holds the same values, because the add-on has to be able to rebuild a
+    device and to show its key. /data is the trust boundary either way;
+    this just stops the secrets from having a second home, one that also
+    ends up in add-on backups.
+    """
+    try:
+        config_path(device_id).unlink(missing_ok=True)
+    except OSError as err:  # pragma: no cover - a failure here is not fatal
+        logger.warning("Could not remove rendered config for %s: %s", device_id, err)
 
 
 def _explain_failure(returncode: int, log: str, board) -> str:
@@ -162,6 +201,27 @@ def _explain_failure(returncode: int, log: str, board) -> str:
     return f"esphome compile exited with code {returncode}"
 
 
+def _write_rendered_config(device_id: str, yaml_text: str) -> None:
+    """Write the generated YAML, readable only by this add-on."""
+    path = config_path(device_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml_text, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:  # pragma: no cover - some filesystems refuse chmod
+        pass
+
+
+def _run_esphome(argv: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+    """Run one ESPHome command, holding a global build slot for its duration.
+
+    Queued rather than refused: someone who presses build on four devices
+    means all four, just not all at once.
+    """
+    with _build_slots:
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
 def run_ota(device: Device, address: str) -> None:
     """Push the already-built firmware to a running device over the network.
 
@@ -181,14 +241,12 @@ def run_ota(device: Device, address: str) -> None:
     try:
         # Re-render first: the config carries the OTA password, and an
         # edited device must not be pushed with a stale one.
-        config_path(device.id).write_text(render_yaml(device), encoding="utf-8")
+        _write_rendered_config(device.id, render_yaml(device))
 
-        proc = subprocess.run(
+        proc = _run_esphome(
             ["esphome", "upload", str(config_path(device.id)), "--device", address],
-            cwd=ddir,
-            capture_output=True,
-            text=True,
-            timeout=1800,
+            ddir,
+            1800,
         )
         log = (proc.stdout or "") + (proc.stderr or "")
         device.ota_log = log[-_LOG_TAIL_CHARS:]
@@ -210,6 +268,7 @@ def run_ota(device: Device, address: str) -> None:
         device.ota_error = str(err)
         save_device(device)
     finally:
+        _discard_rendered_config(device.id)
         _finish_build(device.id)
 
 
@@ -240,21 +299,18 @@ def run_build(device: Device) -> None:
     device.build_log = ""
     save_device(device)
 
+    # Anything the build produces has to be newer than this; see
+    # _find_factory_bin.
+    started_at = time.time()
     try:
         # Inside the try: an unknown board key raises, and out here that
         # would escape run_build entirely — leaving the device stuck on
         # RUNNING with the build lock never released.
         board = get_board(device.config.board)
         yaml_text = render_yaml(device)
-        config_path(device.id).write_text(yaml_text, encoding="utf-8")
+        _write_rendered_config(device.id, yaml_text)
 
-        proc = subprocess.run(
-            ["esphome", "compile", str(config_path(device.id))],
-            cwd=ddir,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
+        proc = _run_esphome(["esphome", "compile", str(config_path(device.id))], ddir, 1800)
         log = (proc.stdout or "") + (proc.stderr or "")
         device.build_log = log[-_LOG_TAIL_CHARS:]
 
@@ -264,10 +320,13 @@ def run_build(device: Device) -> None:
             save_device(device)
             return
 
-        firmware = _find_factory_bin(ddir / ".esphome" / "build" / device.config.name)
+        firmware = _find_factory_bin(ddir / ".esphome" / "build" / device.config.name, started_at)
         if firmware is None:
             device.status = BuildStatus.ERROR
-            device.build_error = "Compile succeeded but no firmware.factory.bin was found"
+            device.build_error = (
+                "Der Build meldet Erfolg, aber es ist kein neues "
+                "firmware.factory.bin entstanden. Sieh ins Build-Protokoll."
+            )
             save_device(device)
             return
 
@@ -285,4 +344,5 @@ def run_build(device: Device) -> None:
         device.build_error = str(err)
         save_device(device)
     finally:
+        _discard_rendered_config(device.id)
         _finish_build(device.id)
