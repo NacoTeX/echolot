@@ -47,6 +47,16 @@ _LOG_TAIL_CHARS = 20_000
 # see toolchain_compiler() below.
 _MISSING_COMPILER_MARKER = "is not a full path and was not found in the PATH"
 
+# ESPHome external-component checkouts can contain no tags.  ESPectre's CMake
+# build normally derives its SDK version with ``git describe``, but such a
+# checkout of ``main`` contains none of the numeric tags it searches for.
+# Upstream explicitly supports this environment-variable fallback for source
+# archives and other unstamped checkouts.  Zero is intentionally an
+# "unknown development checkout" version rather than pretending that the
+# moving main branch is one of ESPectre's releases.  A caller may still provide
+# the exact version and wins through setdefault() below.
+ESPECTRE_FALLBACK_VERSION = "0.0.0"
+
 
 def platformio_core_dir() -> Path:
     """Where PlatformIO keeps its downloaded packages.
@@ -219,8 +229,17 @@ def _run_esphome(argv: list[str], cwd: Path, timeout: int) -> subprocess.Complet
     Queued rather than refused: someone who presses build on four devices
     means all four, just not all at once.
     """
+    env = os.environ.copy()
+    env.setdefault("ESPECTRE_GIT_VERSION", ESPECTRE_FALLBACK_VERSION)
     with _build_slots:
-        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
 
 
 def run_ota(device: Device, address: str) -> None:

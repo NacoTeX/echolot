@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.2
+## 0.12.3
 
 **Builds failed again**, this time deep into the compile:
 
@@ -42,6 +42,19 @@ toolchain download is blocked), so the *fix* is verified by construction
 and by config validation, not by a completed build. That the encrypted
 variant fails to compile is established from the upstream sources quoted
 above, not from a run here.
+
+This is a *second*, unrelated build blocker: 0.12.2 fixed ESPectre's
+CMake failing on a tagless checkout, which stopped the build before it
+ever reached a compiler. This one stops it during compilation.
+
+## 0.12.2
+
+- **Firmware builds work with ESPHome's shallow ESPectre checkout.** The
+  upstream CMake build obtains its SDK version from numeric Git tags, but
+  ESPHome does not fetch those tags for an external component. Echolot now
+  supplies upstream's supported `ESPECTRE_GIT_VERSION` override as an unknown
+  development version (`0.0.0`) instead of letting `git describe` abort the
+  build. An explicitly configured version still takes precedence.
 
 ## 0.12.1
 
