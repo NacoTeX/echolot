@@ -5,24 +5,20 @@
 // single status dot cannot answer. So every device tile draws its
 // movement score over time with the threshold marked on it.
 //
-// One chart, two data sources: it is fed by Home Assistant polling
-// (~5s) by default, and switches to the device's own BLE telemetry
-// (~10-50ms) when you connect, per ESPectre's documented GATT protocol:
-// https://github.com/francescopace/espectre/blob/main/docs/game/README.md
+// Fed by polling Home Assistant every few seconds. There used to be a
+// second, much faster source: the device's own BLE telemetry, read over
+// Web Bluetooth. ESPectre removed that GATT service when it restructured
+// in September 2026, so the code that spoke it is gone rather than left
+// to fail against hardware that no longer answers.
 //
-// That BLE path is built to the documented spec but has NOT been
-// exercised against real hardware; the polled path is the verified one.
-
-const BLE_SERVICE_UUID = "d33ff46b-2203-4775-bc6f-b3a2c36af8f0";
-const BLE_TELEMETRY_UUID = "119d5cac-48da-4bd9-bfc3-169805868258";
-const BLE_SYSINFO_UUID = "c8c89ffa-c401-461f-9ffc-942fa04adfe3";
-const BLE_CONTROL_UUID = "33ed9214-a8d7-40e8-82d1-c82747dcdc71";
+// Its successor is ESPectre's Direct HTTP/SSE surface on port 62587,
+// which would need proxying through the add-on to avoid a cross-origin
+// request from the Ingress page. That is not built yet.
 
 const POLL_MS = 5000;
 const HISTORY_MINUTES = 30;
 const MAX_POINTS = 400;
 
-const bleConnections = new Map(); // device id -> { device, sysinfoBuffer }
 const traces = new Map(); // device id -> { points: [{t, v}], threshold, live }
 let pollTimer = null;
 
@@ -51,7 +47,7 @@ function parseTelemetry(dataView) {
 
 /* ---------- chart ---------- */
 
-// Canvas rather than SVG: at BLE notify rates a polyline rebuild per
+// Canvas rather than SVG: at high update rates a polyline rebuild per
 // frame gets expensive, and this keeps redraws cheap.
 function drawTrace(canvas, id) {
   const t = trace(id);
@@ -153,8 +149,6 @@ function renderDeviceTile(device, boardsByKey, zoneNamesByDevice) {
   const c = device.config;
   const board = boardsByKey[c.board];
   // Comes from the board registry, which also decides whether the
-  // firmware gets a BLE server at all — one source, no drift.
-  const bleCapable = Boolean(board && board.ble);
   const zoneNames = zoneNamesByDevice[device.id] || [];
 
   if (device.status !== "success") {
@@ -180,7 +174,6 @@ function renderDeviceTile(device, boardsByKey, zoneNamesByDevice) {
       <div class="tile-readout">
         <span class="readout-item"><b data-score>—</b> Wert</span>
         <span class="readout-item readout-threshold"><b data-threshold>—</b> Schwelle</span>
-        ${bleCapable ? '<button type="button" class="ble-connect-btn">Live</button>' : ""}
       </div>
       <p class="tile-note" data-note hidden></p>
     </div>`;
@@ -202,7 +195,6 @@ function renderZoneTile(zone) {
 
 async function loadDashboard() {
   const grid = document.getElementById("dashboard-grid");
-  document.getElementById("ble-unsupported-notice").hidden = !!navigator.bluetooth;
 
   let deviceList, zoneList, boards;
   try {
@@ -238,8 +230,6 @@ async function loadDashboard() {
     : '<p class="status status-pending">Lege zuerst Geräte und Zonen in den anderen Tabs an.</p>';
 
   for (const el of grid.querySelectorAll("[data-dash-id]")) {
-    const btn = el.querySelector(".ble-connect-btn");
-    if (btn) btn.addEventListener("click", () => toggleBleConnection(el.dataset.dashId, el));
   }
 
   // Seed each chart from recorded history so it opens with context.
@@ -271,8 +261,6 @@ async function refreshDevice(id, tileEl) {
   const noteEl = tileEl.querySelector("[data-note]");
   if (!dot) return;
 
-  // While BLE is streaming, it owns the tile — don't fight it with polls.
-  if (bleConnections.has(id)) return;
 
   let state;
   try {
@@ -362,96 +350,6 @@ function startPolling() {
 function stopPolling() {
   clearInterval(pollTimer);
   pollTimer = null;
-}
-
-/* ---------- BLE ---------- */
-
-async function writeControl(characteristic, text) {
-  const bytes = new TextEncoder().encode(text);
-  if (characteristic.writeValueWithoutResponse) await characteristic.writeValueWithoutResponse(bytes);
-  else await characteristic.writeValue(bytes);
-}
-
-async function toggleBleConnection(id, tileEl) {
-  if (bleConnections.has(id)) {
-    bleConnections.get(id).device.gatt.disconnect();
-    return;
-  }
-
-  const btn = tileEl.querySelector(".ble-connect-btn");
-  const noteEl = tileEl.querySelector("[data-note]");
-  noteEl.hidden = true;
-
-  if (!navigator.bluetooth) {
-    noteEl.textContent = "Dieser Browser unterstützt kein Web Bluetooth.";
-    noteEl.hidden = false;
-    return;
-  }
-
-  try {
-    btn.disabled = true;
-    btn.textContent = "…";
-    const bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [BLE_SERVICE_UUID] }],
-      optionalServices: [BLE_SERVICE_UUID],
-    });
-    const server = await bleDevice.gatt.connect();
-    const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-    const telemetryChar = await service.getCharacteristic(BLE_TELEMETRY_UUID);
-    const sysinfoChar = await service.getCharacteristic(BLE_SYSINFO_UUID);
-    const controlChar = await service.getCharacteristic(BLE_CONTROL_UUID);
-
-    const state = { device: bleDevice, sysinfoBuffer: "" };
-    bleConnections.set(id, state);
-    trace(id).live = true;
-
-    telemetryChar.addEventListener("characteristicvaluechanged", (evt) => {
-      const { movement, threshold } = parseTelemetry(evt.target.value);
-      pushPoint(id, movement, threshold);
-      const t = trace(id);
-      const hot = movement > threshold;
-      if (hot) t.lastMotion = Date.now();
-      tileEl.querySelector("[data-dot]").className = `tile-dot ${hot ? "tile-dot-on" : "tile-dot-off"}`;
-      const stateEl = tileEl.querySelector("[data-state]");
-      stateEl.textContent = hot ? "Bewegung" : "frei";
-      stateEl.className = `tile-state ${hot ? "status-ok" : "status-pending"}`;
-      tileEl.querySelector("[data-score]").textContent = movement.toFixed(2);
-      tileEl.querySelector("[data-threshold]").textContent = threshold.toFixed(2);
-      redraw(id);
-    });
-    await telemetryChar.startNotifications();
-
-    sysinfoChar.addEventListener("characteristicvaluechanged", (evt) => {
-      state.sysinfoBuffer += new TextDecoder().decode(evt.target.value);
-      const end = state.sysinfoBuffer.indexOf("END");
-      if (end === -1) return;
-      const text = state.sysinfoBuffer.slice(0, end);
-      state.sysinfoBuffer = "";
-      noteEl.textContent = text.trim().split("\n").join(" · ");
-      noteEl.hidden = false;
-    });
-    await sysinfoChar.startNotifications();
-    await writeControl(controlChar, "REQ_SYSINFO");
-
-    bleDevice.addEventListener("gattserverdisconnected", () => {
-      bleConnections.delete(id);
-      trace(id).live = false;
-      tileEl.classList.remove("tile-live");
-      btn.disabled = false;
-      btn.textContent = "Live";
-    });
-
-    tileEl.classList.add("tile-live");
-    btn.disabled = false;
-    btn.textContent = "Stopp";
-  } catch (err) {
-    bleConnections.delete(id);
-    trace(id).live = false;
-    noteEl.textContent = err.message || "BLE-Verbindung fehlgeschlagen";
-    noteEl.hidden = false;
-    btn.disabled = false;
-    btn.textContent = "Live";
-  }
 }
 
 /* ---------- wiring ---------- */

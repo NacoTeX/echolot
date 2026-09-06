@@ -31,7 +31,10 @@ ENTITY_SPECS: dict[str, tuple[str, str]] = {
     "entity_motion": ("binary_sensor", "Motion Detected"),
     "entity_movement_score": ("sensor", "Movement Score"),
     "entity_threshold": ("number", "Threshold"),
-    "entity_calibrate": ("switch", "Calibrate"),
+    # ESPectre replaced the "Calibrate" switch with a "Recalibrate"
+    # button when it restructured; a switch that has to be turned
+    # off again was always the wrong shape for a one-shot action.
+    "entity_calibrate": ("button", "Recalibrate"),
 }
 
 

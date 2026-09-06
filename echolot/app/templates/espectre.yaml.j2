@@ -107,49 +107,34 @@ button:
     name: "Restart (Safe Mode)"
     entity_category: config
 {% endif %}
-{% if board.ble %}
 
-# ESPectre's telemetry/control channel rides on this server; without it
-# the component leaves BLE off and Echolot's "Live" view finds nothing.
-# UUIDs and ids are the ones ESPectre's own examples and browser client
-# expect — do not rename.
-esp32_ble_server:
-  id: espectre_ble_server
-  services:
-    - uuid: "d33ff46b-2203-4775-bc6f-b3a2c36af8f0"
-      advertise: true
-      characteristics:
-        # Telemetry: 8 bytes, float32 movement + float32 threshold
-        - id: espectre_ble_telemetry
-          uuid: "119d5cac-48da-4bd9-bfc3-169805868258"
-          notify: true
-        # Sysinfo: text key=value lines terminated by END
-        - id: espectre_ble_sysinfo
-          uuid: "c8c89ffa-c401-461f-9ffc-942fa04adfe3"
-          read: true
-          notify: true
-          value: ""
-        # Control writes: REQ_SYSINFO, SET_THRESHOLD:X.XX
-        - id: espectre_ble_control
-          uuid: "33ed9214-a8d7-40e8-82d1-c82747dcdc71"
-          write: true
-          write_no_response: true
-{% endif %}
-
+# ESPectre moved its ESPHome component deep into the repository when the
+# project was restructured; `github://user/repo@ref` shorthand can only
+# find a component folder at the root, so the long form with an explicit
+# `path` is now the only one that resolves.
 external_components:
-  - source: github://francescopace/espectre@main
+  - source:
+      type: git
+      url: https://github.com/francescopace/espectre
+      ref: main
+      path: src/cpp/frontend/esphome/components
     components: [espectre]
 
 espectre:
+  id: espectre_csi
+  # lightweight: two-feature weighted model with startup calibration.
+  # high_accuracy: eight-feature neural model, no calibration needed.
   detection_algorithm: {{ detection_algorithm }}
-  traffic_generator_rate: {{ traffic_generator_rate }}
+  # Packets per second of CSI the device aims to sample. `internal` means
+  # it generates that traffic itself; `external` expects another source.
+  csi_target_pps: {{ csi_target_pps }}
+  csi_traffic_mode: {{ csi_traffic_mode }}
   traffic_generator_mode: {{ traffic_generator_mode }}
-  segmentation_threshold: {{ segmentation_threshold }}
-  movement_sensor:
-    name: "Movement Score"
-  motion_sensor:
-    name: "Motion Detected"
-  threshold_number:
-    name: "Threshold"
-  calibrate_switch:
-    name: "Calibrate"
+  # How often the detector runs. Shorter reacts sooner and costs more CPU.
+  evaluation_interval_ms: {{ evaluation_interval_ms }}
+  # The device's own HTTP/SSE surface on port 62587, which is what the
+  # add-on's reachability check looks for besides the ESPHome API.
+  direct_api: {{ "true" if direct_api else "false" }}
+  # Every entity below has a sensible default name upstream; they are not
+  # repeated here so a rename upstream reaches us instead of being
+  # silently overridden.

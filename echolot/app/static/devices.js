@@ -46,29 +46,32 @@ async function loadPresets() {
     const preset = data.presets.find((p) => p.key === select.value);
     description.textContent = preset ? preset.description : "";
     if (!preset) return;
-    form.elements.traffic_generator_rate.value = preset.traffic_generator_rate;
+    form.elements.csi_target_pps.value = preset.csi_target_pps;
     form.elements.detection_algorithm.value = preset.detection_algorithm;
-    form.elements.segmentation_threshold.value = preset.segmentation_threshold;
+    form.elements.evaluation_interval_ms.value = preset.evaluation_interval_ms;
     updateRateEstimate();
   };
   select.addEventListener("change", apply);
   apply();
 
   // Wer die Werte selbst anfasst, verlässt die Voreinstellung.
-  for (const name of ["traffic_generator_rate", "detection_algorithm", "segmentation_threshold"]) {
+  for (const name of ["csi_target_pps", "detection_algorithm", "evaluation_interval_ms"]) {
     form.elements[name].addEventListener("input", () => {
       select.value = "";
       description.textContent = "";
     });
   }
-  form.elements.traffic_generator_rate.addEventListener("input", updateRateEstimate);
+  form.elements.csi_target_pps.addEventListener("input", updateRateEstimate);
 }
 
 function updateRateEstimate() {
   const el = document.getElementById("rate-estimate");
-  const rate = Number(document.getElementById("device-form").elements.traffic_generator_rate.value);
+  const rate = Number(document.getElementById("device-form").elements.csi_target_pps.value);
+  // 0 used to mean "an external source generates the traffic"; that is a
+  // separate setting upstream now (csi_traffic_mode), and the rate itself
+  // starts at 1.
   if (!Number.isFinite(rate) || rate <= 0) {
-    el.textContent = rate === 0 ? "kein eigener Funkverkehr (externe Quelle nötig)" : "";
+    el.textContent = "";
     return;
   }
   el.textContent = `≈ ${(rate * kbPerPps).toFixed(1)} KB/s Funklast pro Gerät`;
@@ -557,7 +560,8 @@ document.getElementById("device-form").addEventListener("submit", async (evt) =>
 
   const form = evt.target;
   const data = Object.fromEntries(new FormData(form).entries());
-  data.traffic_generator_rate = Number(data.traffic_generator_rate);
+  data.csi_target_pps = Number(data.csi_target_pps);
+  data.evaluation_interval_ms = Number(data.evaluation_interval_ms);
   // FormData drops unchecked boxes entirely and reports "on" for checked
   // ones, so neither state survives as the boolean the API expects.
   data.web_server = form.elements.web_server.checked;

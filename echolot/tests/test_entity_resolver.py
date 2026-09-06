@@ -37,7 +37,7 @@ def espectre_states(device_name, prefix=None):
         state(f"binary_sensor.{prefix}_motion_detected", f"{device_name} Motion Detected"),
         state(f"sensor.{prefix}_movement_score", f"{device_name} Movement Score"),
         state(f"number.{prefix}_threshold", f"{device_name} Threshold"),
-        state(f"switch.{prefix}_calibrate", f"{device_name} Calibrate"),
+        state(f"button.{prefix}_recalibrate", f"{device_name} Recalibrate"),
     ]
 
 
@@ -59,7 +59,7 @@ def test_it_finds_entities_named_after_the_friendly_name():
         "entity_motion": "binary_sensor.flur_unten_motion_detected",
         "entity_movement_score": "sensor.flur_unten_movement_score",
         "entity_threshold": "number.flur_unten_threshold",
-        "entity_calibrate": "switch.flur_unten_calibrate",
+        "entity_calibrate": "button.flur_unten_recalibrate",
     }
 
 
