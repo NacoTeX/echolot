@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.2
+
+- **Firmware builds work with ESPHome's shallow ESPectre checkout.** The
+  upstream CMake build obtains its SDK version from numeric Git tags, but
+  ESPHome does not fetch those tags for an external component. Echolot now
+  supplies upstream's supported `ESPECTRE_GIT_VERSION` override as an unknown
+  development version (`0.0.0`) instead of letting `git describe` abort the
+  build. An explicitly configured version still takes precedence.
+
 ## 0.12.1
 
 Hardening pass over the five core modules, from an external code review.
