@@ -5,21 +5,22 @@
 // single status dot cannot answer. So every device tile draws its
 // movement score over time with the threshold marked on it.
 //
-// Fed by polling Home Assistant every few seconds. There used to be a
-// second, much faster source: the device's own BLE telemetry, read over
+// Fed by ESPectre's Direct HTTP/SSE stream through the add-on, with Home
+// Assistant polling as a fallback. There used to be another fast source:
+// the device's own BLE telemetry, read over
 // Web Bluetooth. ESPectre removed that GATT service when it restructured
 // in September 2026, so the code that spoke it is gone rather than left
 // to fail against hardware that no longer answers.
 //
-// Its successor is ESPectre's Direct HTTP/SSE surface on port 62587,
-// which would need proxying through the add-on to avoid a cross-origin
-// request from the Ingress page. That is not built yet.
+// Its successor is ESPectre's Direct HTTP/SSE surface on port 62587. The
+// add-on proxies it so the Ingress page never makes a cross-origin request.
 
 const POLL_MS = 5000;
 const HISTORY_MINUTES = 30;
 const MAX_POINTS = 400;
 
 const traces = new Map(); // device id -> { points: [{t, v}], threshold, live }
+const directSources = new Map();
 let pollTimer = null;
 
 /* ---------- data ---------- */
@@ -145,10 +146,8 @@ function relativeTime(ms) {
   return m < 60 ? `${m} min` : `${Math.round(m / 60)} h`;
 }
 
-function renderDeviceTile(device, boardsByKey, zoneNamesByDevice) {
+function renderDeviceTile(device, zoneNamesByDevice) {
   const c = device.config;
-  const board = boardsByKey[c.board];
-  // Comes from the board registry, which also decides whether the
   const zoneNames = zoneNamesByDevice[device.id] || [];
 
   if (device.status !== "success") {
@@ -195,20 +194,25 @@ function renderZoneTile(zone) {
 
 async function loadDashboard() {
   const grid = document.getElementById("dashboard-grid");
+  grid.innerHTML = '<p class="status status-pending">Dashboard wird geladen…</p>';
+  stopDirectStreams();
 
-  let deviceList, zoneList, boards;
+  let deviceList, zoneList;
   try {
-    [deviceList, zoneList, boards] = await Promise.all([
-      fetch("api/devices").then((r) => r.json()),
-      fetch("api/zones").then((r) => r.json()),
-      fetch("api/boards").then((r) => r.json()),
+    [deviceList, zoneList] = await Promise.all([
+      fetchDashboardList("api/devices", "Geräte"),
+      fetchDashboardList("api/zones", "Zonen"),
     ]);
   } catch (err) {
-    grid.innerHTML = '<p class="status status-err">Dashboard-Daten konnten nicht geladen werden</p>';
+    grid.innerHTML = `<div class="card dashboard-error">
+      <h2>Dashboard nicht verfügbar</h2>
+      <p class="status status-err">${escapeHtml(err.message)}</p>
+      <button type="button" class="dashboard-retry">Erneut laden</button>
+    </div>`;
+    grid.querySelector(".dashboard-retry").addEventListener("click", loadDashboard);
     return;
   }
 
-  const boardsByKey = Object.fromEntries(boards.map((b) => [b.key, b]));
   const zoneNamesByDevice = {};
   for (const zone of zoneList) {
     for (const id of zone.device_ids) (zoneNamesByDevice[id] ||= []).push(zone.name);
@@ -217,7 +221,7 @@ async function loadDashboard() {
   const sections = [];
   if (deviceList.length) {
     sections.push(`<section class="dash-section"><h2 class="dash-heading">Geräte</h2>
-      <div class="dashboard-grid">${deviceList.map((d) => renderDeviceTile(d, boardsByKey, zoneNamesByDevice)).join("")}</div>
+      <div class="dashboard-grid">${deviceList.map((d) => renderDeviceTile(d, zoneNamesByDevice)).join("")}</div>
     </section>`);
   }
   if (zoneList.length) {
@@ -229,14 +233,26 @@ async function loadDashboard() {
     ? sections.join("")
     : '<p class="status status-pending">Lege zuerst Geräte und Zonen in den anderen Tabs an.</p>';
 
-  for (const el of grid.querySelectorAll("[data-dash-id]")) {
-  }
-
-  // Seed each chart from recorded history so it opens with context.
+  // Prefer Echolot's high-rate local buffer. Home Assistant history remains
+  // the fallback for devices whose Direct API is disabled or unreachable.
   await Promise.all(
     deviceList.filter((d) => d.status === "success").map(async (d) => {
       try {
-        const hist = await (await fetch(`api/devices/${d.id}/history?minutes=${HISTORY_MINUTES}`)).json();
+        let hist = await fetch(`api/devices/${d.id}/telemetry?seconds=${HISTORY_MINUTES * 60}`)
+          .then((response) => response.json());
+        if (hist.available && hist.points.length) {
+          const t = trace(d.id);
+          t.points = hist.points.slice(-MAX_POINTS)
+            .filter((p) => p.movement_score != null)
+            .map((p) => ({ t: p.t * 1000, v: p.movement_score }));
+          const last = hist.points[hist.points.length - 1];
+          if (last.threshold != null) t.threshold = last.threshold;
+          t.live = Boolean(hist.connected);
+          redraw(d.id);
+          return;
+        }
+        hist = await fetch(`api/devices/${d.id}/history?minutes=${HISTORY_MINUTES}`)
+          .then((response) => response.json());
         if (hist.available && hist.points.length) {
           const t = trace(d.id);
           t.points = hist.points.slice(-MAX_POINTS).map((p) => ({ t: p.t * 1000, v: p.v }));
@@ -248,7 +264,28 @@ async function loadDashboard() {
     })
   );
 
+  for (const d of deviceList.filter((device) => device.status === "success")) {
+    startDirectStream(d.id);
+  }
   refreshAll();
+}
+
+async function fetchDashboardList(url, label) {
+  const response = await fetch(url, { cache: "no-store" });
+  let body;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new Error(`${label} lieferten keine gültige Antwort (HTTP ${response.status}).`);
+  }
+  if (!response.ok) {
+    const detail = typeof body.detail === "string" ? `: ${body.detail}` : "";
+    throw new Error(`${label} konnten nicht geladen werden (HTTP ${response.status})${detail}`);
+  }
+  if (!Array.isArray(body)) {
+    throw new Error(`${label} lieferten ein unerwartetes Datenformat.`);
+  }
+  return body;
 }
 
 /* ---------- live updates ---------- */
@@ -270,6 +307,11 @@ async function refreshDevice(id, tileEl) {
   }
 
   if (!state.available) {
+    if (trace(id).live) {
+      noteEl.textContent = "Direkt verbunden · Home Assistant nicht verfügbar";
+      noteEl.hidden = false;
+      return;
+    }
     dot.className = "tile-dot tile-dot-unknown";
     stateEl.textContent = "nicht verfügbar";
     stateEl.className = "tile-state status-warn";
@@ -278,9 +320,12 @@ async function refreshDevice(id, tileEl) {
     return;
   }
 
-  noteEl.hidden = true;
-  pushPoint(id, state.movement_score, state.threshold);
   const t = trace(id);
+  noteEl.textContent = t.live ? "Direkt verbunden · Live-Telemetrie" : "";
+  noteEl.hidden = !t.live;
+  // Direct samples already fill this chart at source speed. HA remains the
+  // state fallback, but adding its five-second samples would duplicate data.
+  if (!t.live) pushPoint(id, state.movement_score, state.threshold);
   if (state.motion) t.lastMotion = Date.now();
 
   dot.className = `tile-dot ${state.motion ? "tile-dot-on" : "tile-dot-off"}`;
@@ -293,6 +338,60 @@ async function refreshDevice(id, tileEl) {
   scoreEl.textContent = state.movement_score != null ? state.movement_score.toFixed(2) : "—";
   thresholdEl.textContent = state.threshold != null ? state.threshold.toFixed(2) : "—";
   redraw(id);
+}
+
+function applyDirectSample(id, sample) {
+  const tileEl = document.querySelector(`[data-dash-id="${id}"]`);
+  if (!tileEl) return;
+  const t = trace(id);
+  t.live = true;
+  if (sample.movement_score != null) {
+    t.points.push({ t: sample.t * 1000, v: sample.movement_score });
+    if (t.points.length > MAX_POINTS) t.points.splice(0, t.points.length - MAX_POINTS);
+  }
+  if (sample.threshold != null) t.threshold = sample.threshold;
+
+  const scoreEl = tileEl.querySelector("[data-score]");
+  const thresholdEl = tileEl.querySelector("[data-threshold]");
+  const noteEl = tileEl.querySelector("[data-note]");
+  const dot = tileEl.querySelector("[data-dot]");
+  const stateEl = tileEl.querySelector("[data-state]");
+  if (scoreEl && sample.movement_score != null) scoreEl.textContent = sample.movement_score.toFixed(2);
+  if (thresholdEl && sample.threshold != null) thresholdEl.textContent = sample.threshold.toFixed(2);
+  if (noteEl) {
+    noteEl.textContent = "Direkt verbunden · Live-Telemetrie";
+    noteEl.hidden = false;
+  }
+  if (sample.motion != null && dot && stateEl) {
+    dot.className = `tile-dot ${sample.motion ? "tile-dot-on" : "tile-dot-off"}`;
+    stateEl.textContent = sample.motion ? "Bewegung" : "frei";
+    stateEl.className = `tile-state ${sample.motion ? "status-ok" : "status-pending"}`;
+  }
+  redraw(id);
+}
+
+function startDirectStream(id) {
+  if (!("EventSource" in window) || directSources.has(id)) return;
+  const source = new EventSource(`api/devices/${id}/telemetry/stream`);
+  directSources.set(id, source);
+  source.onmessage = (event) => {
+    try {
+      applyDirectSample(id, JSON.parse(event.data));
+    } catch (err) {
+      /* Ignore one malformed sample; EventSource remains connected. */
+    }
+  };
+  source.onerror = () => {
+    trace(id).live = false;
+    // EventSource reconnects by itself. HA polling keeps the tile useful in
+    // the meantime, so a direct-stream outage is degradation, not a blank UI.
+  };
+}
+
+function stopDirectStreams() {
+  for (const source of directSources.values()) source.close();
+  directSources.clear();
+  for (const t of traces.values()) t.live = false;
 }
 
 async function refreshZone(id, tileEl) {
@@ -350,6 +449,7 @@ function startPolling() {
 function stopPolling() {
   clearInterval(pollTimer);
   pollTimer = null;
+  stopDirectStreams();
 }
 
 /* ---------- wiring ---------- */
@@ -366,5 +466,3 @@ for (const btn of document.querySelectorAll('.tab-btn:not([data-tab="dashboard"]
 window.addEventListener("resize", () => {
   for (const el of document.querySelectorAll("[data-dash-id]")) redraw(el.dataset.dashId);
 });
-
-loadDashboard();

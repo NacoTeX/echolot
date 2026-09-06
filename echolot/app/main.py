@@ -11,6 +11,7 @@ these as HA entities already, so no direct device protocol is needed.
 """
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -20,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -33,6 +34,7 @@ from app import (
     overview,
     presets,
     reachability,
+    telemetry,
     zone_logic,
     zones,
 )
@@ -53,6 +55,7 @@ async def lifespan(_app: FastAPI):
     not anyone has the dashboard open.
     """
     task = None
+    await telemetry.hub.start(devices.list_devices)
     if os.environ.get("ECHOLOT_MQTT_EXPORT", "true").lower() in ("0", "false", "no"):
         logger.info("MQTT export disabled by configuration")
     else:
@@ -77,6 +80,7 @@ async def lifespan(_app: FastAPI):
             except asyncio.CancelledError:
                 pass
         mqtt_bridge.bridge.stop()
+        await telemetry.hub.stop()
         await ha_client.close_client()
 
 
@@ -489,6 +493,41 @@ async def api_device_history(device_id: str, minutes: int = 30) -> dict:
     return {"available": True, "points": points}
 
 
+@app.get("/api/devices/{device_id}/telemetry")
+def api_device_telemetry(device_id: str, seconds: int = 1800) -> dict:
+    """Recent high-rate samples collected directly from ESPectre."""
+    if devices.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    return telemetry.hub.snapshot(device_id, seconds=seconds)
+
+
+@app.get("/api/devices/{device_id}/telemetry/stream")
+async def api_device_telemetry_stream(device_id: str) -> StreamingResponse:
+    """Fan direct samples out through the same Ingress origin as the UI."""
+    if devices.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+
+    async def events():
+        queue = telemetry.hub.subscribe(device_id)
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    sample = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {json.dumps(sample.as_dict(), separators=(',', ':'))}\n\n"
+        finally:
+            telemetry.hub.unsubscribe(device_id, queue)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/devices/{device_id}/threshold")
 async def api_set_threshold(device_id: str, payload: dict) -> dict:
     device = devices.get_device(device_id)
@@ -689,11 +728,15 @@ def api_device_manifest(device_id: str) -> JSONResponse:
             }
         ],
     }
-    return JSONResponse(manifest)
+    # Neither the manifest nor its relative firmware URL may be reused after
+    # a rebuild.  In particular, ESP Web Tools otherwise has no visible way
+    # to distinguish a stale service-worker/browser response while it says
+    # only "Preparing installation".
+    return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/devices/{device_id}/firmware.bin")
-def api_device_firmware(device_id: str) -> FileResponse:
+def api_device_firmware(device_id: str) -> Response:
     device = devices.get_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
@@ -702,7 +745,25 @@ def api_device_firmware(device_id: str) -> FileResponse:
     path = devices.device_dir(device_id) / device.firmware_bin
     if not path.exists():
         raise HTTPException(status_code=404, detail="Firmware-Datei fehlt auf der Festplatte")
-    return FileResponse(path, media_type="application/octet-stream", filename="firmware.bin")
+    # Serve a finite response rather than FileResponse's streamed ASGI body.
+    # The Home Assistant Ingress proxy has to relay this request to ESP Web
+    # Tools' fetch(), and a stream left open by either hop leaves its dialog
+    # indefinitely at "Preparing installation". Factory images are small
+    # enough to read once here (normally about 1–2 MB), while Content-Length
+    # lets every hop know exactly where the response ends.
+    try:
+        content = path.read_bytes()
+    except OSError as err:
+        logger.exception("Could not read firmware for device %s", device_id)
+        raise HTTPException(status_code=500, detail="Firmware-Datei konnte nicht gelesen werden") from err
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'inline; filename="firmware.bin"',
+        },
+    )
 
 
 @app.get("/api/zones")

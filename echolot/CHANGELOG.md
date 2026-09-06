@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.13.0
+
+- **Direct live telemetry:** Echolot now consumes ESPectre's HTTP/SSE stream
+  on port 62587, keeps one bounded buffer per device, and proxies samples to
+  the dashboard through Home Assistant Ingress. The chart therefore receives
+  source-rate local samples instead of only a five-second Home Assistant poll.
+- Direct connections reconnect with exponential backoff, discover known
+  ESPectre event routes, discard malformed heartbeats safely, and never allow
+  a slow dashboard client to grow memory without bound.
+- Home Assistant history and state polling remain as graceful fallbacks, and
+  the UI explicitly marks a working direct connection rather than going blank
+  during an outage.
+
+## 0.12.3
+
+- Firmware downloads are now sent as finite, non-cached responses through
+  Home Assistant Ingress. This prevents ESP Web Tools from waiting forever at
+  “Preparing installation”; a direct download remains available as a fallback.
+- The dashboard no longer depends on the unrelated board-list request. It now
+  validates API responses and shows a useful error with a retry button instead
+  of becoming an empty panel when an endpoint fails or returns malformed data.
+
+## 0.12.2
+
+- **Firmware builds work with ESPHome's shallow ESPectre checkout.** The
+  upstream CMake build obtains its SDK version from numeric Git tags, but
+  ESPHome does not fetch those tags for an external component. Echolot now
+  supplies upstream's supported `ESPECTRE_GIT_VERSION` override as an unknown
+  development version (`0.0.0`) instead of letting `git describe` abort the
+  build. An explicitly configured version still takes precedence.
+
 ## 0.12.1
 
 Hardening pass over the five core modules, from an external code review.
