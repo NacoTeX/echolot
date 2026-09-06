@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.12.8
+
+Eine Korrektur. In 0.12.6 stand, ein Gerät habe seine drei Sensing-Entities
+nicht gemeldet und laufe deshalb auf älterer Firmware. Das war falsch, und
+der Fehler lag in der Untersuchung, nicht im Gerät: gesucht wurde nach dem
+Entity-ID-Präfix `zuhause_test1`, und genau die drei fehlenden lagen unter
+`test1` — `sensor.test1_movement_score`, `binary_sensor.test1_motion_detected`,
+`number.test1_threshold`. Das Gerät hat 34 Entities, misst, und war nie
+defekt. Ein Neuflash wäre die falsche Konsequenz gewesen.
+
+- Der Befund `core_entities_missing` bleibt: er ist richtig gebaut, hatte
+  nur nie den Anlass, den ihm 0.12.6 zuschrieb. Er greift weiterhin, wenn
+  ein Gerät die Entities wirklich nicht hat.
+- Was tatsächlich beobachtet wurde, ist interessanter und steht jetzt in
+  DOCS.md: **ein Gerät antwortet unter zwei Entity-ID-Präfixen
+  gleichzeitig.** Home Assistant behält beim Umbenennen den alten Slug auf
+  bestehenden Entities und vergibt den neuen nur an später angelegte. Kein
+  Präfix-Raten löst das auf.
+- Dass Echolot darauf nicht hereinfällt, ist kein Zufall, sondern die
+  Begründung für den `friendly_name`-Abgleich im Resolver — bisher aus der
+  Dokumentation von Home Assistant hergeleitet, jetzt an echter Hardware
+  belegt. `tests/test_entity_resolver.py` enthält den Fall mit den real
+  beobachteten IDs.
+- DOCS.md sagt beim Befund jetzt ausdrücklich: erst „Entities in Home
+  Assistant suchen“, dann Neuflash — nicht umgekehrt.
+
 ## 0.12.7
 
 Confidence fusion, lifted out of a pull request that could no longer be
@@ -53,9 +79,10 @@ keinen gemeldet hätte.
   damit gegen eine um 32 % zu hohe Latte. Der Befund steht auch auf der
   Übersicht: er kostet dort keine zusätzliche Abfrage und betrifft jedes
   gebaute Gerät.
-- **Fehlende Sensing-Entities werden erkannt.** Ein Gerät meldete jede
-  Diagnose- und Bedien-Entity, aber keine der drei, um die es geht —
-  ältere Firmware. Uptime, Temperatur und WLAN sahen dabei tadellos aus.
+- **Fehlende Sensing-Entities werden erkannt.** Ein Gerät, das jede
+  Diagnose- und Bedien-Entity meldet, aber keine der drei, um die es geht,
+  liefe auf älterer Firmware — und Uptime, Temperatur und WLAN sähen dabei
+  tadellos aus. (Der Anlassfall war keiner: siehe 0.12.8.)
 - **Die CSI-Diagnosen werden abgerufen.** Sie veröffentlichen nur auf
   Anforderung und standen deshalb auf beiden Geräten dauerhaft auf
   `unknown`. Niemand konnte sehen, ob verwertbare Pakete ankommen. Liegt

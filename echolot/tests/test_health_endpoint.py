@@ -120,7 +120,8 @@ def test_a_starved_radio_outranks_the_rest(client, monkeypatch):
 
 
 def test_a_device_without_its_sensing_entities_is_caught(client, monkeypatch):
-    # test11: control and diagnostic entities present, sensing ones gone.
+    # Control and diagnostic entities present, sensing ones genuinely
+    # absent. Constructed, not taken from hardware — see 0.12.8.
     api, _ = client
     states = [
         entity("button.test22_recalibrate", "test22 Recalibrate", "unknown"),
