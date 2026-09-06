@@ -29,6 +29,7 @@ from app import (
     devices,
     entity_resolver,
     ha_client,
+    health,
     mqtt_bridge,
     overview,
     presets,
@@ -114,16 +115,32 @@ def _parse_ts(value) -> float | None:
         return None
 
 
-def _adopt_entities(device: devices.Device, states: list[dict]) -> bool:
-    """Resolve the device's entities against a snapshot and persist the result."""
-    found = entity_resolver.resolve(device, states)
-    if not found:
+def _persist_entities(device: devices.Device, found: dict) -> bool:
+    """Store an already-resolved mapping, if it says anything new.
+
+    Split out from _adopt_entities because the diagnosis resolves the same
+    entities for its own reasons and would otherwise leave the record
+    stale — which broke the "Neu kalibrieren" button it offers, on exactly
+    the devices the diagnosis exists for: the ones whose entities were
+    never adopted.
+    """
+    changed = {
+        field: entity_id
+        for field, entity_id in found.items()
+        if getattr(device, field, None) != entity_id
+    }
+    if not changed:
         return False
-    for field, entity_id in found.items():
+    for field, entity_id in changed.items():
         setattr(device, field, entity_id)
     devices.save_device(device)
-    logger.info("Entities für %s erkannt: %s", device.config.name, found)
+    logger.info("Entities für %s erkannt: %s", device.config.name, changed)
     return True
+
+
+def _adopt_entities(device: devices.Device, states: list[dict]) -> bool:
+    """Resolve the device's entities against a snapshot and persist the result."""
+    return _persist_entities(device, entity_resolver.resolve(device, states))
 
 
 async def _autodetect_entities(device: devices.Device) -> bool:
@@ -283,7 +300,9 @@ async def compute_all_zone_states(zone_list: list) -> list[tuple]:
 
 
 @app.get("/api/health")
-def health() -> dict:
+def api_liveness() -> dict:
+    """Is the add-on's own process up. Not to be confused with
+    /api/devices/{id}/health, which asks whether a device is sensing."""
     return {"status": "ok"}
 
 
@@ -520,6 +539,136 @@ async def api_calibrate_device(device_id: str) -> dict:
     except ha_client.HomeAssistantUnavailable as err:
         raise HTTPException(status_code=502, detail=f"Home Assistant nicht erreichbar: {err}") from err
     return {"status": "ok"}
+
+
+#: Looked up on demand rather than stored per device: nothing polls these,
+#: and persisting them would mean migrating every device record for a
+#: diagnosis that is opened by hand.
+_DIAGNOSTIC_SPECS = {
+    field: ("sensor", label) for field, label in health.DIAGNOSTIC_LABELS.items()
+}
+_DIAGNOSTIC_SPECS["diag_profile"] = ("select", "Detection Profile")
+_DIAGNOSTIC_SPECS["diag_refresh_button"] = ("button", "Refresh Diagnostics")
+
+#: How far back the score history goes when judging whether anything has
+#: come near the threshold. Long enough to contain a walk through the
+#: room, short enough that yesterday's furniture does not count.
+HEALTH_WINDOW_MINUTES = 15
+
+
+def _states_by_id(states: list[dict]) -> dict:
+    return {s.get("entity_id"): s for s in states if isinstance(s, dict)}
+
+
+@app.get("/api/devices/{device_id}/health")
+async def api_device_health(device_id: str) -> dict:
+    """What is wrong with this device, judged from Home Assistant.
+
+    Reads the full state snapshot rather than the three targeted entities
+    the live view uses. That is the expensive call, and deliberate: the
+    question here is which entities *exist*, and a targeted read cannot
+    tell a missing entity from a wrongly guessed id — which is exactly the
+    failure this is meant to catch. It runs when someone opens the
+    diagnosis, not on a timer.
+    """
+    device = devices.get_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    if device.status != devices.BuildStatus.SUCCESS:
+        raise HTTPException(status_code=409, detail="Die Firmware wurde noch nicht gebaut")
+
+    try:
+        states = await ha_client.list_states()
+    except ha_client.HomeAssistantUnavailable as err:
+        raise HTTPException(
+            status_code=503, detail=f"Home Assistant nicht erreichbar: {err}"
+        ) from err
+
+    core = entity_resolver.resolve(device, states)
+    # The snapshot is already in hand, so repair the stored ids from it.
+    # Without this the diagnosis can name an entity in its finding and
+    # then offer a button that fails for want of that same entity.
+    _persist_entities(device, core)
+    diagnostics = entity_resolver.resolve(device, states, _DIAGNOSTIC_SPECS)
+    by_id = _states_by_id(states)
+
+    diagnostic_states = {
+        field: by_id.get(entity_id)
+        for field, entity_id in diagnostics.items()
+        if field.startswith("diag_csi") or field == "diag_traffic_tx_rate"
+    }
+
+    # The profile the device is actually running, which a runtime change
+    # can have moved away from what was compiled in.
+    running_profile = device.config.detection_algorithm
+    profile_state = by_id.get(diagnostics.get("diag_profile", ""))
+    if isinstance(profile_state, dict) and profile_state.get("state") in health.PROFILE_DEFAULT_THRESHOLD:
+        running_profile = profile_state["state"]
+
+    scores: list[float] = []
+    score_entity = core.get("entity_movement_score") or device.entity_movement_score
+    if score_entity:
+        try:
+            history = await ha_client.get_history(score_entity, HEALTH_WINDOW_MINUTES)
+        except ha_client.HomeAssistantUnavailable:
+            history = []
+        for entry in history:
+            value = health._number(entry if isinstance(entry, dict) else None)
+            if value is not None:
+                scores.append(value)
+
+    findings = health.inspect(
+        profile=running_profile,
+        target_pps=device.config.csi_target_pps,
+        present_fields=set(core),
+        reachable=bool(core or diagnostics),
+        threshold_state=by_id.get(core.get("entity_threshold", "")),
+        diagnostic_states=diagnostic_states,
+        observed_scores=scores,
+        window_minutes=HEALTH_WINDOW_MINUTES,
+    )
+
+    return {
+        "checked_at": time.time(),
+        "profile": running_profile,
+        "window_minutes": HEALTH_WINDOW_MINUTES,
+        "samples": len(scores),
+        "findings": [f.as_dict() for f in findings],
+        "diagnostics": {
+            health.DIAGNOSTIC_LABELS[field]: (state or {}).get("state")
+            for field, state in diagnostic_states.items()
+            if field in health.DIAGNOSTIC_LABELS
+        },
+        "can_refresh": "diag_refresh_button" in diagnostics,
+    }
+
+
+@app.post("/api/devices/{device_id}/diagnostics/refresh")
+async def api_refresh_diagnostics(device_id: str) -> dict:
+    """Press the device's own "Refresh Diagnostics" button.
+
+    ESPectre publishes the CSI rate sensors only when asked. Left alone
+    they read `unknown` forever, which is why nobody could see whether
+    usable CSI was arriving.
+    """
+    device = devices.get_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    try:
+        states = await ha_client.list_states()
+        found = entity_resolver.resolve(device, states, _DIAGNOSTIC_SPECS)
+        button = found.get("diag_refresh_button")
+        if not button:
+            raise HTTPException(
+                status_code=404,
+                detail="Home Assistant kennt für dieses Gerät keinen „Refresh Diagnostics“-Knopf",
+            )
+        await ha_client.call_service("button", "press", button)
+    except ha_client.HomeAssistantUnavailable as err:
+        raise HTTPException(
+            status_code=502, detail=f"Home Assistant nicht erreichbar: {err}"
+        ) from err
+    return {"status": "ok", "pressed": button}
 
 
 @app.post("/api/devices/{device_id}/entities/detect")

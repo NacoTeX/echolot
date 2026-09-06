@@ -1,5 +1,5 @@
 name: Echolot
-version: "0.12.5"
+version: "0.12.6"
 slug: echolot
 description: >-
   Self-hosted Wi-Fi CSI presence detection hub built on ESPectre — a

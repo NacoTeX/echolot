@@ -150,6 +150,10 @@ function renderDevice(device) {
          <p class="live-error status status-err" hidden></p>
          <button type="button" class="detect-btn btn-secondary" hidden>Entities in Home Assistant suchen</button>
        </div>
+       <div class="health-block">
+         <button type="button" class="health-btn btn-secondary">Diagnose stellen</button>
+         <div class="health-result" hidden></div>
+       </div>
        <div class="network-block">
          <label class="address-label">Netzwerkadresse
            <input class="address-input" value="${escapeHtml(device.address || "")}"
@@ -397,6 +401,9 @@ async function loadDevices() {
     const calibrateBtn = el.querySelector(".calibrate-btn");
     if (calibrateBtn) calibrateBtn.addEventListener("click", () => calibrateDevice(id, calibrateBtn));
 
+    const healthBtn = el.querySelector(".health-btn");
+    if (healthBtn) healthBtn.addEventListener("click", () => runDiagnosis(id, el));
+
     const saveEntitiesBtn = el.querySelector(".save-entities-btn");
     if (saveEntitiesBtn) saveEntitiesBtn.addEventListener("click", () => saveEntityIds(id, el));
 
@@ -633,3 +640,149 @@ loadBoards();
 loadPresets();
 loadDevices();
 setInterval(refreshAllLiveStates, 5000);
+
+// --- Diagnose ---------------------------------------------------------------
+//
+// Answers the question the rest of this page never could: is this device
+// actually sensing? Three real ways it can look healthy and not be — a
+// threshold belonging to the other detection profile, missing sensing
+// entities from stale firmware, and CSI diagnostics that never published —
+// each come back with the button that addresses them.
+
+const SEVERITY_CLASS = { blocker: "status-err", warning: "status-warn", info: "status-pending" };
+const SEVERITY_LABEL = { blocker: "Blockiert", warning: "Achtung", info: "Hinweis" };
+const ACTION_LABEL = {
+  recalibrate: "Neu kalibrieren",
+  rebuild: "Firmware neu bauen",
+  refresh_diagnostics: "Diagnosewerte abrufen",
+};
+
+function renderDiagnosis(card, body) {
+  const box = card.querySelector(".health-result");
+  box.hidden = false;
+  box.textContent = "";
+
+  if (!body.findings.length) {
+    const ok = document.createElement("p");
+    ok.className = "status status-ok";
+    ok.textContent = "Nichts zu beanstanden — das Gerät misst.";
+    box.appendChild(ok);
+  }
+
+  for (const finding of body.findings) {
+    const item = document.createElement("div");
+    item.className = "health-finding";
+
+    const head = document.createElement("strong");
+    head.className = `status ${SEVERITY_CLASS[finding.severity] || "status-pending"}`;
+    head.textContent = SEVERITY_LABEL[finding.severity] || finding.severity;
+    item.appendChild(head);
+
+    const text = document.createElement("p");
+    text.textContent = finding.message;
+    item.appendChild(text);
+
+    if (finding.action && ACTION_LABEL[finding.action]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn-secondary health-action";
+      button.dataset.action = finding.action;
+      button.textContent = ACTION_LABEL[finding.action];
+      item.appendChild(button);
+    }
+    box.appendChild(item);
+  }
+
+  // The numbers behind the verdict, so it can be checked rather than
+  // believed. Only shown once something has actually reported.
+  const measured = Object.entries(body.diagnostics || {}).filter(
+    ([, value]) => value !== null && value !== "unknown" && value !== "unavailable",
+  );
+  if (measured.length) {
+    const list = document.createElement("dl");
+    list.className = "health-numbers";
+    for (const [label, value] of measured) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const def = document.createElement("dd");
+      def.textContent = value;
+      list.append(term, def);
+    }
+    box.appendChild(list);
+  }
+
+  const note = document.createElement("p");
+  note.className = "field-note";
+  note.textContent = `${body.samples} Messwerte aus den letzten ${body.window_minutes} Minuten.`;
+  box.appendChild(note);
+
+  for (const button of box.querySelectorAll(".health-action")) {
+    button.addEventListener("click", () => runHealthAction(card, button));
+  }
+}
+
+async function runDiagnosis(id, card) {
+  const button = card.querySelector(".health-btn");
+  const box = card.querySelector(".health-result");
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Prüft…";
+  try {
+    const res = await fetch(`api/devices/${id}/health`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      box.hidden = false;
+      box.textContent = "";
+      const err = document.createElement("p");
+      err.className = "status status-err";
+      err.textContent = body.detail || "Diagnose fehlgeschlagen";
+      box.appendChild(err);
+      return;
+    }
+    card.dataset.deviceId = id;
+    renderDiagnosis(card, body);
+  } catch (err) {
+    box.hidden = false;
+    box.textContent = "";
+    const offline = document.createElement("p");
+    offline.className = "status status-err";
+    offline.textContent = "Backend nicht erreichbar";
+    box.appendChild(offline);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function runHealthAction(card, button) {
+  const id = card.dataset.deviceId;
+  const endpoints = {
+    recalibrate: `api/devices/${id}/calibrate`,
+    rebuild: `api/devices/${id}/build`,
+    refresh_diagnostics: `api/devices/${id}/diagnostics/refresh`,
+  };
+  const url = endpoints[button.dataset.action];
+  if (!url) return;
+
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Läuft…";
+  try {
+    const res = await fetch(url, { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      button.textContent = body.detail || "Fehlgeschlagen";
+      return;
+    }
+    // The device needs a moment to publish what was just asked of it;
+    // re-running the diagnosis immediately would read the old values.
+    button.textContent = "Erledigt — Diagnose neu stellen";
+  } catch (err) {
+    button.textContent = "Backend nicht erreichbar";
+  } finally {
+    button.disabled = false;
+    setTimeout(() => {
+      button.textContent = original;
+    }, 6000);
+  }
+}

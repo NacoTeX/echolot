@@ -280,6 +280,55 @@ On esptool 4 and earlier the subcommands are spelled `erase_flash` and
 `write_flash`; on Windows the port is `COM3` or similar. `--port` can be
 left out when exactly one board is attached.
 
+### Diagnose stellen
+
+Ein Gerät kann online sein, jeden Bau bestanden haben, in Home Assistant
+sauber auftauchen — und trotzdem nichts erkennen. Der Knopf **Diagnose
+stellen** auf der Gerätekarte prüft genau das. Er ist ein Knopf und läuft
+nicht im Hintergrund, weil er den vollständigen Zustandsschnappschuss von
+Home Assistant liest; auf einer großen Installation ist das die teuerste
+Abfrage, die dieses Add-on kennt.
+
+Er meldet vier Dinge, alle aus echten Geräten heraus entstanden:
+
+**Die Schwelle gehört zum anderen Profil.** ESPectre hat pro
+Erkennungsprofil eine eigene Vorgabe — `0.6621854538596202` für
+`lightweight`, `0.5` für `high_accuracy` (`src/cpp/core/detector_types.h`).
+Die Firmware übernimmt die passende aber nur, wenn das Profil **zur
+Laufzeit** umgestellt und im NVS gespeichert wurde. Ein im YAML gesetztes
+Profil — also jedes Gerät, das Echolot baut — behält den Schema-Default,
+und der ist fest auf den Lightweight-Wert verdrahtet
+(`runtime/esp_idf/esp_idf_runtime.cpp`, `runtime_sensing_schema.h`). Ein
+`high_accuracy`-Gerät läuft dann mit einer um 32 % zu hohen Latte.
+**Neu kalibrieren** setzt sie richtig. Dieser Befund steht auch auf der
+Übersicht, weil er jedes gebaute Gerät betrifft und die Schwelle dort
+ohnehin gelesen wird.
+
+**Die Sensing-Entities fehlen.** Ein Gerät, das sich in Home Assistant
+meldet, aber ohne „Motion Detected“, „Movement Score“ und „Threshold“.
+Die aktuelle ESPectre-Version legt diese immer an, also läuft dort ältere
+Firmware. Nichts sonst fällt darauf auf — Uptime, Temperatur und WLAN
+sehen normal aus. Neu bauen und flashen.
+
+**Die CSI-Diagnosen wurden nie abgerufen.** `CSI Accepted Rate` und die
+übrigen Raten veröffentlichen nur auf Anforderung. Unberührt stehen sie
+für immer auf `unknown`, und damit lässt sich nicht sehen, ob überhaupt
+verwertbare CSI-Pakete ankommen. **Diagnosewerte abrufen** drückt den
+`Refresh Diagnostics`-Knopf des Geräts.
+
+**Zu wenig CSI.** Sobald die Raten Werte liefern: kommt weniger als ein
+Viertel der eingestellten `csi_target_pps` an, bekommt der Detektor zu
+wenig Material und die Erkennung wird Zufall. Meist liegt es am Abstand
+zum Access Point oder an einem überlasteten Kanal.
+
+Dazu ein Hinweis ohne Knopf: lag der höchste Bewegungswert der letzten
+fünfzehn Minuten um mehr als das Hundertfache unter der Schwelle, sagt
+die Diagnose das — aber ausdrücklich als Beobachtung, nicht als Urteil.
+Eine leere Wohnung erzeugt aus gutem Grund niedrige Werte, und das Add-on
+kann den Fall nicht von einer unerreichbaren Schwelle unterscheiden. Das
+trennt nur ein Gehtest: eine Minute durch den Raum laufen, dann die
+Diagnose noch einmal stellen.
+
 ### Wenn ein Gerät nach dem Flashen „nicht verfügbar" bleibt
 
 Flashing puts the firmware on the chip; it does not put the device into

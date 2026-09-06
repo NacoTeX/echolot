@@ -67,19 +67,24 @@ def device_display_name(device) -> str:
     return device.config.friendly_name or device.config.name
 
 
-def resolve(device, states: list[dict]) -> dict[str, str]:
+def resolve(device, states: list[dict], specs: dict | None = None) -> dict[str, str]:
     """Map entity fields to the ids Home Assistant actually uses.
 
     Returns only the fields that were found, so a partial match still
     improves on a wrong guess. An empty result means Home Assistant knows
     nothing about this device — usually because the ESPHome integration
     has not adopted it yet.
+
+    `specs` defaults to the four entities Echolot stores per device. The
+    diagnosis in app/health.py passes its own set — the CSI rate sensors
+    and the diagnostics button — which are looked up on demand and never
+    persisted, because nothing polls them.
     """
     display = device_display_name(device)
     candidates = {_slug(display), _slug_german(display), _slug(device.config.name)}
 
     found: dict[str, str] = {}
-    for field, (domain, label) in ENTITY_SPECS.items():
+    for field, (domain, label) in (specs or ENTITY_SPECS).items():
         prefix = f"{domain}."
 
         # Primary: Home Assistant states the full name outright.
