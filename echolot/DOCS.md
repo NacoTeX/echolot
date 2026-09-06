@@ -121,11 +121,30 @@ motion sensor, so mixing tuned and untuned devices in one zone works.
 
 ### Der Verschlüsselungscode
 
+> **Die API-Verschlüsselung ist zurzeit standardmäßig aus.** Not by
+> preference: `api: encryption:` makes ESPHome pull in noise-c/libsodium,
+> whose C sources include a bare `"utils.h"`. ESPectre registers its own
+> `src/cpp/core` as a *public* ESP-IDF include directory and there is a
+> C++ `utils.h` in it, so the C compiler picks that one and dies on
+> `#include <cstdint>`. The firmware cannot be compiled with both present.
+> This is a bug in ESPectre's build definition — a component should not
+> publish a generically named header on the global include path.
+>
+> The key is still generated and kept per device, so the option can be
+> switched back on (per device, in the firmware options) the moment
+> upstream fixes it, without generating anything new.
+>
+> With encryption off, anyone on your network can read the sensor and
+> drive the device. On a normal home network behind a router that is the
+> same exposure as most ESPHome devices; on a shared or guest network it
+> is not acceptable, and there the device does not belong.
+
 Every device gets its own API encryption key and OTA password, generated
-when you create it and baked into its firmware. Without them anyone on the
+when you create it. The OTA password is always active; the API key only
+when API encryption is switched on. Without them anyone on the
 network could read the sensor, drive it, and overwrite its firmware.
 
-The consequence is that **Home Assistant asks for the key** when it adopts
+When encryption is on, **Home Assistant asks for the key** as it adopts
 the device. It is on the device card under *Verschlüsselungscode für Home
 Assistant*, with a copy button. The key is fetched only when that section
 is opened — the device list itself carries no credentials, so one leaked

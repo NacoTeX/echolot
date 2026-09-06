@@ -125,6 +125,7 @@ def render_yaml(device: Device) -> str:
         web_server=device.config.web_server,
         diagnostics=device.config.diagnostics,
         log_level=device.config.log_level,
+        api_encryption=device.config.api_encryption,
         api_encryption_key=device.api_encryption_key,
         ota_password=device.ota_password,
     )

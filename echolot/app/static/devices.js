@@ -161,8 +161,9 @@ function renderDevice(device) {
        <details class="key-block">
          <summary>Verschlüsselungscode für Home Assistant</summary>
          <p class="hint">
-           Home Assistant fragt danach, wenn es dieses Gerät übernimmt. Ohne
-           den Code kann niemand im Netz das Gerät auslesen oder steuern.
+           ${device.config.api_encryption
+             ? "Home Assistant fragt danach, wenn es dieses Gerät übernimmt. Ohne den Code kann niemand im Netz das Gerät auslesen oder steuern."
+             : "Für dieses Gerät ist die API-Verschlüsselung <strong>abgeschaltet</strong> — der Code steckt also nicht in der Firmware und Home Assistant fragt nicht danach. Er bleibt gespeichert, falls du sie später einschaltest."}
          </p>
          <div class="key-row">
            <code class="api-key">— aufklappen zum Anzeigen —</code>
@@ -593,6 +594,7 @@ document.getElementById("device-form").addEventListener("submit", async (evt) =>
   // ones, so neither state survives as the boolean the API expects.
   data.web_server = form.elements.web_server.checked;
   data.diagnostics = form.elements.diagnostics.checked;
+  data.api_encryption = form.elements.api_encryption.checked;
   if (!data.friendly_name) delete data.friendly_name;
   if (!data.wifi_password) delete data.wifi_password;
 

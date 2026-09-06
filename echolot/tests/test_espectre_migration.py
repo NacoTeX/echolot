@@ -127,3 +127,38 @@ def test_presets_only_use_fields_the_device_model_accepts():
                 name="probe", board="esp32c6", wifi_ssid="n", wifi_password="passwort123",
                 **{field: value},
             )
+
+
+def test_api_encryption_is_off_by_default_and_omits_the_block():
+    """Not a preference: `encryption:` makes ESPHome pull in libsodium,
+    whose C sources include a bare "utils.h" — and ESPectre publishes a
+    C++ utils.h on the global include path, so the compile dies on
+    `#include <cstdint>`. The firmware cannot be built with both."""
+    import os
+    import tempfile
+
+    os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp())
+    from app.builder import render_yaml
+    from app.devices import Device, DeviceCreate
+
+    def render(encryption):
+        device = Device(
+            id="x", created_at=0, updated_at=0,
+            config=DeviceCreate(
+                name="probe", board="esp32c6", wifi_ssid="netz",
+                wifi_password="passwort123", api_encryption=encryption,
+            ),
+        )
+        return render_yaml(device), device
+
+    default, device = render(False)
+    assert DeviceCreate(
+        name="probe", board="esp32c6", wifi_ssid="n", wifi_password="passwort123"
+    ).api_encryption is False
+    assert "encryption:" not in default
+    # The key is still generated and kept, so switching it on needs no new one.
+    assert device.api_encryption_key
+
+    enabled, device = render(True)
+    assert "encryption:" in enabled
+    assert device.api_encryption_key in enabled

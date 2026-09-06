@@ -2,13 +2,6 @@
 
 ## 0.12.3
 
-- Firmware downloads are now sent as finite, non-cached responses through
-  Home Assistant Ingress. This prevents ESP Web Tools from waiting forever at
-  “Preparing installation”; a direct download remains available as a fallback.
-- The dashboard no longer depends on the unrelated board-list request. It now
-  validates API responses and shows a useful error with a retry button instead
-  of becoming an empty panel when an endpoint fails or returns malformed data.
-
 ## 0.12.2
 
 - **Firmware builds work with ESPHome's shallow ESPectre checkout.** The
