@@ -28,7 +28,7 @@ bashio::log.info "PlatformIO cache: ${PLATFORMIO_CORE_DIR}"
 
 cd /opt/echolot || bashio::exit.nok "Could not find app directory"
 
-exec python3 -m uvicorn app.main:app \
+exec python3 -m uvicorn app.server:app \
     --host 0.0.0.0 \
     --port 8099 \
     --log-level "${LOG_LEVEL}"

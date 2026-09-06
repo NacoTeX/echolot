@@ -35,7 +35,7 @@ def test_only_one_esphome_runs_at_a_time(monkeypatch):
     state = {"running": 0, "peak": 0}
     lock = threading.Lock()
 
-    def fake_run(argv, cwd, capture_output, text, timeout):
+    def fake_run(argv, cwd, capture_output, text, timeout, env):
         with lock:
             state["running"] += 1
             state["peak"] = max(state["peak"], state["running"])
@@ -74,6 +74,35 @@ def test_all_queued_builds_still_run(monkeypatch):
     for thread in threads:
         thread.join()
     assert len(calls) == 4
+
+
+def test_espectre_version_is_stamped_for_shallow_external_component(monkeypatch):
+    """An ESPHome checkout may have no tags for ESPectre's git describe."""
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs["env"])
+        return Completed()
+
+    monkeypatch.delenv("ESPECTRE_GIT_VERSION", raising=False)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    builder._run_esphome(["esphome", "compile", "probe.yaml"], Path("."), 10)
+
+    assert seen["ESPECTRE_GIT_VERSION"] == builder.ESPECTRE_FALLBACK_VERSION
+
+
+def test_an_explicit_espectre_version_is_not_overridden(monkeypatch):
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs["env"])
+        return Completed()
+
+    monkeypatch.setenv("ESPECTRE_GIT_VERSION", "1.2.3")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    builder._run_esphome(["esphome", "compile", "probe.yaml"], Path("."), 10)
+
+    assert seen["ESPECTRE_GIT_VERSION"] == "1.2.3"
 
 
 def test_a_stale_firmware_image_is_not_reported_as_this_builds_output(tmp_path):
