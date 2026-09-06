@@ -135,6 +135,6 @@ def test_radio_load_sums_the_whole_fleet():
     """One device's rate is not the number that matters to the household."""
     devices_ = [device("a"), device("b")]
     for d in devices_:
-        d.config.traffic_generator_rate = 100
+        d.config.csi_target_pps = 100
     assert overview.radio_load(devices_, 0.09) == 18.0
     assert overview.radio_load([], 0.09) == 0

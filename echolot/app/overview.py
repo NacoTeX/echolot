@@ -134,4 +134,4 @@ def collect_problems(
 
 def radio_load(devices: list, kb_per_pps: float) -> float:
     """Total Wi-Fi airtime the fleet spends probing, in KB/s."""
-    return round(sum(d.config.traffic_generator_rate * kb_per_pps for d in devices), 1)
+    return round(sum(d.config.csi_target_pps * kb_per_pps for d in devices), 1)

@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.12.0
+
+**Builds were broken.** ESPectre restructured its repository in September
+2026, and the `components/` folder Echolot pointed at no longer exists:
+
+```
+Could not find components folder for source.
+source: github://francescopace/espectre@main
+```
+
+Everything below follows from catching up with that.
+
+### Die Komponente
+
+- New source. The shorthand `github://user/repo@ref` can only find a
+  component folder at the repository root, so the long form with an
+  explicit `path: src/cpp/frontend/esphome/components` is now the only one
+  that resolves.
+- The `espectre:` block was rewritten upstream. Field by field:
+  `mvs`/`ml` became `lightweight`/`high_accuracy`;
+  `traffic_generator_rate` became `csi_target_pps` and its range narrowed
+  from 0–1000 to 1–500; `segmentation_threshold` is gone;
+  `csi_traffic_mode`, `evaluation_interval_ms` and `direct_api` are new;
+  `dns_tcp` joins `ping` and `dns`.
+- The Calibrate **switch** is a Recalibrate **button** now — a one-shot
+  action never was the right shape for a switch you have to turn off
+  again. Echolot presses it accordingly.
+- Entity names are no longer written into the generated YAML. They all
+  have defaults upstream, and repeating them here would mean a rename
+  upstream silently never reaching anyone.
+- ESPectre's examples ask for ESPHome ≥ 2026.7.0, which does not exist on
+  PyPI. Checked: the component itself does not enforce it and validates
+  against 2026.6.5, so no ESPHome change was needed.
+
+### BLE ist weg
+
+ESPectre dropped its BLE telemetry channel with the restructure
+("ESPHome images … no longer include BLE provisioning"). The dashboard's
+**Live** button spoke that GATT service, so it and its client are removed
+rather than left to fail against firmware that no longer answers. The
+`esp32_ble_server` block is out of the generated firmware too, and with it
+the `ble` flag in the board registry.
+
+Its successor is ESPectre's Direct HTTP/SSE surface on port 62587, which
+the reachability check now probes as a third port. Feeding the chart from
+it would need proxying through the add-on to avoid a cross-origin request
+— not built yet.
+
+### Bestehende Geräte
+
+Devices stored under the old schema are translated on load: profiles
+renamed, the packet rate moved and clamped into the new range rather than
+rejected, the dropped setting removed. Without that, updating would have
+made every existing device unloadable.
+`tests/test_espectre_migration.py` pins all of it.
+
+- Fix: `overview.radio_load` still read the old rate field, so the
+  overview's total would have crashed. The test suite caught it.
+
 ## 0.11.1
 
 The Übersicht tab is rebuilt around what someone actually wants to know on

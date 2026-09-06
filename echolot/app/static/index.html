@@ -77,12 +77,6 @@
     </section>
 
     <section id="tab-dashboard" class="tab-panel" hidden>
-      <p class="notice notice-quiet" id="ble-unsupported-notice" hidden>
-        Die Diagramme aktualisieren sich alle paar Sekunden über Home
-        Assistant. Für die direkte Verbindung zum Gerät mit hoher Auflösung
-        wird Web Bluetooth benötigt, das dieser Browser nicht unterstützt —
-        nur Chrome, Edge und Opera können das.
-      </p>
       <div id="dashboard-grid"></div>
     </section>
 
@@ -120,18 +114,19 @@
           <label>WLAN-Passwort
             <input name="wifi_password" type="password" maxlength="64" placeholder="leer lassen bei offenem Netz">
           </label>
-          <label>Erkennungsalgorithmus
+          <label>Erkennungsprofil
             <select name="detection_algorithm">
-              <option value="mvs" selected>mvs (varianzbasiert, Standard)</option>
-              <option value="ml">ml (neuronales Netz, ohne Kalibrierung)</option>
+              <option value="lightweight" selected>Lightweight — gewichtetes Modell, lernt beim Start ein</option>
+              <option value="high_accuracy">High Accuracy — neuronales Netz, ohne Kalibrierung</option>
             </select>
           </label>
           <label>Paketrate (Pakete/s)
-            <input name="traffic_generator_rate" type="number" min="0" max="1000" value="100">
+            <input name="csi_target_pps" type="number" min="1" max="500" value="100">
             <span id="rate-estimate" class="field-note"></span>
           </label>
-          <label>Erkennungsschwelle
-            <input name="segmentation_threshold" value="auto" placeholder="auto, min oder 0.0–10.0">
+          <label>Auswerteintervall (ms)
+            <input name="evaluation_interval_ms" type="number" min="10" max="10000" value="250">
+            <span class="field-note">Kürzer reagiert schneller und kostet mehr Rechenzeit.</span>
           </label>
 
           <details class="tuning device-extras">

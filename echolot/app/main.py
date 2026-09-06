@@ -391,7 +391,6 @@ def list_boards() -> list[dict]:
             "key": b.key,
             "label": b.label,
             "chip_family": b.chip_family,
-            "ble": b.ble,
             "experimental": b.experimental,
         }
         for b in BOARDS.values()
@@ -503,7 +502,9 @@ async def api_calibrate_device(device_id: str) -> dict:
     if not device.entity_calibrate:
         raise HTTPException(status_code=409, detail="Für dieses Gerät ist keine Kalibrierungs-Entity konfiguriert")
     try:
-        await ha_client.call_service("switch", "turn_on", device.entity_calibrate)
+        # A button press, not a switch: recalibration is a one-shot action
+        # upstream now, with nothing to switch back off.
+        await ha_client.call_service("button", "press", device.entity_calibrate)
     except ha_client.HomeAssistantUnavailable as err:
         raise HTTPException(status_code=502, detail=f"Home Assistant nicht erreichbar: {err}") from err
     return {"status": "ok"}

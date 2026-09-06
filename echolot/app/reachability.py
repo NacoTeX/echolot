@@ -7,8 +7,9 @@ probe separates them — if port 6053 answers, the device is alive and it is
 Home Assistant's adoption that is missing, not the device.
 
 Ports probed:
-  6053  ESPHome's native API. The one Home Assistant connects to.
-  80    The device's own status page, present when web_server is enabled.
+  6053   ESPHome's native API. The one Home Assistant connects to.
+  80     The device's own status page, present when web_server is enabled.
+  62587  ESPectre's Direct HTTP/SSE surface, present when direct_api is on.
 """
 
 import asyncio
@@ -16,6 +17,7 @@ import socket
 
 API_PORT = 6053
 WEB_PORT = 80
+DIRECT_PORT = 62587
 
 #: Long enough for a sleepy ESP on a busy network, short enough that a
 #: dead address does not stall the UI.
@@ -67,17 +69,21 @@ async def check(host: str, timeout: float = TIMEOUT) -> dict:
             "verdict": "unresolved",
         }
 
-    api, web = await asyncio.gather(
+    api, web, direct = await asyncio.gather(
         _probe(resolved, API_PORT, timeout),
         _probe(resolved, WEB_PORT, timeout),
+        _probe(resolved, DIRECT_PORT, timeout),
     )
     return {
         "host": host,
         "resolved": resolved,
         "api": api,
         "web": web,
-        "reachable": api or web,
-        "verdict": "ok" if api else ("web_only" if web else "silent"),
+        "direct": direct,
+        "reachable": api or web or direct,
+        # The verdict turns on port 6053: that is the one Home Assistant
+        # needs. The other two only tell us the device is alive.
+        "verdict": "ok" if api else ("web_only" if (web or direct) else "silent"),
     }
 
 
@@ -94,8 +100,8 @@ VERDICT_MESSAGES = {
         "trennt seine Clients voneinander (Client-Isolation)."
     ),
     "web_only": (
-        "Die Statusseite des Geräts antwortet, die ESPHome-API auf Port 6053 "
-        "aber nicht. Öffne http://{host}/ im Browser — dort steht, woran es hakt."
+        "Das Gerät antwortet, aber nicht auf der ESPHome-API (Port 6053). "
+        "Öffne http://{host}/ im Browser — dort steht, woran es hakt."
     ),
     "ok": (
         "Das Gerät antwortet auf der ESPHome-API. Wenn es in Home Assistant "

@@ -46,10 +46,17 @@ class DeviceCreate(BaseModel):
     wifi_ssid: str = Field(..., min_length=1, max_length=32)
     wifi_password: str = Field(default="", max_length=64)
     wifi_bssid: str | None = None
-    detection_algorithm: Literal["mvs", "ml"] = "mvs"
-    traffic_generator_rate: int = Field(default=100, ge=0, le=1000)
-    traffic_generator_mode: Literal["ping", "dns"] = "ping"
-    segmentation_threshold: str = "auto"
+    # Field names and ranges follow ESPectre's own schema
+    # (src/cpp/runtime/runtime_sensing_schema.h), so a value that
+    # validates here validates there.
+    detection_algorithm: Literal["lightweight", "high_accuracy"] = "lightweight"
+    csi_target_pps: int = Field(default=100, ge=1, le=500)
+    csi_traffic_mode: Literal["internal", "external"] = "internal"
+    traffic_generator_mode: Literal["ping", "dns", "dns_tcp"] = "ping"
+    evaluation_interval_ms: int = Field(default=250, ge=10, le=10000)
+    #: ESPectre's own HTTP/SSE surface on port 62587. Leaving it on gives
+    #: the reachability check a second thing to probe.
+    direct_api: bool = True
     #: Serve a status page on the device at http://<ip>/. Costs flash and a
     #: little RAM, and is the only way to check a device from a browser
     #: that has no Web Serial — everything on iPadOS, for instance.
@@ -83,19 +90,6 @@ class DeviceCreate(BaseModel):
             raise ValueError("wifi_password must be empty (open network) or at least 8 characters")
         return v
 
-    @field_validator("segmentation_threshold")
-    @classmethod
-    def _validate_threshold(cls, v: str) -> str:
-        if v in ("auto", "min"):
-            return v
-        try:
-            f = float(v)
-        except ValueError:
-            raise ValueError('segmentation_threshold must be "auto", "min", or a number 0.0-10.0') from None
-        if not (0.0 <= f <= 10.0):
-            raise ValueError("segmentation_threshold must be between 0.0 and 10.0")
-        return v
-
 
 def _entity_slug(text: str) -> str:
     """Home Assistant's entity-id slug, near enough for a first guess."""
@@ -123,7 +117,8 @@ def default_entity_ids(device_name: str, friendly_name: str | None = None) -> di
         "entity_motion": f"binary_sensor.{slug}_motion_detected",
         "entity_movement_score": f"sensor.{slug}_movement_score",
         "entity_threshold": f"number.{slug}_threshold",
-        "entity_calibrate": f"switch.{slug}_calibrate",
+        # A button since ESPectre's restructure, not a switch.
+        "entity_calibrate": f"button.{slug}_recalibrate",
     }
 
 
@@ -216,6 +211,47 @@ def _write_index(index: dict[str, dict]) -> None:
     tmp.replace(INDEX_PATH)
 
 
+#: Old field -> new field, for values that merely moved.
+_RENAMED_CONFIG_FIELDS = {"traffic_generator_rate": "csi_target_pps"}
+
+#: Old value -> new value, for ESPectre's renamed detection profiles.
+_RENAMED_ALGORITHMS = {"mvs": "lightweight", "ml": "high_accuracy"}
+
+
+def _migrate_config(config: dict) -> bool:
+    """Bring one stored device config onto ESPectre's current schema.
+
+    ESPectre restructured in September 2026 and renamed most of these.
+    Without translation Pydantic refuses to load the device at all, which
+    would lose every device someone had already set up.
+    """
+    changed = False
+
+    for old_field, new_field in _RENAMED_CONFIG_FIELDS.items():
+        if old_field in config:
+            config.setdefault(new_field, config.pop(old_field))
+            changed = True
+
+    algorithm = config.get("detection_algorithm")
+    if algorithm in _RENAMED_ALGORITHMS:
+        config["detection_algorithm"] = _RENAMED_ALGORITHMS[algorithm]
+        changed = True
+
+    # No equivalent upstream: segmentation is a window in milliseconds now,
+    # not a threshold, so the old value cannot be carried over meaningfully.
+    if config.pop("segmentation_threshold", None) is not None:
+        changed = True
+
+    # The old field allowed 0-1000; ESPectre's range is 1-500. Clamp rather
+    # than reject, so an out-of-range device still loads.
+    pps = config.get("csi_target_pps")
+    if isinstance(pps, int) and not (1 <= pps <= 500):
+        config["csi_target_pps"] = min(500, max(1, pps))
+        changed = True
+
+    return changed
+
+
 def _migrate(index: dict[str, dict]) -> bool:
     """Fill in fields added after a device was first written.
 
@@ -235,6 +271,8 @@ def _migrate(index: dict[str, dict]) -> bool:
             if not raw.get(field):
                 raw[field] = factory()
                 changed = True
+        if isinstance(raw.get("config"), dict) and _migrate_config(raw["config"]):
+            changed = True
     return changed
 
 

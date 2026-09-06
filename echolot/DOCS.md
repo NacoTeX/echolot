@@ -60,10 +60,11 @@ editable) under "HA entity ids" on its card — open that if a device
 shows as unavailable and check the ids match what Home Assistant
 actually assigned.
 
-Note: the `mvs`/`ml` detection algorithm choice is **not** one of these
-runtime entities — ESPectre only exposes it as a compile-time YAML
-option, so changing it means rebuilding and reflashing on the Devices
-tab, not a Zones-tab control.
+Note: `detection_algorithm` (`lightweight` / `high_accuracy`) sets only
+the *initial* profile. ESPectre now also exposes a **Detection Profile**
+select entity in Home Assistant, so the profile can be switched at
+runtime without rebuilding; the YAML value is what a freshly flashed
+device starts with.
 
 ### Übersicht
 
@@ -252,27 +253,16 @@ extending live, so it is useful the moment you open the tab rather than
 starting blank. Below it sit the current score and threshold; zone tiles
 highlight *which* member device is currently tripping.
 
-On BLE-capable boards (ESP32, C3, C5, C6, S3 — **not** S2, which ESPectre's
-BLE channel doesn't support), a device tile also has a **Live** button.
-It opens a direct Web Bluetooth connection from your browser straight to
-the device — no add-on backend involved — using the same GATT protocol
-ESPectre's own browser-based "game" client uses (`docs/game/README.md` in
-the [ESPectre repo](https://github.com/francescopace/espectre)). The same
-chart then redraws from that stream at roughly the device's native
-~10-50ms rate instead of the ~5s polling, which is what makes fine
-threshold tuning practical. This needs:
+Device tiles used to offer a **Live** button that opened a Web Bluetooth
+connection straight to the device for a ~10–50 ms stream. ESPectre removed
+that GATT service when it restructured in September 2026, so the button is
+gone rather than left to fail against firmware that no longer answers.
 
-- **Chrome, Edge, or Opera** — Web Bluetooth isn't implemented in Firefox
-  or Safari; the tab shows a notice and falls back to polling there.
-- The page served over **HTTPS or `localhost`**, same Web Serial/Web
-  Bluetooth secure-context restriction as flashing (see above).
-- The device powered on and in BLE range: your browser's own device
-  picker opens when you click "Live" — its behavior isn't something this
-  add-on controls.
-
-Disconnecting (or navigating away) puts the chart back on the polled
-feed.
-
+Its successor is ESPectre's Direct HTTP/SSE surface on port 62587, enabled
+by the `direct_api` option (on by default). Using it from this page would
+mean a cross-origin request from the Ingress origin to the device, so it
+needs proxying through the add-on first — that is not built yet, and the
+chart currently runs on Home Assistant polling alone.
 ### Zones in Home Assistant
 
 Zones would otherwise exist only inside this add-on — visible here, but
