@@ -13,6 +13,8 @@ way.
 
 from dataclasses import dataclass
 
+from app import health
+
 
 @dataclass(frozen=True)
 class Problem:
@@ -96,6 +98,25 @@ def collect_problems(
                     device_id=device.id,
                 )
             )
+
+        # Costs nothing extra: the threshold is already in the state that
+        # was read for the live view. It is worth saying here rather than
+        # only in the per-device diagnosis, because it affects every
+        # device Echolot builds — the firmware adopts the algorithm's own
+        # default threshold only when the algorithm was chosen at runtime.
+        if state is not None and state.get("available"):
+            mismatch = health.check_threshold_profile(
+                device.config.detection_algorithm,
+                {"state": state.get("threshold")},
+            )
+            if mismatch is not None:
+                problems.append(
+                    Problem(
+                        kind=mismatch.kind,
+                        message=f"„{label}“: {mismatch.message}",
+                        device_id=device.id,
+                    )
+                )
 
         if device.ota_error:
             problems.append(

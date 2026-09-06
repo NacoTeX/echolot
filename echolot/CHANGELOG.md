@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.12.6
+
+Die erste Sitzung mit laufender Hardware — und drei Wege, auf denen ein
+Gerät online, gesund und nutzlos sein kann, von denen Echolot bis hierhin
+keinen gemeldet hätte.
+
+- **Diagnose stellen** auf der Gerätekarte. Prüft, ob das Gerät wirklich
+  misst, statt nur ob es erreichbar ist, und liefert zu jedem Befund den
+  Knopf, der ihn behebt.
+- **Die Schwelle passt nicht immer zum Erkennungsprofil.** ESPectre hat
+  pro Profil eine eigene Vorgabe, übernimmt sie aber nur, wenn das Profil
+  zur Laufzeit umgestellt wurde. Ein im YAML gesetztes Profil — jedes
+  Gerät, das Echolot baut — behält den Schema-Default, und der ist fest
+  auf den Lightweight-Wert verdrahtet. Ein `high_accuracy`-Gerät lief
+  damit gegen eine um 32 % zu hohe Latte. Der Befund steht auch auf der
+  Übersicht: er kostet dort keine zusätzliche Abfrage und betrifft jedes
+  gebaute Gerät.
+- **Fehlende Sensing-Entities werden erkannt.** Ein Gerät meldete jede
+  Diagnose- und Bedien-Entity, aber keine der drei, um die es geht —
+  ältere Firmware. Uptime, Temperatur und WLAN sahen dabei tadellos aus.
+- **Die CSI-Diagnosen werden abgerufen.** Sie veröffentlichen nur auf
+  Anforderung und standen deshalb auf beiden Geräten dauerhaft auf
+  `unknown`. Niemand konnte sehen, ob verwertbare Pakete ankommen. Liegt
+  die Rate unter einem Viertel des eingestellten Ziels, ist das jetzt ein
+  Blocker.
+- Ein Hinweis, wenn der höchste Bewegungswert weit unter der Schwelle
+  bleibt — als Beobachtung, nicht als Urteil. Eine leere Wohnung sieht
+  genauso aus, und nur ein Gehtest trennt die beiden Fälle.
+- Nebenbei behoben: die Diagnose speichert die Entity-IDs, die sie ohnehin
+  auflöst. Ohne das nannte ein Befund eine Entity und bot dann einen Knopf
+  an, der mangels derselben Entity fehlschlug — ausgerechnet bei den
+  Geräten, für die die Diagnose da ist.
+
+Geprüft gegen die tatsächlich gemessenen Werte zweier Geräte, die als
+Regressionsfälle in den Tests stehen; die Oberfläche in echtem Chromium
+gegen einen Server mit denselben Daten.
+
 ## 0.12.5
 
 Prompted by a chip that would not take a new firmware and would not let

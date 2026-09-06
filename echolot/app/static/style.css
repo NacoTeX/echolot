@@ -1227,3 +1227,43 @@ esp-web-install-button { display: inline-flex; }
   color: var(--faint);
   font-weight: normal;
 }
+
+/* Die Gerätediagnose. Absichtlich nicht dauerhaft sichtbar: sie liest den
+   vollständigen Zustandsschnappschuss von Home Assistant, was auf einer
+   großen Installation teuer ist. Deshalb ein Knopf statt Dauerbetrieb. */
+.health-block {
+  margin-top: 0.75rem;
+}
+
+.health-result {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 46rem;
+}
+
+.health-finding {
+  border-left: 3px solid var(--hairline-strong);
+  padding-left: 0.75rem;
+}
+
+.health-finding p {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.health-numbers {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0.1rem 1rem;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.health-numbers dt {
+  color: var(--faint);
+}
+
+.health-numbers dd {
+  margin: 0;
+}

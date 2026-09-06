@@ -138,3 +138,41 @@ def test_radio_load_sums_the_whole_fleet():
         d.config.csi_target_pps = 100
     assert overview.radio_load(devices_, 0.09) == 18.0
     assert overview.radio_load([], 0.09) == 0
+
+
+def _high_accuracy(threshold):
+    dev = device("flur")
+    dev.config.detection_algorithm = "high_accuracy"
+    state = {
+        "available": True,
+        "motion": False,
+        "movement_score": 1e-6,
+        "threshold": threshold,
+    }
+    return [(dev, state)]
+
+
+def test_a_threshold_from_the_other_profile_reaches_the_overview():
+    """The finding that affects every device Echolot builds.
+
+    It rides along on the threshold already read for the live view, so it
+    costs no extra request — which is why it belongs here and not only in
+    the per-device diagnosis.
+    """
+    problems = collect(_high_accuracy(0.6621854))
+    assert "threshold_profile_mismatch" in kinds(problems)
+    message = next(p.message for p in problems if p.kind == "threshold_profile_mismatch")
+    assert "flur" in message
+    assert "lightweight" in message
+
+
+def test_a_matching_threshold_stays_off_the_overview():
+    assert kinds(collect(_high_accuracy(0.5))) == []
+
+
+def test_a_deliberately_chosen_threshold_is_not_second_guessed():
+    assert kinds(collect(_high_accuracy(0.31))) == []
+
+
+def test_a_device_that_never_reported_a_threshold_is_not_judged():
+    assert "threshold_profile_mismatch" not in kinds(collect(_high_accuracy(None)))
