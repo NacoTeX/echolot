@@ -16,6 +16,7 @@
       <nav class="tabs">
         <button class="tab-btn active" data-tab="overview">Übersicht</button>
         <button class="tab-btn" data-tab="dashboard">Dashboard</button>
+        <button class="tab-btn" data-tab="calibration">Kalibrierung</button>
         <button class="tab-btn" data-tab="devices">Geräte</button>
         <button class="tab-btn" data-tab="zones">Zonen</button>
       </nav>
@@ -78,6 +79,54 @@
 
     <section id="tab-dashboard" class="tab-panel" hidden>
       <div id="dashboard-grid"></div>
+    </section>
+
+    <section id="tab-calibration" class="tab-panel" hidden>
+      <section class="card calibration-intro">
+        <h2>Calibration Lab</h2>
+        <p>
+          Zeichne echte Situationen im Raum auf. Echolot verbindet die direkte
+          ESPectre-Telemetrie mit deinen Markierungen und berechnet daraus eine
+          nachvollziehbare Schwellenwert-Empfehlung.
+        </p>
+        <form id="calibration-form" class="calibration-form">
+          <label>Gerät
+            <select name="device_id" id="calibration-device" required></select>
+          </label>
+          <label>Name der Messung
+            <input name="name" maxlength="100" placeholder="z. B. Wohnzimmer am Abend">
+          </label>
+          <button type="submit">Aufzeichnung starten</button>
+        </form>
+        <p id="calibration-error" class="status status-err" hidden></p>
+      </section>
+
+      <section id="active-calibration" class="card" hidden>
+        <div class="calibration-heading">
+          <div>
+            <h2>Aufzeichnung läuft</h2>
+            <strong data-session-name></strong>
+          </div>
+          <span class="recording-indicator">● LIVE</span>
+        </div>
+        <p class="hint">Markiere immer den Zustand, der im Raum gerade tatsächlich gilt.</p>
+        <div class="label-buttons">
+          <button type="button" data-label="empty">Raum leer</button>
+          <button type="button" data-label="moving">Person bewegt sich</button>
+          <button type="button" data-label="still">Person sitzt still</button>
+          <button type="button" data-label="interference">Störquelle aktiv</button>
+        </div>
+        <div class="calibration-live">
+          <span><b data-sample-count>0</b> Samples</span>
+          <span>Aktuelles Label: <b data-current-label>noch nicht markiert</b></span>
+        </div>
+        <button type="button" id="stop-calibration" class="btn-secondary">Aufzeichnung beenden</button>
+      </section>
+
+      <section>
+        <h2>Messungen</h2>
+        <div id="calibration-list" class="device-list"></div>
+      </section>
     </section>
 
     <section id="tab-devices" class="tab-panel" hidden>
@@ -260,5 +309,6 @@
   <script src="static/devices.js"></script>
   <script src="static/zones.js"></script>
   <script src="static/dashboard.js"></script>
+  <script src="static/calibration.js"></script>
 </body>
 </html>

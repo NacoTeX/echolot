@@ -81,3 +81,17 @@ def test_a_slow_subscriber_gets_recent_data_instead_of_an_unbounded_queue():
     while not queue.empty():
         newest = queue.get_nowait()
     assert newest.movement_score == 149
+
+
+def test_recording_listeners_receive_each_valid_sample_only():
+    hub = TelemetryHub()
+    received = []
+    listener = lambda device_id, sample: received.append((device_id, sample.movement_score))
+    hub.add_listener(listener)
+
+    hub.ingest("probe", '{"score":1.5}', now=100)
+    hub.ingest("probe", '{"event":"heartbeat"}', now=101)
+    hub.remove_listener(listener)
+    hub.ingest("probe", '{"score":2.5}', now=102)
+
+    assert received == [("probe", 1.5)]

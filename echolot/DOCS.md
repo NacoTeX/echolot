@@ -273,6 +273,28 @@ ESPectre has used more than one route shape during development. Echolot probes
 the known event routes automatically. For an upstream build with a different
 route, set `ESPECTRE_DIRECT_PATHS` in the container environment to a
 comma-separated list such as `/events,/api/events`.
+
+### Calibration Lab
+
+The **Kalibrierung** tab turns live telemetry into a labelled room dataset:
+
+1. Select a built device and start a recording.
+2. Mark the real situation as **room empty**, **person moving**, **person
+   sitting still**, or **interference active**. Every direct sample receives
+   the label that was active when it arrived.
+3. Collect at least 20 empty and 20 occupied samples, then stop the recording.
+
+Echolot calculates the empty-room median, robust noise (MAD), class separation,
+recommended enter/exit thresholds, and estimated false-positive and
+false-negative rates. Interference samples remain in the export but do not
+silently train the presence threshold. Recommendations are deliberately shown
+for review rather than pushed onto the device automatically.
+
+Sessions survive add-on restarts; an open recording is marked **interrupted**
+after a restart so new measurements can never inherit an old label unnoticed.
+Use **CSV exportieren** to inspect the timestamp, movement score, device
+threshold, motion decision, and ground-truth label for every sample.
+
 ### Zones in Home Assistant
 
 Zones would otherwise exist only inside this add-on — visible here, but

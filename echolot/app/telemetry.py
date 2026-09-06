@@ -114,6 +114,7 @@ class TelemetryHub:
         self._workers: dict[str, tuple[str, asyncio.Task]] = {}
         self._samples: dict[str, deque[Sample]] = {}
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
+        self._listeners: set[Callable[[str, Sample], None]] = set()
         self._status: dict[str, dict] = {}
 
     async def start(self, provider: Callable[[], Iterable]) -> None:
@@ -227,7 +228,18 @@ class TelemetryHub:
                 except asyncio.QueueEmpty:
                     pass
             queue.put_nowait(sample)
+        for listener in tuple(self._listeners):
+            try:
+                listener(device_id, sample)
+            except Exception:  # noqa: BLE001 - one recorder must not kill collection
+                logger.exception("Telemetry listener failed for %s", device_id)
         return sample
+
+    def add_listener(self, listener: Callable[[str, Sample], None]) -> None:
+        self._listeners.add(listener)
+
+    def remove_listener(self, listener: Callable[[str, Sample], None]) -> None:
+        self._listeners.discard(listener)
 
     def snapshot(self, device_id: str, *, seconds: int = 1800) -> dict:
         samples = self._samples.get(device_id, ())

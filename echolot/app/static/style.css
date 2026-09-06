@@ -954,6 +954,79 @@ esp-web-install-button { display: inline-flex; }
    than in the roomier Zones tab. */
 .glass-tile .zone-members { margin: 0.8rem 0 0; }
 
+/* ---------- Calibration Lab ---------- */
+
+.calibration-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem;
+  align-items: end;
+  margin-top: 1rem;
+}
+
+.calibration-form button { min-height: 2.65rem; }
+
+.calibration-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+}
+
+.recording-indicator {
+  color: var(--err);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  animation: recording-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+  50% { opacity: 0.4; }
+}
+
+.label-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+
+.label-buttons button {
+  background: var(--glass-well);
+  border: 1px solid var(--hairline-strong);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.label-buttons button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.calibration-live {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: 1rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.recommendation {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.8rem 0 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  font-size: 0.84rem;
+}
+
+.recommendation span { color: var(--muted); }
+
 /* ---------- Phones ---------- */
 
 /* Home Assistant's companion app is a common way to open this, so the

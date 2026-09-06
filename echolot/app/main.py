@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from app import (
     builder,
+    calibration,
     devices,
     entity_resolver,
     ha_client,
@@ -55,6 +56,7 @@ async def lifespan(_app: FastAPI):
     not anyone has the dashboard open.
     """
     task = None
+    telemetry.hub.add_listener(calibration.store.ingest)
     await telemetry.hub.start(devices.list_devices)
     if os.environ.get("ECHOLOT_MQTT_EXPORT", "true").lower() in ("0", "false", "no"):
         logger.info("MQTT export disabled by configuration")
@@ -80,6 +82,7 @@ async def lifespan(_app: FastAPI):
             except asyncio.CancelledError:
                 pass
         mqtt_bridge.bridge.stop()
+        telemetry.hub.remove_listener(calibration.store.ingest)
         await telemetry.hub.stop()
         await ha_client.close_client()
 
@@ -525,6 +528,68 @@ async def api_device_telemetry_stream(device_id: str) -> StreamingResponse:
         events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/calibrations")
+def api_list_calibrations(device_id: str | None = None) -> list[dict]:
+    return calibration.store.list(device_id=device_id)
+
+
+@app.post("/api/calibrations", status_code=201)
+def api_create_calibration(payload: dict) -> dict:
+    device_id = str(payload.get("device_id") or "")
+    device = devices.get_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    if device.status != devices.BuildStatus.SUCCESS or not device.config.direct_api:
+        raise HTTPException(
+            status_code=409,
+            detail="Das Gerät muss gebaut sein und Direkt-Telemetrie aktiviert haben",
+        )
+    name = str(payload.get("name") or "").strip()
+    if len(name) > 100:
+        raise HTTPException(status_code=422, detail="Der Name darf höchstens 100 Zeichen haben")
+    try:
+        return calibration.store.create(device_id, name)
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+
+
+@app.post("/api/calibrations/{session_id}/label")
+def api_label_calibration(session_id: str, payload: dict) -> dict:
+    try:
+        return calibration.store.set_label(session_id, str(payload.get("label") or ""))
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+
+
+@app.post("/api/calibrations/{session_id}/stop")
+def api_stop_calibration(session_id: str) -> dict:
+    try:
+        return calibration.store.stop(session_id)
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
+@app.delete("/api/calibrations/{session_id}", status_code=204)
+def api_delete_calibration(session_id: str) -> None:
+    if not calibration.store.delete(session_id):
+        raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
+
+
+@app.get("/api/calibrations/{session_id}/export.csv")
+def api_export_calibration(session_id: str) -> Response:
+    try:
+        content = calibration.store.csv(session_id)
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="echolot-{session_id}.csv"'},
     )
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.0
+
+- **Calibration Lab:** record direct ESPectre telemetry while marking the room
+  as empty, moving, still occupied, or affected by an interference source.
+- Sessions are persisted locally, can be exported as CSV, and are made safe
+  after a restart by marking unfinished recordings as interrupted.
+- Once both empty and occupied evidence are sufficient, Echolot reports robust
+  baseline/noise statistics, signal separation, explainable enter/exit
+  threshold recommendations, and estimated false-positive/negative rates.
+- Collection is bounded to 100,000 samples per session, periodically persisted,
+  and connected to the existing telemetry fan-out without adding another
+  connection to the ESP32.
+
 ## 0.13.0
 
 - **Direct live telemetry:** Echolot now consumes ESPectre's HTTP/SSE stream
