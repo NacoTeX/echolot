@@ -1,6 +1,91 @@
 # Changelog
 
+## 0.12.4
+
+Prompted by a flash that sat on "Preparing installation" for ten minutes.
+Measured first: serving a 3 MB image from this add-on takes ten
+milliseconds, and the manifest is correct — so that message is not about
+the download. Reading ESP Web Tools' own code, it covers *two* steps with
+no timeout on either: the serial handshake with the chip
+(`initializing`) and the firmware download (`preparing`). Nothing in the
+dialog distinguishes them.
+
+- **Firmware herunterladen** on the device card, with the image's size.
+  The built-in flasher is no longer the only way in: the same `.bin` can
+  be installed with `web.esphome.io` or `esptool` at offset 0. When the
+  in-page flash stalls, that is a way forward rather than a dead end.
+- The size also makes a large image distinguishable from a stalled one,
+  which the flasher itself never says.
+- `HEAD` on the firmware endpoint answered 405. Flashers other than the
+  built-in one ask for the size before fetching, and a 405 reads to them
+  as a broken link. It now answers with the length.
+- DOCS.md gains the five-second test for which of the two steps is stuck
+  (look for `firmware.bin` in the browser's Network tab) and what to do
+  in each case.
+- The buffered, `no-store` firmware response from 0.12.3 stays exactly as
+  it is; the `HEAD` handler was folded into it rather than replacing it.
+  The two changes address different halves of the same symptom, and only
+  a flash on real hardware can say which half was actually stuck.
+
 ## 0.12.3
+
+**Builds failed again**, this time deep into the compile:
+
+```
+external_components/…/src/cpp/core/utils.h:14:10:
+  fatal error: cstdint: No such file or directory
+   14 | #include <cstdint>
+```
+
+A *C* file — libsodium's `aead_chacha20poly1305.c` — was including
+ESPectre's *C++* header. The chain, traced through the sources rather
+than guessed:
+
+1. `api: encryption:` makes ESPHome add `esphome/noise-c`, which compiles
+   libsodium (`components/api/__init__.py`, `cg.add_library`).
+2. libsodium's C sources include a bare `"utils.h"`.
+3. ESPectre registers `src/cpp/core` as a **public** ESP-IDF
+   `INCLUDE_DIRS` entry (`src/cpp/CMakeLists.txt`), and that directory
+   contains `utils.h` — a C++ header.
+4. The C compiler finds ESPectre's before libsodium's own, and `<cstdint>`
+   does not exist in C.
+
+This is a bug in ESPectre's build definition: a component should not
+publish a generically named header on the global include path. Nothing in
+the add-on can reorder those include paths from YAML.
+
+- **API encryption is now a per-device option, default off.** Not a
+  judgement that it is optional — with it on, the firmware does not
+  compile at all. The key is still generated and stored, so it can be
+  switched back on without generating anything new the moment upstream
+  fixes the include. The device card and the firmware options say why.
+- The OTA password is unaffected and stays on.
+- `tools/validate_firmware.py` now covers eight configurations rather than
+  seven: the encrypted variant is exercised too, since that is the branch
+  that broke.
+
+Honest limit: this environment cannot complete a full ESP-IDF compile (the
+toolchain download is blocked), so the *fix* is verified by construction
+and by config validation, not by a completed build. That the encrypted
+variant fails to compile is established from the upstream sources quoted
+above, not from a run here.
+
+This is a *second*, unrelated build blocker: 0.12.2 fixed ESPectre's
+CMake failing on a tagless checkout, which stopped the build before it
+ever reached a compiler. This one stops it during compilation.
+
+### Auslieferung der Firmware
+
+- Firmware downloads are now sent as finite, non-cached responses through
+  Home Assistant Ingress. This prevents ESP Web Tools from waiting forever at
+  “Preparing installation”; a direct download remains available as a fallback.
+- The dashboard no longer depends on the unrelated board-list request. It now
+  validates API responses and shows a useful error with a retry button instead
+  of becoming an empty panel when an endpoint fails or returns malformed data.
+
+Both change sets carry the number 0.12.3: they were released one after the
+other without a bump in between, and the merge that brought them together
+had dropped the text of both.
 
 ## 0.12.2
 

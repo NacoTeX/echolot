@@ -696,7 +696,10 @@ def api_device_manifest(device_id: str) -> JSONResponse:
     return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
 
 
-@app.get("/api/devices/{device_id}/firmware.bin")
+# HEAD as well as GET: flashers other than the built-in one — web.esphome.io,
+# esptool wrappers, plain download managers — ask for the size before
+# fetching, and a 405 there looks to them like a broken link.
+@app.api_route("/api/devices/{device_id}/firmware.bin", methods=["GET", "HEAD"])
 def api_device_firmware(device_id: str) -> Response:
     device = devices.get_device(device_id)
     if device is None:
