@@ -96,3 +96,17 @@ def test_delete_removes_a_session(store):
     assert store.delete(session["id"]) is True
     assert store.get(session["id"]) is None
     assert store.delete(session["id"]) is False
+
+
+def test_latest_profiles_only_returns_completed_usable_recommendations(store):
+    session = store.create("probe")
+    store.set_label(session["id"], "empty")
+    for index in range(30):
+        store.ingest("probe", sample(0.2 + index % 2 * 0.01, index + 1))
+    store.set_label(session["id"], "still")
+    for index in range(30):
+        store.ingest("probe", sample(3.0 + index % 2 * 0.01, index + 31))
+
+    assert store.latest_profiles() == {}, "an active partial session must not tune a zone"
+    store.stop(session["id"])
+    assert store.latest_profiles()["probe"]["quality"] == "good"

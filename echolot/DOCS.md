@@ -474,6 +474,39 @@ defaults), *Sparsam* (less than half the radio load), *Empfindlich*
 (the neural-network algorithm, which needs no settling period). Editing
 any of the values leaves the preset and switches to custom.
 
+### Confidence fusion
+
+For zones whose devices stream direct telemetry, Echolot computes a second
+opinion alongside the classic binary zone state. Each member contributes:
+
+- a presence probability, taken from its newest completed calibration
+  profile, otherwise from its current device threshold, otherwise from the
+  motion boolean alone;
+- a reliability value from calibration quality and sample age;
+- the basis it used (`calibrated_score`, `device_threshold`, `motion_only`).
+
+Samples start losing weight after five seconds and expire after twenty.
+An expired device therefore makes the fused result *unavailable* rather
+than voting for an empty room. Reliable probabilities are combined as a
+weighted mean, so adding many weak sensors cannot force a zone to
+occupied. The result is **occupied**, **vacant**, or explicitly
+**uncertain** — the last one when devices disagree, instead of hiding the
+disagreement behind OR logic.
+
+**It is a second opinion, not the verdict.** The dot and the state text on
+a zone tile still come from the zone state machine, and that machine —
+with its hold time — is what drives Home Assistant and the MQTT export.
+The fusion gets its own line underneath, with the per-device breakdown in
+its tooltip. Two things writing one element would flip the tile between
+two answers, and would overwrite the very value the fusion is worth
+comparing against. Seeing "frei" above "Direkt-Fusion: belegt · 78 %" is
+the point: that disagreement is information, and it is what a walk test
+resolves.
+
+Endpoints: `GET /api/fusion/zones` for all zones, `GET
+/api/fusion/zones/{id}` for one. The dashboard polls the first every two
+seconds while its tab is on screen.
+
 ## Support
 
 This is a personal/community project, not affiliated with TOMMY or

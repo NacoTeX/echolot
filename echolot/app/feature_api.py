@@ -10,9 +10,28 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from app import calibration, devices, telemetry
+from app import calibration, devices, fusion, telemetry, zones
 
 router = APIRouter()
+
+
+@router.get("/api/fusion/zones")
+def fused_zones() -> list[dict]:
+    profiles = calibration.store.latest_profiles()
+    return [
+        fusion.evaluate_zone(zone, devices.get_device, telemetry.hub, profiles)
+        for zone in zones.list_zones()
+    ]
+
+
+@router.get("/api/fusion/zones/{zone_id}")
+def fused_zone(zone_id: str) -> dict:
+    zone = zones.get_zone(zone_id)
+    if zone is None:
+        raise HTTPException(status_code=404, detail="Zone nicht gefunden")
+    return fusion.evaluate_zone(
+        zone, devices.get_device, telemetry.hub, calibration.store.latest_profiles()
+    )
 
 
 @router.get("/api/devices/{device_id}/telemetry")
