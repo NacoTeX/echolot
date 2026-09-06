@@ -306,9 +306,23 @@ ohnehin gelesen wird.
 
 **Die Sensing-Entities fehlen.** Ein Gerät, das sich in Home Assistant
 meldet, aber ohne „Motion Detected“, „Movement Score“ und „Threshold“.
-Die aktuelle ESPectre-Version legt diese immer an, also läuft dort ältere
-Firmware. Nichts sonst fällt darauf auf — Uptime, Temperatur und WLAN
-sehen normal aus. Neu bauen und flashen.
+Die aktuelle ESPectre-Version legt diese immer an, dort liefe also ältere
+Firmware, und nichts sonst fiele darauf auf — Uptime, Temperatur und WLAN
+sähen normal aus. Dann hilft nur neu bauen und flashen.
+
+Bevor du das tust: **prüfe, ob die Entities nur woanders liegen.** Ein in
+Home Assistant umbenanntes Gerät behält den alten Slug auf allen bereits
+angelegten Entities und bekommt für neu angelegte den neuen. Ein einziges
+Gerät antwortet dann unter zwei Präfixen gleichzeitig — beobachtet mit
+`sensor.test1_movement_score` neben `sensor.zuhause_test1_uptime`, beide
+mit dem Anzeigenamen „test11“. Eine Suche nach dem einen Präfix findet die
+Entities des anderen nicht und lässt das Gerät halb verschwunden aussehen.
+
+Echolot fällt darauf nicht herein: der Resolver vergleicht das Attribut
+`friendly_name`, das Home Assistant unabhängig vom Slug auf
+„&lt;Gerätename&gt; &lt;Entity-Name&gt;“ setzt. Wenn die Diagnose die
+Entities dennoch nicht findet, ist **Entities in Home Assistant suchen**
+auf der Gerätekarte der erste Griff — nicht der Neuflash.
 
 **Die CSI-Diagnosen wurden nie abgerufen.** `CSI Accepted Rate` und die
 übrigen Raten veröffentlichen nur auf Anforderung. Unberührt stehen sie

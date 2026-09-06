@@ -1,8 +1,12 @@
 """Tests for the device diagnosis.
 
-Several cases carry the values actually read off the first two devices
-this project ever ran on, so the findings stay tied to a failure that
-really happened rather than to one imagined for a test.
+Several cases carry values actually read off the first two devices this
+project ever ran on, so the findings stay tied to real readings rather
+than to imagined ones.
+
+One exception is marked below: the missing-sensing-entities case is
+constructed. The device 0.12.6 cited for it was not actually missing
+them — see the 0.12.8 entry in CHANGELOG.md.
 """
 
 import os
@@ -57,8 +61,10 @@ def test_an_unreported_threshold_says_nothing():
 
 
 def test_a_device_answering_without_its_sensing_entities_is_a_blocker():
-    # test11: every diagnostic and control entity, none of the three that
-    # matter.
+    # A device answering with its diagnostic and control entities but
+    # none of the three that matter. Hypothetical, not observed: the
+    # device 0.12.6 blamed turned out to have all three under a second
+    # entity-id prefix (see 0.12.8 and test_entity_resolver.py).
     finding = health.check_core_entities({"entity_calibrate"}, reachable=True)
     assert finding is not None
     assert finding.severity == "blocker"

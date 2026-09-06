@@ -114,3 +114,39 @@ def test_matching_ignores_case_differences():
     device = FakeDevice("flur", "Flur Unten")
     states = [state("binary_sensor.flur_unten_motion_detected", "flur unten motion detected")]
     assert "entity_motion" in entity_resolver.resolve(device, states)
+
+
+def test_one_device_whose_entity_ids_carry_two_different_prefixes():
+    """Observed on real hardware, and the reason this matches on names.
+
+    A device renamed in Home Assistant keeps the old slug on the entities
+    that already existed and mints new ones under the new slug. The result
+    is a single device answering under two prefixes at once — here the
+    sensing entities under `test1_` and everything else under
+    `zuhause_test1_`, with `test11` as the display name throughout.
+
+    No prefix guess can resolve that. The friendly_name attribute can,
+    because Home Assistant sets it to "<device name> <entity name>"
+    regardless of which slug the id ended up with.
+    """
+    # Echolot node names use hyphens; Home Assistant turns those into
+    # underscores when it builds an entity id.
+    device = FakeDevice("zuhause-test1", friendly_name="test11")
+    states = [
+        # Minted after the rename.
+        state("binary_sensor.test1_motion_detected", "test11 Motion Detected"),
+        state("sensor.test1_movement_score", "test11 Movement Score"),
+        state("number.test1_threshold", "test11 Threshold"),
+        # Minted before it, under the original name.
+        state("button.zuhause_test1_recalibrate", "test11 Recalibrate"),
+        state("sensor.zuhause_test1_uptime", "test11 Uptime"),
+    ]
+
+    found = entity_resolver.resolve(device, states)
+
+    assert found == {
+        "entity_motion": "binary_sensor.test1_motion_detected",
+        "entity_movement_score": "sensor.test1_movement_score",
+        "entity_threshold": "number.test1_threshold",
+        "entity_calibrate": "button.zuhause_test1_recalibrate",
+    }
