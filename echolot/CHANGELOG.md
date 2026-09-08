@@ -38,6 +38,22 @@ Minute der Couch-Aufnahme liest sich weiterhin als leer — das ist die
 bekannte Grenze aus 0.13.1 und steht als eigener Test da, statt umgangen
 zu werden.
 
+**Nebenbei, Kosmetik.** Das Icon war der generische WLAN-Fächer — er sagt
+„funkt" und sonst nichts, und die halbe Seitenleiste sieht so aus. Neu ist
+ein Sonarbild: Sender in der Mitte, Reichweitenringe, Peillinie, ein
+Kontakt. Das ist, was „Echolot" heißt und was das Gerät tut. Der Kontakt
+ist bernsteinfarben, weil Weiß mit Schein wie ein Mond aussieht; drei
+Ringe statt vier, weil der vierte bei 44 px die Ecken zustellt; die
+Peillinie bleibt, weil Ringe plus Punkt sonst eine Zielscheibe sind. Die
+Geometrie steht als `tools/make_brand.py` im Repo, nicht nur als PNG.
+
+Dazu die Beschreibungen: Add-on, Repository und README sagen jetzt zuerst,
+was das Ding *tut*, statt gegen wen es antritt, und nennen die Grenzen —
+Räume statt Positionen, Kalibrierung nötig, bislang ein Raum und ein
+Gerät. Und vier Stellen zeigten noch auf den alten Repository-Namen
+`claudeandI`; GitHub leitet zwar um, aber die URL, die man in Home
+Assistant einträgt, sollte stimmen.
+
 ## 0.13.1
 
 Eine zwanzigminütige Aufnahme — Raum leer, während jemand durch die übrige

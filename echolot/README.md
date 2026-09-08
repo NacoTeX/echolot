@@ -1,13 +1,13 @@
 # Echolot
 
-Wi-Fi CSI presence detection for Home Assistant, self-hosted and
-license-free. Echolot compiles per-device [ESPectre][espectre] firmware,
-flashes it from the browser, groups devices into zones, and publishes those
-zones back to Home Assistant as occupancy sensors.
+Wi-Fi CSI presence detection for Home Assistant. Echolot compiles per-device
+[ESPectre][espectre] firmware, flashes it from the browser, groups devices
+into zones, and publishes those zones back to Home Assistant as occupancy
+sensors.
 
-It exists because the commercial alternative in this space is closed
-source, and a presence sensor that decides whether your lights turn on
-should not be.
+It reads Channel State Information — how a body moving through a room
+disturbs the Wi-Fi between the board and the router — so detection needs no
+wearable, no phone, no camera and no line of sight.
 
 ## What it does
 
@@ -21,6 +21,13 @@ network instead, from any browser.
 OR-logic reacts instantly and drops out just as instantly, so zones also
 carry a hold time and optional enter/exit thresholds — see [DOCS.md](DOCS.md).
 
+**Calibration and slow presence.** Record a session from a device, label
+what was happening, and Echolot learns what the room does when it is empty.
+Motion detection reacts in a second and is what switches a light on; it
+cannot see somebody sitting still. Measured over a minute, a still-occupied
+room crosses its threshold about ten times as often as an empty one, and
+that becomes a second, slower signal that keeps a zone occupied.
+
 **Dashboard.** Each device plots its movement score against its detection
 threshold, pre-filled from Home Assistant's recorder. On BLE-capable boards
 a browser can subscribe to the device's telemetry directly for a 40 ms
@@ -32,7 +39,7 @@ Add this repository in Home Assistant under **Settings → Add-ons → Add-on
 Store → ⋮ → Repositories**:
 
 ```
-https://github.com/NacoTeX/claudeandI
+https://github.com/NacoTeX/echolot
 ```
 
 Then install **Echolot** and start it. The interface lives in the sidebar.
@@ -46,7 +53,7 @@ toolchain into `/data/platformio`, where it stays for subsequent builds.
 
 ## Documentation
 
-- [DOCS.md](DOCS.md) — configuration, zones, dashboard, troubleshooting
+- [DOCS.md](DOCS.md) — configuration, zones, calibration, dashboard, troubleshooting
 - [CHANGELOG.md](CHANGELOG.md) — what changed, and why
 
 ## Developing
@@ -58,11 +65,16 @@ python tools/validate_firmware.py  # every board through `esphome config`
 python tools/check_metadata.py     # add-on manifest sanity
 ```
 
-All three run in CI on every pull request.
+All three run in CI on every pull request. `tools/make_brand.py` regenerates
+`icon.png` and `logo.png`.
 
-## Licence
+## Licence and affiliation
 
 GPL-3.0-or-later, matching ESPectre, whose component this builds on.
+
+Echolot is an independent project, not affiliated with ESPectre's
+maintainers, with Home Assistant, or with any commercial CSI presence
+product.
 
 [espectre]: https://github.com/francescopace/espectre
 [ewt]: https://esphome.github.io/esp-web-tools/

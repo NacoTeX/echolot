@@ -5,5 +5,5 @@ labels:
   org.opencontainers.image.title: Echolot
   org.opencontainers.image.description: >-
     Self-hosted Wi-Fi CSI presence detection hub built on ESPectre.
-  org.opencontainers.image.source: https://github.com/NacoTeX/claudeandI
+  org.opencontainers.image.source: https://github.com/NacoTeX/echolot
   org.opencontainers.image.licenses: GPL-3.0-or-later

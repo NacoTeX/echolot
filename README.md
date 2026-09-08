@@ -1,64 +1,112 @@
-# Echolot
+<p align="center">
+  <img src="echolot/logo.png" alt="Echolot" width="440">
+</p>
 
-A self-hosted, license-free alternative to [TOMMY](https://www.tommysense.com) —
-a Wi-Fi CSI (Channel State Information) presence detection system for Home
-Assistant.
+<p align="center">
+  Wi-Fi CSI presence detection for Home Assistant —<br>
+  build the firmware, flash it from the browser, group the sensors into zones.
+</p>
 
-TOMMY is a closed-source, lifetime-license product built on ESP32 hardware.
-This project provides the same core idea (detect motion/presence by
-measuring how bodies disturb Wi-Fi signals between a router and a cheap
-ESP32 sensor — no wearable or phone required) as an open-source Home
-Assistant add-on, built on top of [ESPectre](https://github.com/francescopace/espectre)
-(GPLv3), which already exposes a native ESPHome component for CSI-based
-presence sensing.
+---
 
-## Why
+Echolot is a Home Assistant add-on that turns inexpensive ESP32 boards into
+presence sensors. It reads Channel State Information: the way a body moving
+through a room disturbs the Wi-Fi signal between the board and the router.
+Detection therefore needs no wearable, no phone, no camera, and no line of
+sight — the sensor can sit behind furniture.
 
-TOMMY's approach is proprietary: closed firmware core, per-device lifetime
-license, cloud-adjacent tooling. ESPectre implements the same CSI-sensing
-principle as an open ESPHome component. This add-on wraps ESPectre with the
-device-management, zone/topology, and dashboard tooling that TOMMY provides
-out of the box, so you get comparable functionality without a license.
+The sensing itself is [ESPectre][espectre], an ESPHome component. Echolot is
+everything around it: per-device firmware builds, browser-based flashing,
+over-the-air updates, zones, calibration, a live dashboard, and MQTT
+discovery so each zone arrives in Home Assistant as an occupancy sensor.
 
-## Project status
+## Installation
 
-This is being built in phases. See [`echolot/DOCS.md`](echolot/DOCS.md)
-for add-on installation instructions.
+In Home Assistant, open **Settings → Add-ons → Add-on Store → ⋮ →
+Repositories** and add:
 
-- [x] **Phase 1 — Add-on skeleton.** HAOS add-on with a Python (FastAPI)
-      backend, Ingress-enabled web UI, and ESPHome bundled as an in-container
-      dependency (verified via an `/api/esphome/version` health check).
-- [x] **Phase 2 — Device flashing.** Browser-based flashing via ESP Web
-      Tools (Web Serial API), with the backend compiling a per-device
-      ESPectre YAML (name, Wi-Fi credentials, algorithm parameters) into a
-      `.bin` on demand.
-- [x] **Phase 3 — Zones & configuration.** UI for grouping devices into
-      zones with OR-logic presence aggregation, and pushing the detection
-      threshold / triggering recalibration to already-flashed devices via
-      the HA entities ESPectre already exposes. (The `mvs`/`ml` algorithm
-      choice turned out to be compile-time only — ESPectre doesn't expose
-      it as a runtime entity — so that still goes through a Phase 2
-      rebuild, not a runtime push.)
-- [x] **Phase 4 — Dashboard/visualizer.** A glanceable dashboard tile per
-      device/zone, plus an optional direct Web Bluetooth connection
-      (BLE-capable boards only) for ESPectre's native-rate telemetry —
-      implemented against ESPectre's documented BLE game-client protocol,
-      but not exercised against real hardware (no BLE-capable
-      browser/device in this environment).
-- [x] **Phase 5 — Polish.** Traffic-load estimation (per device and in
-      total), parameter presets, and zones published to Home Assistant as
-      occupancy sensors over MQTT discovery. Native Matter was deliberately
-      not implemented: once a zone is a Home Assistant entity, HA's own
-      HomeKit and Matter bridges export it, which is a far smaller and more
-      reliable path than doing Matter commissioning in here.
+```
+https://github.com/NacoTeX/echolot
+```
 
-## Installing this add-on repository
+Then install **Echolot** and start it; the interface appears in the sidebar.
 
-In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**,
-then add this repository's URL. The **Echolot** add-on will then be
-available to install.
+Requires 64-bit Home Assistant OS or Supervised (`aarch64` or `amd64`).
+Espressif ships no ESP-IDF toolchain for 32-bit hosts, so `armv7` is not
+supported. The first firmware build downloads roughly 2 GB of ESP-IDF and
+cross toolchain into `/data/platformio`, where it stays.
 
-## License
+## What it does
 
-ESPectre itself is GPLv3-licensed. This project, as a derivative work built
-around it, is also released under GPLv3 — see [`LICENSE`](LICENSE).
+- **Firmware from the browser.** Choose a board, enter Wi-Fi credentials,
+  press build. Echolot renders an ESPHome configuration, compiles it, and
+  serves the result as an [ESP Web Tools][ewt] manifest, so flashing runs
+  over USB from Chrome or Edge with no toolchain on your machine. Later
+  updates go over the network.
+- **Zones.** A zone groups devices into one presence state, with a hold time
+  and optional enter/exit thresholds, and is published to Home Assistant over
+  MQTT discovery.
+- **Calibration.** Record a session from a device, label what was happening,
+  and let Echolot learn what the room does when it is empty.
+- **Presence from the crossing rate.** Motion detection reacts in a second
+  and switches lights on; it cannot see somebody sitting still. Measured over
+  a minute, a still-occupied room crosses its threshold about ten times as
+  often as an empty one, and Echolot uses that as a second, slower signal
+  that keeps a zone occupied. See [DOCS.md][docs].
+- **Dashboard.** Movement score against detection threshold per device,
+  pre-filled from Home Assistant's recorder, plus a fused second opinion per
+  zone that reports disagreement instead of hiding it.
+
+## Scope and limits
+
+Stated plainly, because CSI sensing is easy to oversell:
+
+- **Rooms, not positions.** At 20 MHz channel bandwidth the range resolution
+  is about 15 m, and a single antenna gives no direction. Echolot answers
+  "is this room occupied", not "where in the room".
+- **The slow signal needs calibration.** Rate-based presence requires a
+  recording of at least ten minutes of the empty room. Without one, a device
+  contributes nothing to it rather than guessing.
+- **Measured in one room, on one device, so far.** The numbers in
+  [DOCS.md][docs] come from real recordings on real hardware, and that is
+  the whole sample.
+- **The direct BLE telemetry path is untested on hardware.** It is
+  implemented against ESPectre's documented protocol; no BLE-capable browser
+  was available to exercise it.
+- **No native Matter.** Once a zone is a Home Assistant entity, Home
+  Assistant's own HomeKit and Matter bridges export it — a smaller and more
+  reliable path than commissioning Matter in here.
+
+## Documentation
+
+- [`echolot/DOCS.md`][docs] — configuration, zones, calibration, dashboard,
+  troubleshooting, and why things work the way they do
+- [`echolot/CHANGELOG.md`](echolot/CHANGELOG.md) — what changed, and why
+
+## Development
+
+```sh
+cd echolot
+pip install -r app/requirements.txt -r requirements-dev.txt
+python -m pytest tests -q          # unit tests
+python tools/validate_firmware.py  # every board through `esphome config`
+python tools/check_metadata.py     # add-on manifest sanity
+```
+
+All three run in CI on every pull request. `tools/make_brand.py` regenerates
+the icon and logo.
+
+## Licence and affiliation
+
+GPL-3.0-or-later, matching [ESPectre][espectre], whose component this builds
+on. See [`LICENSE`](LICENSE).
+
+Echolot is an independent project, not affiliated with ESPectre's
+maintainers, with Home Assistant, or with [TOMMY][tommy] — the commercial
+CSI presence sensor whose closed firmware and per-device licence prompted
+this one. No claim of feature parity is made.
+
+[espectre]: https://github.com/francescopace/espectre
+[ewt]: https://esphome.github.io/esp-web-tools/
+[docs]: echolot/DOCS.md
+[tommy]: https://www.tommysense.com

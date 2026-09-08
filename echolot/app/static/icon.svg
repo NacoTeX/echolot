@@ -1,15 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Echolot">
+  <!-- A sonar scope, matching icon.png: emitter, range rings, bearing, one
+       contact. Generated shapes live in tools/make_brand.py; this is the
+       same geometry by hand, because a 1 KB SVG beats a PNG in the tab. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#0d5c58"/>
-      <stop offset="1" stop-color="#312e81"/>
+      <stop offset="0" stop-color="#103e52"/>
+      <stop offset="1" stop-color="#121a42"/>
     </linearGradient>
   </defs>
   <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-  <g fill="none" stroke="#5eead4" stroke-linecap="round">
-    <path d="M14 40a22 22 0 0 1 36 0" stroke-width="3.4" opacity="0.5"/>
-    <path d="M20 43a15 15 0 0 1 24 0" stroke-width="3.4" opacity="0.72"/>
-    <path d="M26 46a8.5 8.5 0 0 1 12 0" stroke-width="3.4" opacity="0.9"/>
+  <path d="M32 32 51.97 14.02" stroke="#5eead4" stroke-width="0.77" opacity="0.39"/>
+  <g fill="none" stroke="#5eead4">
+    <circle cx="32" cy="32" r="12.16" stroke-width="1.92" opacity="0.90"/>
+    <circle cx="32" cy="32" r="19.84" stroke-width="1.54" opacity="0.61"/>
+    <circle cx="32" cy="32" r="26.88" stroke-width="1.22" opacity="0.39"/>
   </g>
-  <circle cx="32" cy="50" r="5" fill="#5eead4"/>
+  <circle cx="32" cy="32" r="3.33" fill="#5eead4"/>
+  <circle cx="51.97" cy="14.02" r="5.6" fill="#fcd34d" opacity="0.17"/>
+  <circle cx="51.97" cy="14.02" r="2.82" fill="#fcd34d"/>
 </svg>
