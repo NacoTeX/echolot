@@ -1,5 +1,7 @@
 """Renders per-device ESPHome YAML and drives `esphome compile` for it."""
 
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -106,10 +108,65 @@ def reset_toolchain(board) -> bool:
     return True
 
 
+#: The ESPectre commit this Echolot release builds against.
+#:
+#: Pinned rather than tracking `main`, so a given Echolot version always
+#: produces the same firmware base. Moving it is a deliberate act: bump
+#: this, rebuild a device, and check it still senses.
+#:
+#: Honest limitation: this repository cannot compile firmware in CI yet,
+#: so "pinned" here means reproducible, not verified. See DOCS.md.
+ESPECTRE_REF = "ce23b0b61b95b87a75f12681a0e576d8f3df5d1b"
+
+#: Fields that must never reach a manifest or a log.
+_SECRET_CONFIG_FIELDS = ("wifi_password",)
+
+
+def esphome_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("esphome")
+    except Exception:  # noqa: BLE001 - a missing version is not a build failure
+        return "unbekannt"
+
+
+def config_fingerprint(device: Device) -> str:
+    """A short hash of what was built, with the secrets left out."""
+    payload = device.config.model_dump()
+    for field in _SECRET_CONFIG_FIELDS:
+        payload.pop(field, None)
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def build_manifest(device: Device, firmware: Path | None) -> dict:
+    """What this artefact was made of, so a later question has an answer."""
+    manifest = {
+        "espectre_ref": ESPECTRE_REF,
+        "esphome_version": esphome_version(),
+        "board": device.config.board,
+        "config_hash": config_fingerprint(device),
+        # Lets a later reader tell a device flashed with a closed fallback
+        # AP from one flashed before 0.13.5, when that AP had no password.
+        "fallback_ap_secured": True,
+        "built_at": time.time(),
+    }
+    if firmware is not None and firmware.exists():
+        digest = hashlib.sha256()
+        with firmware.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        manifest["firmware_sha256"] = digest.hexdigest()
+        manifest["firmware_bytes"] = firmware.stat().st_size
+    return manifest
+
+
 def render_yaml(device: Device) -> str:
     board = get_board(device.config.board)
     template = _env.get_template("espectre.yaml.j2")
     return template.render(
+        espectre_ref=ESPECTRE_REF,
         device_name=device.config.name,
         friendly_name=device.config.friendly_name or device.config.name,
         board=board,
@@ -128,6 +185,7 @@ def render_yaml(device: Device) -> str:
         api_encryption=device.config.api_encryption,
         api_encryption_key=device.api_encryption_key,
         ota_password=device.ota_password,
+        fallback_password=device.fallback_password,
     )
 
 
@@ -369,6 +427,7 @@ def run_build(device: Device) -> None:
             build_log=build_log,
             firmware_bin=str(firmware.relative_to(ddir)),
             chip_family=board.chip_family,
+            build_manifest=build_manifest(device, firmware),
         )
     except subprocess.TimeoutExpired:
         record(status=BuildStatus.ERROR, build_error="Build timed out after 30 minutes")

@@ -53,7 +53,13 @@ wifi:
 {% endif %}
   # Reachable for reconfiguration if the credentials above stop working.
   ap:
+    # The portal behind this AP takes Wi-Fi credentials, and it comes up
+    # exactly when something is already wrong — a router swap, a changed
+    # passphrase. An open AP is therefore at its most open at the least
+    # convenient moment. The password is per device and shown in the
+    # add-on next to the other credentials.
     ssid: {{ (device_name ~ " Fallback") | tojson }}
+    password: {{ fallback_password | tojson }}
 
 captive_portal:
 
@@ -148,7 +154,10 @@ external_components:
   - source:
       type: git
       url: https://github.com/francescopace/espectre
-      ref: main
+      # A commit, not a branch. With `main` the same Echolot release
+      # builds a different firmware next week, and "it worked yesterday"
+      # stops being a usable sentence. Moved deliberately, in a release.
+      ref: {{ espectre_ref }}
       path: src/cpp/frontend/esphome/components
     components: [espectre]
 

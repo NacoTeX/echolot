@@ -152,6 +152,19 @@ def new_ota_password() -> str:
     return secrets.token_hex(16)
 
 
+def new_fallback_password() -> str:
+    """The access point a device opens when it cannot reach the Wi-Fi.
+
+    That AP used to have no password at all. It carries a captive portal
+    that takes Wi-Fi credentials, and it comes up exactly when something
+    is already wrong — a router swap, a changed passphrase — so it is
+    most likely to be open at the least convenient moment. ESPHome wants
+    at least eight characters; sixteen hex is comfortably past that and
+    still typable off a screen.
+    """
+    return secrets.token_hex(8)
+
+
 class Device(BaseModel):
     id: str
     created_at: float
@@ -173,6 +186,15 @@ class Device(BaseModel):
     #: meaningless without it, so a device without one simply does not
     #: contribute that signal.
     presence_profile: dict | None = None
+    #: Guards the fallback access point. Generated per device, and shown
+    #: alongside the other credentials so it can be typed in when the
+    #: portal actually comes up.
+    fallback_password: str = Field(default_factory=new_fallback_password)
+    #: What the last successful build was made of: the ESPectre commit,
+    #: the ESPHome version, the board, a hash of the configuration with
+    #: the secrets left out, and the firmware's own checksum. Written so
+    #: "which firmware is on this device" has an answer later.
+    build_manifest: dict | None = None
     #: Baked into the firmware, and needed again when Home Assistant adopts
     #: the device — so it has to be readable here, not just generated.
     api_encryption_key: str = Field(default_factory=new_api_key)
@@ -233,6 +255,7 @@ class Device(BaseModel):
         return {
             "api_encryption_key": self.api_encryption_key,
             "ota_password": self.ota_password,
+            "fallback_password": self.fallback_password,
         }
 
     def apply_update(self, patch: DeviceUpdate) -> None:

@@ -175,6 +175,39 @@ war der Restbrocken am Ende der Aufnahme. Die bekannte Fehlstelle aus
 0.13.1 ist damit weg — **nicht weil besser erkannt wird, sondern weil
 das Bruchstück verschwunden ist.**
 
+### Und zwei Punkte aus der zweiten Prioritätsstufe
+
+**Die Firmwarebasis war nicht festgenagelt.** Das Template holte ESPectre
+von `ref: main` und `requirements.txt` erlaubte ESPHome ab 2024.9 ohne
+Obergrenze — derselbe Echolot-Release baute nächsten Monat also eine
+andere Firmware, und „gestern lief es noch" hörte auf, ein brauchbarer
+Satz zu sein. Jetzt ein konkreter ESPectre-Commit
+(`ce23b0b6…`) und ESPHome auf die Nebenversionsreihe begrenzt
+(`>=2026.8.2,<2026.9`).
+
+Dazu ein **Build-Manifest** pro erfolgreichem Build: ESPectre-Commit,
+ESPHome-Version, Board, ein Hash der Konfiguration **ohne** Geheimnisse,
+Prüfsumme und Größe der Firmware. Damit hat „welche Firmware ist da
+eigentlich drauf" später eine Antwort.
+
+*Offene Einschränkung:* „gepinnt" heißt hier reproduzierbar, nicht
+verifiziert. Dieses Repository kompiliert in der CI keine echte Firmware —
+die Konfigurationsvalidierung fängt keine C/C++-Konflikte. Ein echter
+Compile-Smoke für je ein Xtensa- und ein RISC-V-Board bleibt offen.
+
+**Der Notfall-Access-Point hatte kein Passwort.** Er trägt ein Captive
+Portal, das WLAN-Zugangsdaten entgegennimmt, und er geht genau dann auf,
+wenn ohnehin etwas kaputt ist — Routerwechsel, geändertes Passwort. Offen
+ist er also ausgerechnet im ungünstigsten Moment. Jedes Gerät bekommt ein
+eigenes Passwort, sichtbar bei den übrigen Zugangsdaten, wo es auch
+gebraucht wird: wenn das Gerät nicht erreichbar ist, kommt man an das
+Add-on ja noch heran.
+
+Ein erzeugtes Passwort ändert nichts an Hardware, die schon geflasht ist —
+es muss einkompiliert werden. Deshalb keine stille Migration: die
+Übersicht meldet für jedes Gerät, das vor 0.13.5 gebaut wurde, dass Neu
+bauen und Flashen den offenen AP schließt.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.
