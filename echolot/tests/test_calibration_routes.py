@@ -21,7 +21,14 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp(prefix="echolot-tests-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import calibration, devices as dev_mod, feature_api, ha_sampler, server  # noqa: E402
+from app import (  # noqa: E402
+    calibration,
+    devices as dev_mod,
+    feature_api,
+    ha_sampler,
+    live_presence,
+    server,
+)
 from app.devices import BuildStatus, Device, DeviceCreate  # noqa: E402
 
 
@@ -49,7 +56,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(calibration, "store", store)
     monkeypatch.setattr(feature_api.calibration, "store", store)
 
-    opened: list["FakeSubscription"] = []
+    opened: list = []
 
     class FakeSubscription:
         def __init__(self, entity_ids, on_state, *, loop=None):
@@ -65,12 +72,18 @@ def api(tmp_path, monkeypatch):
         def stop(self):
             self.connected = False
 
-    sampler = ha_sampler.HomeAssistantSampler(store.ingest, FakeSubscription)
+    # The live service owns the subscription; a recording attaches to it.
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    monkeypatch.setattr(feature_api, "live", live)
+    sampler = ha_sampler.HomeAssistantSampler(store.ingest, live)
     monkeypatch.setattr(feature_api, "sampler", sampler)
 
     device = make_device()
     monkeypatch.setattr(dev_mod, "get_device", lambda did: device if did == "probe" else None)
     monkeypatch.setattr(feature_api.devices, "get_device", dev_mod.get_device)
+    # The lifespan reconciles the live streams from list_devices(), so this
+    # has to answer too — otherwise startup closes the stream again.
+    monkeypatch.setattr(dev_mod, "list_devices", lambda: [device])
 
     with TestClient(server.app) as client:
         yield client, sampler, store, opened
@@ -86,7 +99,9 @@ def test_starting_a_recording_through_the_api_actually_samples(api):
     assert opened, "es wurde kein Abonnement geöffnet"
     assert "sensor.probe_movement_score" in opened[-1].entity_ids
 
-    # And a state change from that subscription reaches the session.
+    # And a state change from that subscription reaches the session. Note
+    # the subscription was opened by the live service at reconcile time,
+    # before the recording started — which is the point of it.
     opened[-1].on_state(
         "sensor.probe_movement_score",
         {"state": "0.42", "last_updated": "2026-09-08T12:00:00+00:00"},
@@ -128,5 +143,6 @@ def test_direct_api_is_no_longer_a_precondition(api, monkeypatch):
     device = make_device()
     device.config.direct_api = False
     monkeypatch.setattr(feature_api.devices, "get_device", lambda did: device)
+    feature_api.live.reconcile([device])
 
     assert client.post("/api/calibrations", json={"device_id": "probe"}).status_code == 201

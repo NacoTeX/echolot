@@ -10,7 +10,16 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from app import calibration, devices, fusion, ha_sampler, presence_rate, telemetry, zones
+from app import (
+    calibration,
+    devices,
+    fusion,
+    ha_sampler,
+    live_presence,
+    presence_rate,
+    telemetry,
+    zones,
+)
 
 router = APIRouter()
 
@@ -67,9 +76,15 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
     )
 
 
-#: Samples for a recording come from Home Assistant, not from the device's
-#: Direct API — see app/ha_sampler.py for why that API is out of reach.
-sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest)
+#: One subscription per device, running whether or not anyone is
+#: recording: the crossing rate is measured over the last minute, and
+#: there is no last minute unless something has been listening.
+live = live_presence.LivePresence()
+
+#: A recording attaches to that stream rather than opening its own. Samples
+#: come from Home Assistant, not from the device's Direct API — see
+#: app/ha_sampler.py for why that API is out of reach.
+sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest, live)
 
 
 @router.get("/api/calibrations")
@@ -189,6 +204,37 @@ def calibration_presence_rate(session_id: str) -> dict:
         }
 
     return {"profile": profile.as_dict(), "labels": labels}
+
+
+@router.post("/api/calibrations/{session_id}/apply")
+def apply_presence_rate(session_id: str) -> dict:
+    """Adopt this session's empty-room rate as the device's baseline.
+
+    Until a device has one, it contributes nothing to rate-based presence:
+    without knowing what the room does empty there is no "well above" to
+    measure against.
+    """
+    samples = calibration.store.samples(session_id)
+    session = calibration.store.get(session_id)
+    if samples is None or session is None:
+        raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
+
+    profile = presence_rate.learn_baseline(samples)
+    if profile is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Zu wenig mit „Raum leer“ markiertes Material, um daraus einen "
+                "Maßstab zu machen."
+            ),
+        )
+
+    device = devices.get_device(session["device_id"])
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    device.presence_profile = profile.as_dict()
+    devices.save_device(device)
+    return {"status": "ok", "profile": device.presence_profile}
 
 
 @router.get("/api/calibrations/{session_id}/export.csv")

@@ -28,7 +28,8 @@ def _resume_recordings() -> None:
 async def lifespan(application):
     # Recordings are started from plain `def` routes, which FastAPI runs in
     # a worker thread; the sampler needs this loop to schedule onto.
-    feature_api.sampler.bind(asyncio.get_running_loop())
+    feature_api.live.bind(asyncio.get_running_loop())
+    await feature_api.live.run(devices.list_devices)
     telemetry.hub.add_listener(calibration.store.ingest)
     await telemetry.hub.start(devices.list_devices)
     _resume_recordings()
@@ -37,6 +38,7 @@ async def lifespan(application):
             yield
     finally:
         feature_api.sampler.stop_all()
+        feature_api.live.stop_all()
         telemetry.hub.remove_listener(calibration.store.ingest)
         await telemetry.hub.stop()
 

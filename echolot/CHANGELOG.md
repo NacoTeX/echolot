@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.13.2
+
+Der Raten-Detektor aus 0.13.0/0.13.1 war bisher ein Auswertungswerkzeug:
+er konnte eine fertige Aufnahme beurteilen, aber nichts im laufenden
+Betrieb. Jetzt hängt er an der Zone.
+
+- **Jedes Gerät hat ein dauerhaftes Abonnement.** Die Rate ist eine
+  Aussage über die letzte Minute, und es gibt keine letzte Minute, wenn
+  niemand zugehört hat. Bisher wurden Messwerte nur während einer
+  Aufzeichnung gesammelt. Jedes gebaute Gerät bekommt jetzt ein eigenes
+  Abonnement und ein rollendes Drei-Minuten-Fenster; alle 30 Sekunden
+  wird die Geräteliste abgeglichen, damit neue Geräte eines bekommen und
+  abgestürzte neu verbunden werden.
+- **Eine Aufzeichnung öffnet kein zweites Abonnement mehr,** sondern
+  hängt sich an das vorhandene. Zwei Abonnements auf dieselben drei
+  Entities funktionieren zwar, aber das zweite bringt nichts, und das
+  erste weiß ohnehin schon, was angekommen ist.
+- **Das Fenster wird relativ zum neuesten Messwert beschnitten,** nicht
+  zur Wanduhr — sonst leert ein Gerät, das gerade nichts meldet, sein
+  eigenes Fenster, und genau dann fehlt der Verlauf, der die Frage
+  beantworten soll.
+- **`POST /api/calibrations/{id}/apply`** übernimmt den Leerwert einer
+  Sitzung als Maßstab des Geräts.
+- **Die Zone bekommt die Rate als zweite Quelle.** Sie kann nur
+  hinzufügen, nie widersprechen: die Bewegungserkennung reagiert in einer
+  Sekunde und ist das, was Licht einschaltet; die Rate braucht eine
+  Minute und hält, solange jemand da ist. Ein Veto der langsamen Quelle
+  über die schnelle würde das Licht ausschalten, während jemand im Raum
+  steht.
+- **Ohne Maßstab schweigt ein Gerät,** es stimmt nicht für „leer". Ein
+  Zuhause, in dem niemand kalibriert hat, verhält sich exakt wie vorher.
+
+Geprüft gegen die drei echten Aufnahmen: die Couch-Sitzung schaltet die
+Zone über den Ratenpfad auf belegt, die Leer-Aufnahme nicht. Die letzte
+Minute der Couch-Aufnahme liest sich weiterhin als leer — das ist die
+bekannte Grenze aus 0.13.1 und steht als eigener Test da, statt umgangen
+zu werden.
+
 ## 0.13.1
 
 Eine zwanzigminütige Aufnahme — Raum leer, während jemand durch die übrige

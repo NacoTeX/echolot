@@ -15,6 +15,12 @@ signal-processing practice rather than anything specific to one product:
     configured span before it clears. This is what makes a zone usable
     for lighting automations.
 
+  * **Überschreitungsrate** — a second, slower opinion from
+    app/presence_rate.py: how often the room crossed in the last minute
+    against what it does empty. It cannot react in a second, so it never
+    replaces the motion path; it keeps a zone occupied while somebody sits
+    there without moving, which is the case motion alone cannot see.
+
 That gives three externally visible states — `clear`, `detected`,
 `holding` — where `holding` still counts as occupied but tells the UI
 that a countdown is running.
@@ -45,6 +51,9 @@ class ZoneEvaluation:
     hold_remaining: float
     raw_motion: bool
     score: float | None
+    #: True when the crossing rate said so, False when it said otherwise,
+    #: None when no device in the zone has a baseline to judge against.
+    rate_occupied: bool | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +104,7 @@ def evaluate(
     exit_threshold: float | None,
     hold_seconds: float,
     now: float,
+    rate_occupied: bool | None = None,
 ) -> ZoneEvaluation:
     """Advance the machine and describe the result.
 
@@ -107,6 +117,15 @@ def evaluate(
     hold_seconds = max(0.0, hold_seconds)
 
     raw = _raw_decision(runtime, motion, score, enter_threshold, exit_threshold)
+    # A second, slower opinion: how often this room crossed in the last
+    # minute compared with what it does empty (see app/presence_rate.py).
+    # Measured on real hardware, someone sitting still crosses on the order
+    # of ten times as often as an empty room does — but only over a window,
+    # never in a single reading, which is why it cannot replace `motion`
+    # and only ever adds to it. Motion switches on in a second; the rate
+    # keeps the zone on while somebody sits there not moving.
+    if rate_occupied:
+        raw = True
     runtime.raw = raw
 
     if raw:
@@ -129,4 +148,5 @@ def evaluate(
         hold_remaining=round(remaining, 1),
         raw_motion=raw,
         score=score,
+        rate_occupied=rate_occupied,
     )

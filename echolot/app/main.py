@@ -243,6 +243,37 @@ async def _missing_device_state() -> dict:
     return {"available": False, "motion": None, "error": "Gerät existiert nicht mehr"}
 
 
+def _zone_rate_verdict(zone) -> bool | None:
+    """What the crossing rate says about this zone, or None if it cannot say.
+
+    OR across the members, like the motion aggregation above: one device
+    seeing an elevated rate is enough. A device with no learned baseline
+    contributes nothing — not a "vacant" vote — so a zone where nobody has
+    calibrated behaves exactly as it did before.
+
+    Imported lazily because app.feature_api imports app.main.
+    """
+    from app import feature_api, presence_rate
+
+    verdict = None
+    for device_id in zone.device_ids:
+        device = devices.get_device(device_id)
+        if device is None or not device.presence_profile:
+            continue
+        profile = presence_rate.profile_from_dict(device.presence_profile)
+        stream = feature_api.live.stream(device_id)
+        if profile is None or stream is None:
+            continue
+        window = stream.window(profile.window_seconds)
+        result = presence_rate.evaluate(
+            profile, window, occupied_now=bool(verdict)
+        )
+        if not result["available"]:
+            continue
+        verdict = bool(verdict) or bool(result["occupied"])
+    return verdict
+
+
 async def compute_zone_state(zone: zones.Zone) -> dict:
     """Aggregate a zone's members and run its presence state machine.
 
@@ -284,6 +315,7 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
         exit_threshold=zone.exit_threshold,
         hold_seconds=zone.hold_seconds,
         now=time.monotonic(),
+        rate_occupied=_zone_rate_verdict(zone),
     )
     return {"available": any_available, "members": members, **verdict.as_dict()}
 
