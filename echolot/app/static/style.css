@@ -106,6 +106,14 @@ main {
 
 /* The mark sits next to the wordmark rather than above it: the header is
    already three rows tall, and Ingress gives it less height than a page. */
+.header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -125,8 +133,110 @@ header h1 {
 }
 
 .subtitle {
-  margin: 0.3rem 0 1.75rem;
+  margin: 0.2rem 0 0;
   color: var(--muted);
+}
+
+/* ---------- Header status chip ---------- */
+
+.header-actions {
+  position: relative;
+  flex: none;
+  padding-top: 0.35rem;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.42rem 0.85rem;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--glass-raised);
+  box-shadow: inset 0 1px 0 var(--sheen);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.status-chip:hover { border-color: var(--accent-line); }
+
+.status-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+/* Colour is not the only carrier: the chip's own text says what the dot
+   means, so a red/green difference is never the whole message. */
+.status-dot[data-state="ok"] { background: var(--ok); }
+.status-dot[data-state="warn"] { background: var(--warn); }
+.status-dot[data-state="err"] { background: var(--err); }
+
+.status-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 20;
+  width: min(24rem, calc(100vw - 3rem));
+  padding: 1rem 1.1rem 0.9rem;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  /* Raised glass rather than plain glass: this floats over content, and
+     over an atmospheric backdrop the lighter surface is what separates
+     it from whatever it covers. */
+  background: var(--glass-raised);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--shadow-raised), inset 0 1px 0 var(--sheen);
+}
+
+.status-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.74rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.status-panel h2 + * { margin-top: 0; }
+.status-panel .checkbox-field + h2,
+.status-panel div + h2 { margin-top: 1.1rem; }
+
+.status-panel .status-panel-problem {
+  display: block;
+  width: 100%;
+  margin-bottom: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--glass-well);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-panel .status-panel-problem:hover { border-color: var(--accent-line); }
+
+.status-panel-links {
+  display: flex;
+  gap: 1rem;
+  margin: 1rem 0 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--hairline);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 620px) {
+  .header-top { flex-direction: column; }
+  .header-actions { align-self: flex-start; padding-top: 0; }
+  .status-panel { right: auto; left: 0; }
 }
 
 /* visionOS-style segmented control rather than an underline rail.
@@ -611,6 +721,190 @@ button:disabled {
 .device-card,
 .zone-card { margin-bottom: 0; }
 
+/* ---------- Collapsible cards ---------- */
+/*
+   A device card used to be a 500px wall whether or not you wanted any of
+   it, so a list of rooms did not fit on a screen. It is a <details> now:
+   the summary is the list entry — name, board, live state, build state —
+   and everything else is one click away. Native <details> rather than a
+   JS accordion, so the keyboard and the browser's own find-in-page work.
+*/
+
+.device-card,
+#create-device {
+  padding: 0;
+}
+
+.device-summary,
+.card-summary {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.1rem 1.6rem;
+  cursor: pointer;
+  list-style: none;
+  border-radius: inherit;
+}
+
+.device-summary::-webkit-details-marker,
+.card-summary::-webkit-details-marker { display: none; }
+
+/* The disclosure arrow is drawn rather than inherited, so it can sit on
+   the left of a flex row and turn with the card. */
+.device-summary::before,
+.card-summary::before {
+  content: "";
+  flex: none;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-right: 2px solid var(--faint);
+  border-bottom: 2px solid var(--faint);
+  transform: rotate(-45deg);
+  transition: transform 0.16s var(--ease);
+}
+
+.device-card[open] > .device-summary::before,
+#create-device[open] > .card-summary::before {
+  transform: rotate(45deg);
+}
+
+.device-summary:hover::before,
+.card-summary:hover::before { border-color: var(--accent); }
+
+.device-summary:focus-visible,
+.card-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.device-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.device-title {
+  font-size: 1.05rem;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.device-summary-state {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: none;
+}
+
+/* The live reading on the closed row. Without it a collapsed list would
+   say nothing about the rooms, which is the one thing worth scanning for. */
+.summary-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.summary-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.summary-dot[data-state="on"] { background: var(--ok); }
+.summary-dot[data-state="off"] { background: var(--faint); }
+.summary-dot[data-state="warn"] { background: var(--warn); }
+
+.card-summary {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+  color: var(--faint);
+}
+
+.card-summary-hint {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.device-body,
+#create-device > .device-form,
+#create-device > #device-form-error {
+  padding: 0 1.6rem;
+}
+
+.device-body { padding-bottom: 1.4rem; }
+#create-device > #device-form-error { margin-bottom: 1.4rem; }
+
+/* ---------- Groups inside a card ---------- */
+
+.device-section {
+  border-top: 1px solid var(--hairline);
+}
+
+.device-section > summary {
+  padding: 0.7rem 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.88rem;
+  font-weight: 550;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.device-section > summary::-webkit-details-marker { display: none; }
+
+.device-section > summary::before {
+  content: "";
+  flex: none;
+  width: 0.34rem;
+  height: 0.34rem;
+  border-right: 2px solid var(--faint);
+  border-bottom: 2px solid var(--faint);
+  transform: rotate(-45deg);
+  transition: transform 0.16s var(--ease);
+}
+
+.device-section[open] > summary::before { transform: rotate(45deg); }
+
+/* The same disclosure arrow for the tuning blocks in the forms, so the
+   page has one way of saying "there is more under here" rather than two. */
+.tuning > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tuning > summary::-webkit-details-marker { display: none; }
+
+.tuning > summary::before {
+  content: "";
+  flex: none;
+  width: 0.34rem;
+  height: 0.34rem;
+  border-right: 2px solid var(--faint);
+  border-bottom: 2px solid var(--faint);
+  transform: rotate(-45deg);
+  transition: transform 0.16s var(--ease);
+}
+
+.tuning[open] > summary::before { transform: rotate(45deg); }
+.device-section > summary:hover { color: var(--text); }
+.device-section-body { padding: 0 0 1rem; }
+
 .device-card-header {
   display: flex;
   justify-content: space-between;
@@ -625,6 +919,7 @@ button:disabled {
   letter-spacing: -0.01em;
 }
 
+.device-summary-state .status,
 .device-card-header .status {
   font-size: 0.78rem;
   font-weight: 600;
@@ -636,7 +931,7 @@ button:disabled {
 }
 
 .device-meta {
-  margin: 0.35rem 0 0.9rem;
+  margin: 0;
   color: var(--muted);
   font-size: 0.83rem;
 }
@@ -1077,6 +1372,15 @@ esp-web-install-button { display: inline-flex; }
   .device-card-header { flex-wrap: wrap; gap: 0.4rem; }
   .device-card-header h3 { flex: 1 1 auto; min-width: 0; }
 
+  /* On a phone the state moves under the name rather than squeezing it. */
+  .device-summary { flex-wrap: wrap; padding: 0.9rem 1.1rem; }
+  .device-summary-state { width: 100%; padding-left: 1.1rem; }
+  .device-body,
+  #create-device > .device-form,
+  #create-device > #device-form-error { padding-inline: 1.1rem; }
+  .card-summary { flex-wrap: wrap; padding: 0.9rem 1.1rem; }
+  .card-summary-hint { margin-left: 0; width: 100%; padding-left: 0.9rem; }
+
   .device-actions button,
   .device-actions esp-web-install-button,
   esp-web-install-button button[slot="activate"] { flex: 1 1 auto; }
@@ -1239,7 +1543,10 @@ esp-web-install-button { display: inline-flex; }
 /* Ein Kontrollkästchen mit Erklärtext darunter: Kästchen links, Text
    rechts, und der Erklärtext bricht unter der Beschriftung um statt
    neben dem Kästchen zu kleben. */
-.device-form .checkbox-field {
+/* Shared by the firmware options and the header's view switches: a box,
+   a label, and a hint under the label rather than trailing after it. */
+.device-form .checkbox-field,
+.status-panel .checkbox-field {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.2rem 0.55rem;
@@ -1250,14 +1557,18 @@ esp-web-install-button { display: inline-flex; }
   min-width: 0;
 }
 
-.device-form .checkbox-field input {
+.device-form .checkbox-field input,
+.status-panel .checkbox-field input {
   margin-top: 0.15rem;
 }
 
-.device-form .checkbox-field .field-hint {
+.device-form .checkbox-field .field-hint,
+.status-panel .checkbox-field .field-hint {
   display: block;
   margin-top: 0.2rem;
 }
+
+.status-panel .checkbox-field + .checkbox-field { margin-top: 0.75rem; }
 
 /* Ein aufklappbarer Block gehört nicht in eine Rasterspalte: zugeklappt
    wäre er eine schmale Zeile, aufgeklappt ein Streifen neben leerem Platz.

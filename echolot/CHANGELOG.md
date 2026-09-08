@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.13.4
+
+Oberfläche: die Geräteliste war eine Wand.
+
+- **Eine Gerätekarte ist jetzt eine Liste.** Vorher war jede Karte rund
+  500 px hoch, ob man den Inhalt wollte oder nicht — zwei Geräte füllten
+  den Bildschirm, fünf Räume wären unbenutzbar gewesen. Zugeklappt zeigt
+  eine Karte Name, Board, Profil, Live-Zustand und Build-Zustand; alles
+  andere steckt in Untergruppen dahinter. Gemessen an derselben Ansicht:
+  1914 px vorher, rund 690 px nachher.
+- **Native `<details>`,** kein selbstgebautes Akkordeon, damit Tastatur
+  und Seitensuche weiter funktionieren. Der Offen-Zustand überlebt das
+  Neuzeichnen — die Liste rendert beim Bauen alle paar Sekunden neu, und
+  ohne das klappt jede offene Karte unter der lesenden Person zu.
+- **Das Anlegen-Formular klappt weg,** sobald es Geräte gibt. Ob jemand es
+  selbst geöffnet hat, wird am Klick auf die Zusammenfassung erkannt und
+  nicht am `toggle`-Ereignis: `toggle` kann eine Person nicht von der
+  Zeile unterscheiden, die das Formular bei leerer Liste öffnet, und es
+  feuert asynchron — eine Sperre um die Zuweisung wäre längst wieder
+  aufgehoben, wenn das Ereignis eintrifft.
+- **Der Systemzustand steht in der Kopfzeile,** auf jedem Tab. Vorher war
+  er nur auf der Übersicht zu sehen, also unsichtbar, während man
+  woanders arbeitete. Der Chip nennt die Anzahl offener Hinweise im Text
+  und nicht nur über die Farbe des Punkts, öffnet dieselbe Liste, und ein
+  Klick darin springt auf den zuständigen Tab.
+- **Zwei Ansichts-Schalter** dazu: Aktualisieren aussetzen (hält jeden
+  Poller an, damit ein Log stehen bleibt) und Gerätekarten offen
+  anzeigen. Beide im `localStorage` — Gewohnheiten des Browsers, keine
+  Konfiguration, die das Add-on tragen sollte.
+- **Der Web-Serial-Hinweis erscheint nur noch auf unsicheren Seiten**
+  (`window.isSecureContext`). Er stand vorher bei jedem Besuch da, auch
+  über HTTPS, wo Flashen ohnehin funktioniert. Dauerhafte Warnungen sind
+  der Grund, warum Warnungen nicht gelesen werden.
+- Aufklappbare Blöcke haben überall denselben gezeichneten Pfeil statt
+  teils des Browser-Dreiecks, und die Erklärung zu den Entity-IDs steht
+  jetzt bei den Entity-IDs statt in einem Absatz über der ganzen Liste.
+
+Geprüft im echten Browser gegen die laufende App, bei 1100 px und 400 px,
+zugeklappt und aufgeklappt, samt Statuspanel.
+
 ## 0.13.3
 
 Kalibrierung aus dem Verlauf, statt sie aufzuzeichnen.

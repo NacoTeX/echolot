@@ -155,8 +155,13 @@ async function loadOverview() {
     loading.className = "status status-err";
     body.hidden = true;
     empty.hidden = true;
+    markStatusUnreachable();
     return;
   }
+
+  // The chip is on every tab, so it is updated before the overview panel
+  // decides whether it has anything to show.
+  renderStatusChip(data.problems);
 
   loading.hidden = true;
 
@@ -189,9 +194,130 @@ for (const btn of document.querySelectorAll(".tab-btn")) {
   });
 }
 
+// --- View preferences -------------------------------------------------
+//
+// Two switches, both about reading rather than about the system: pausing
+// the refresh so a log or a number stays put while you read it, and
+// keeping device cards open. They live in localStorage because they are
+// per-browser habits, not configuration the add-on should carry.
+
+const PREFS = { pause: "echolot.pause", expand: "echolot.expandCards" };
+
+function readPref(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch (err) {
+    // Private windows and blocked site data throw on access rather than
+    // returning null, and a preference is never worth a broken page.
+    return false;
+  }
+}
+
+function writePref(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch (err) {
+    /* nothing to do — the switch still works for this page view */
+  }
+}
+
+//: Read by every poller on the page, so one switch stops all of them.
+function refreshPaused() {
+  return readPref(PREFS.pause);
+}
+
+// --- Header status chip -----------------------------------------------
+
+//: How the overall state is worded. A count beats a colour: "3 Hinweise"
+//: says what to expect before the panel is even open.
+function chipState(problems) {
+  if (!problems.length) return { state: "ok", text: "läuft" };
+  return {
+    state: "err",
+    text: problems.length === 1 ? "1 Hinweis" : `${problems.length} Hinweise`,
+  };
+}
+
+function renderStatusChip(problems) {
+  const dot = document.querySelector("#status-chip .status-dot");
+  const text = document.getElementById("status-chip-text");
+  const { state, text: label } = chipState(problems);
+  dot.dataset.state = state;
+  text.textContent = label;
+
+  const list = document.getElementById("status-panel-problems");
+  list.innerHTML = problems.length
+    ? problems
+        .map(
+          (p) =>
+            `<button type="button" class="status-panel-problem" data-goto="${escapeHtml(p.tab)}">` +
+            `${escapeHtml(p.message)}</button>`,
+        )
+        .join("")
+    : '<p class="hint">Keine offenen Hinweise.</p>';
+}
+
+function markStatusUnreachable() {
+  const dot = document.querySelector("#status-chip .status-dot");
+  dot.dataset.state = "warn";
+  document.getElementById("status-chip-text").textContent = "kein Backend";
+  document.getElementById("status-panel-problems").innerHTML =
+    '<p class="status status-err">Das Add-on antwortet nicht.</p>';
+}
+
+const chipButton = document.getElementById("status-chip");
+const chipPanel = document.getElementById("status-panel");
+
+function closeStatusPanel() {
+  chipPanel.hidden = true;
+  chipButton.setAttribute("aria-expanded", "false");
+}
+
+chipButton.addEventListener("click", (evt) => {
+  evt.stopPropagation();
+  const open = chipPanel.hidden;
+  chipPanel.hidden = !open;
+  chipButton.setAttribute("aria-expanded", String(open));
+});
+
+// Clicking anywhere else closes it — including a problem entry, which also
+// switches tab through the shared [data-goto] handler above.
+document.addEventListener("click", (evt) => {
+  if (!chipPanel.hidden && !chipPanel.contains(evt.target)) closeStatusPanel();
+});
+document.addEventListener("keydown", (evt) => {
+  if (evt.key === "Escape" && !chipPanel.hidden) {
+    closeStatusPanel();
+    chipButton.focus();
+  }
+});
+chipPanel.addEventListener("click", (evt) => {
+  if (evt.target.closest("[data-goto]")) closeStatusPanel();
+});
+
+for (const [id, key] of [["pref-pause", PREFS.pause], ["pref-expand", PREFS.expand]]) {
+  const box = document.getElementById(id);
+  box.checked = readPref(key);
+  box.addEventListener("change", () => {
+    writePref(key, box.checked);
+    document.dispatchEvent(new CustomEvent("echolot:prefs"));
+  });
+}
+
+// --- Polling ----------------------------------------------------------
+
+//: The overview tab wants fresh numbers every ten seconds; the chip is
+//: content with half a minute, and asking more often would cost Home
+//: Assistant requests for a single word.
+const CHIP_EVERY_N_TICKS = 3;
+let tick = 0;
+
 loadOverview();
 setInterval(() => {
-  // Only while the tab is actually showing: a hidden panel polling every
-  // ten seconds costs Home Assistant requests for nothing.
-  if (!document.getElementById("tab-overview").hidden) loadOverview();
+  if (refreshPaused()) return;
+  const visible = !document.getElementById("tab-overview").hidden;
+  tick += 1;
+  // The overview renders from the same response, so a visible tab needs
+  // no second request for the chip.
+  if (visible || tick % CHIP_EVERY_N_TICKS === 0) loadOverview();
 }, OVERVIEW_REFRESH_MS);

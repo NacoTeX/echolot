@@ -89,6 +89,55 @@ version.
 With nothing set up yet, the tab is a three-step setup path instead — a
 status report about an empty system has nothing to report.
 
+### Die Oberfläche
+
+Zwei Dinge, die nach dem Ausprobieren mit echten Geräten geändert wurden.
+
+**Eine Gerätekarte ist eine Liste, keine Wand.** Vorher war jede Karte rund
+500 px hoch, ob man den Inhalt wollte oder nicht — zwei Geräte füllten den
+Bildschirm, und eine Wohnung mit fünf Räumen wäre unbenutzbar gewesen. Die
+Karte ist jetzt ein `<details>`: die zugeklappte Zeile trägt Name, Board,
+Erkennungsprofil, den Live-Zustand und den Build-Zustand, und das ist genau
+das, wofür man eine Liste überfliegt. Alles andere — Netzwerk, Diagnose,
+Verschlüsselungscode, Entity-IDs, Build-Protokoll — steckt in eigenen
+Untergruppen dahinter.
+
+Native `<details>` und nicht ein selbstgebautes Akkordeon, damit Tastatur
+und die Seitensuche des Browsers weiter funktionieren. Der Zustand
+überlebt das Neuzeichnen: die Liste wird beim Bauen alle paar Sekunden neu
+gerendert, und ohne das würde jede offene Karte unter der lesenden Person
+zuklappen. Eine Karte öffnet sich von selbst, wenn sie die einzige ist,
+wenn gerade gebaut wird, oder wenn ein Build fehlschlägt — Letzteres nur
+beim Übergang, sonst spränge sie nach jedem Zuklappen wieder auf.
+
+Das Anlegen-Formular klappt genauso weg, sobald es Geräte gibt. Ob jemand
+es selbst geöffnet hat, wird am Klick auf die Zusammenfassung erkannt und
+nicht am `toggle`-Ereignis: `toggle` kann eine Person nicht von der Zeile
+unterscheiden, die das Formular bei leerer Liste aufklappt, und es feuert
+asynchron.
+
+**Der Systemzustand steht in der Kopfzeile.** Vorher war er nur auf der
+Übersicht zu sehen, also unsichtbar, während man irgendwo anders arbeitete
+— ein fehlender `SUPERVISOR_TOKEN` fiel erst auf, wenn eine Gerätekarte
+„nicht verfügbar" meldete. Rechts oben steht jetzt auf jedem Tab ein Chip
+mit der Anzahl offener Hinweise; er öffnet dieselbe Liste, und ein Klick
+darin springt auf den zuständigen Tab. Die Zahl steht im Text, nicht nur
+in der Farbe des Punkts.
+
+Daneben zwei Schalter, die das Lesen betreffen und nicht das System:
+**Aktualisieren aussetzen** hält jeden Poller auf der Seite an, damit ein
+Log oder eine Zahl stehen bleibt, und **Gerätekarten offen anzeigen** für
+alle, die lieber alles sehen. Beide liegen im `localStorage`, weil sie
+Gewohnheiten des Browsers sind und keine Konfiguration, die das Add-on
+mitschleppen sollte. Die eigentliche Konfiguration — Log-Level,
+MQTT-Export — gehört in die Add-on-Optionen von Home Assistant und steht
+bewusst nicht doppelt hier.
+
+**Der Web-Serial-Hinweis erscheint nur, wo er zutrifft.** Er stand auf dem
+Geräte-Tab bei jedem Besuch, auch über HTTPS, wo Flashen ohnehin geht.
+Jetzt hängt er an `window.isSecureContext` — dauerhafte Warnungen sind der
+Grund, warum Warnungen nicht gelesen werden.
+
 ### Zones
 
 The **Zones** tab groups devices and reports "occupied" when *any*

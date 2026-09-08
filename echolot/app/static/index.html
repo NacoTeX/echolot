@@ -11,11 +11,60 @@
 <body>
   <main>
     <header>
-      <div class="brand">
-        <img src="static/icon.svg" alt="" width="44" height="44">
-        <h1>Echolot</h1>
+      <div class="header-top">
+        <div class="brand">
+          <img src="static/icon.svg" alt="" width="44" height="44">
+          <div>
+            <h1>Echolot</h1>
+            <p class="subtitle">WLAN-CSI-Präsenzerkennung für Home Assistant</p>
+          </div>
+        </div>
+
+        <!-- The system's own state used to be visible only on the overview
+             tab, so a broken MQTT bridge or a missing SUPERVISOR_TOKEN was
+             invisible while you worked anywhere else. This says it on every
+             tab, and opens the same problem list. -->
+        <div class="header-actions">
+          <button type="button" id="status-chip" class="status-chip"
+                  aria-expanded="false" aria-controls="status-panel">
+            <span class="status-dot" data-state="unknown"></span>
+            <span id="status-chip-text">wird geprüft…</span>
+          </button>
+
+          <div id="status-panel" class="status-panel" hidden>
+            <h2>Systemzustand</h2>
+            <div id="status-panel-problems"></div>
+
+            <h2>Ansicht</h2>
+            <label class="checkbox-field">
+              <input type="checkbox" id="pref-pause">
+              <span>Automatisch aktualisieren aussetzen
+                <span class="field-hint">
+                  Hält das Neuladen an, damit ein Log oder eine Zahl stehen
+                  bleibt, während du sie liest.
+                </span>
+              </span>
+            </label>
+            <label class="checkbox-field">
+              <input type="checkbox" id="pref-expand">
+              <span>Gerätekarten offen anzeigen
+                <span class="field-hint">
+                  Sonst zeigt jede Karte nur Name und Zustand, bis du sie
+                  aufklappst.
+                </span>
+              </span>
+            </label>
+
+            <p class="status-panel-links">
+              <a href="https://github.com/NacoTeX/echolot/blob/main/echolot/DOCS.md"
+                 target="_blank" rel="noreferrer">Dokumentation</a>
+              <a href="https://github.com/NacoTeX/echolot/blob/main/echolot/CHANGELOG.md"
+                 target="_blank" rel="noreferrer">Änderungen</a>
+            </p>
+          </div>
+        </div>
       </div>
-      <p class="subtitle">WLAN-CSI-Präsenzerkennung für Home Assistant</p>
+
       <nav class="tabs">
         <button class="tab-btn active" data-tab="overview">Übersicht</button>
         <button class="tab-btn" data-tab="dashboard">Dashboard</button>
@@ -169,17 +218,23 @@
     </section>
 
     <section id="tab-devices" class="tab-panel" hidden>
-      <div class="notice">
+      <!-- Only shown where it applies. Web Serial needs a secure context,
+           so on HTTPS or localhost this warning is noise on every visit —
+           and permanent noise is what stops warnings being read. -->
+      <div class="notice" id="web-serial-notice" hidden>
         Das Flashen nutzt die Web-Serial-Schnittstelle deines Browsers, die
         Chrome und Edge nur auf verschlüsselten Seiten (HTTPS) oder auf
-        <code>localhost</code> erlauben. Wenn du diese Ingress-Seite über
-        einfaches HTTP im LAN aufrufst, öffne sie über die HTTPS-Adresse von
-        Home Assistant — oder rufe Echolot direkt unter
-        <code>http://&lt;host&gt;:8099</code> von demselben Rechner aus auf.
+        <code>localhost</code> erlauben. Diese Seite läuft über einfaches
+        HTTP, also öffne sie über die HTTPS-Adresse von Home Assistant — oder
+        rufe Echolot direkt unter <code>http://&lt;host&gt;:8099</code> von
+        demselben Rechner aus auf.
       </div>
 
-      <section class="card">
-        <h2>Gerät anlegen</h2>
+      <details class="card" id="create-device">
+        <summary class="card-summary">
+          <span>Gerät anlegen</span>
+          <span class="card-summary-hint">Board, WLAN und Erkennungsprofil</span>
+        </summary>
         <form id="device-form" class="device-form">
           <label class="preset-label">Voreinstellung
             <select id="preset-select">
@@ -278,17 +333,13 @@
           <button type="submit">Gerät anlegen</button>
         </form>
         <p id="device-form-error" class="status status-err" hidden></p>
-      </section>
+      </details>
 
       <section>
         <h2>Geräte</h2>
         <p class="hint">
-          Sobald ein Gerät gebaut und geflasht ist, zeigt seine Karte den
-          aktuellen Bewegungszustand und erlaubt es, eine neue Schwelle zu
-          senden oder neu zu kalibrieren. Diese Werte kommen aus Home
-          Assistant über die Entity-IDs unter „HA-Entity-IDs“ — das sind
-          begründete Vermutungen, die du dort anpassen kannst, falls ein
-          Gerät als nicht verfügbar angezeigt wird.
+          Eine Karte aufklappen zeigt Zustand, Schwelle und alles zum Bauen,
+          Flashen und Prüfen.
         </p>
         <div id="device-list" class="device-list"></div>
       </section>
