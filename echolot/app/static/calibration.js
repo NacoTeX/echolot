@@ -26,11 +26,16 @@ async function loadCalibrationLab() {
       calibrationJson("api/devices"),
       calibrationJson("api/calibrations"),
     ]);
-    const eligible = devices.filter((d) => d.status === "success" && d.config.direct_api);
+    // Samples come from Home Assistant, not from the device's Direct API,
+    // so what a device needs here is entities Echolot has resolved — not
+    // direct_api, which it used to be filtered on.
+    const eligible = devices.filter(
+      (d) => d.status === "success" && (d.entity_movement_score || d.entity_motion),
+    );
     const select = document.getElementById("calibration-device");
     select.innerHTML = eligible.length
       ? eligible.map((d) => `<option value="${d.id}">${escapeHtml(d.config.friendly_name || d.config.name)}</option>`).join("")
-      : '<option value="">Kein Gerät mit Direkt-Telemetrie verfügbar</option>';
+      : '<option value="">Kein Gerät mit erkannten Entities verfügbar</option>';
     select.disabled = !eligible.length;
     document.querySelector("#calibration-form button").disabled = !eligible.length;
     activeCalibration = sessions.find((session) => session.status === "recording") || null;

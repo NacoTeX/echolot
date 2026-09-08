@@ -10,7 +10,7 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from app import calibration, devices, fusion, telemetry, zones
+from app import calibration, devices, fusion, ha_client, ha_sampler, telemetry, zones
 
 router = APIRouter()
 
@@ -67,6 +67,11 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
     )
 
 
+#: Samples for a recording come from Home Assistant, not from the device's
+#: Direct API — see app/ha_sampler.py for why that API is out of reach.
+sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest, ha_client.get_state)
+
+
 @router.get("/api/calibrations")
 def list_calibrations(device_id: str | None = None) -> list[dict]:
     return calibration.store.list(device_id=device_id)
@@ -78,18 +83,25 @@ def create_calibration(payload: dict) -> dict:
     device = devices.get_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
-    if device.status != devices.BuildStatus.SUCCESS or not device.config.direct_api:
+    if device.status != devices.BuildStatus.SUCCESS:
+        raise HTTPException(status_code=409, detail="Die Firmware wurde noch nicht gebaut")
+    if not device.entity_movement_score and not device.entity_motion:
         raise HTTPException(
             status_code=409,
-            detail="Das Gerät muss gebaut sein und Direkt-Telemetrie aktiviert haben",
+            detail=(
+                "Für dieses Gerät kennt Echolot keine Entities in Home Assistant. "
+                "Auf der Gerätekarte „Entities in Home Assistant suchen“ drücken."
+            ),
         )
     name = str(payload.get("name") or "").strip()
     if len(name) > 100:
         raise HTTPException(status_code=422, detail="Der Name darf höchstens 100 Zeichen haben")
     try:
-        return calibration.store.create(device_id, name)
+        session = calibration.store.create(device_id, name)
     except ValueError as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    sampler.start(device)
+    return session
 
 
 @router.post("/api/calibrations/{session_id}/label")
@@ -105,15 +117,32 @@ def label_calibration(session_id: str, payload: dict) -> dict:
 @router.post("/api/calibrations/{session_id}/stop")
 def stop_calibration(session_id: str) -> dict:
     try:
-        return calibration.store.stop(session_id)
+        session = calibration.store.stop(session_id)
     except KeyError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
+    _stop_sampling_if_idle(session["device_id"])
+    return session
 
 
 @router.delete("/api/calibrations/{session_id}", status_code=204)
 def delete_calibration(session_id: str) -> None:
+    session = calibration.store.get(session_id)
     if not calibration.store.delete(session_id):
         raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
+    if session is not None:
+        _stop_sampling_if_idle(session["device_id"])
+
+
+def _stop_sampling_if_idle(device_id: str) -> None:
+    """Keep polling only while this device still has a recording running.
+
+    Deleting one of two concurrent sessions must not silence the other.
+    """
+    still_recording = any(
+        s["status"] == "recording" for s in calibration.store.list(device_id=device_id)
+    )
+    if not still_recording:
+        sampler.stop(device_id)
 
 
 @router.get("/api/calibrations/{session_id}/export.csv")

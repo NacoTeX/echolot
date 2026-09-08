@@ -470,28 +470,39 @@ leere Zeile.
 genommen läge jeder Messpunkt im Jahr 1970 und vor denen aller anderen
 Geräte; Echolot nimmt deshalb die Ankunftszeit.
 
-### Wenn keine Samples ankommen
+### Woher das Calibration Lab seine Werte nimmt
 
-Die Aufzeichnung meldet es nach wenigen Sekunden selbst und nennt den
-Grund. Die vier Fälle und ihre jeweils eigene Antwort:
+**Aus Home Assistant, nicht vom Gerät.** ESPectres Direct-HTTP-API ist
+absichtlich für Fremdzugriffe gesperrt: der Dienst wird mit
+`for_first_party_portals()` konfiguriert und akzeptiert nur
+`https://espectre.dev` und zwei Geschwister-Domains; eine Anfrage ohne
+`Origin`-Header wird mit **403 „Origin required"** abgewiesen
+(`runtime/direct_http_service.h`, `direct_http_service_esp_idf.cpp`).
 
-| Meldung | Was los ist | Was hilft |
-| --- | --- | --- |
-| „Der Name … lässt sich nicht auflösen" | mDNS kommt nicht bis in den Add-on-Container | IP-Adresse auf der Gerätekarte eintragen |
-| „…weist die Verbindung … ab" | Port 62587 ist zu | Firmware ohne `direct_api` gebaut — neu bauen und flashen |
-| „…antwortet, kennt aber keinen der bekannten Telemetrie-Pfade" | Etwas lauscht und spricht HTTP, hat aber nichts an unseren Pfaden | ESPectre-Version mit anderem Endpunkt |
-| „…antwortet nicht innerhalb des Zeitlimits" | Paketverlust oder Client-Isolation im WLAN | WLAN-Einstellungen prüfen |
+Die Ausnahme, die upstream vorsieht —
+`CONFIG_ESPECTRE_DIRECT_DEV_ORIGINS_ENABLED`, das HTTP-Loopback-Origins
+zulässt — ist in **keiner Kconfig deklariert, die der ESPHome-Build
+erreicht**; sie existiert nur für die Micro-Python-Firmware und das
+Native-Frontend. Über `sdkconfig_options` gesetzt würde sie als
+unbekanntes Symbol verworfen und stillschweigend nichts bewirken.
 
-**Der häufigste Fall ist der erste.** Ohne eingetragene Adresse benutzt
-Echolot `<gerätename>.local`, und mDNS scheitert im Container häufig,
-obwohl dasselbe Gerät in Home Assistant tadellos läuft — Home Assistant
-löst den Namen an anderer Stelle auf. Die IP steht als
-`sensor.<gerät>_ip_address` in Home Assistant.
+Das Add-on nimmt deshalb dieselben drei Werte dort, wo sie ohnehin
+liegen: `movement_score`, `motion_detected` und `threshold` als
+Home-Assistant-Entities. Ein Gerät braucht dafür **kein** `direct_api`,
+sondern erkannte Entities — bei Bedarf „Entities in Home Assistant
+suchen" auf der Gerätekarte.
 
-Die Unterscheidung selbst kommt aus dem Ausnahmetyp, nicht aus dem
-Fehlertext: httpx verbirgt die eigentliche Ursache hinter „All connection
-attempts failed", darunter steckt aber ein `ConnectionRefusedError` oder
-ein `socket.gaierror`.
+Abgetastet wird zweimal pro Sekunde, aber nur **neue** Werte werden
+aufgezeichnet: Home Assistant stempelt jeden Zustand mit `last_updated`,
+und eine Abfrage, die denselben Wert wie zuvor liefert, ist eine
+Wiederholung und keine Messung. Sie mitzuzählen würde identische Zahlen
+aufhäufen und genau die Verteilung verzerren, aus der die Empfehlung
+berechnet wird. Die Schwelle wird seltener gelesen als der Messwert, weil
+sie sich nur beim Kalibrieren ändert.
+
+Das kostet einen Umweg über Home Assistant und etwas Auflösung gegenüber
+dem direkten Strom. Dafür braucht es nichts vom Gerät, was es Home
+Assistant nicht ohnehin schon gibt.
 
 ### Calibration Lab
 
