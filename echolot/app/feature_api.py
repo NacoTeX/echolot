@@ -6,6 +6,7 @@ device/zone application module.
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
@@ -14,7 +15,9 @@ from app import (
     calibration,
     devices,
     fusion,
+    ha_client,
     ha_sampler,
+    history_import,
     live_presence,
     presence_rate,
     telemetry,
@@ -117,6 +120,71 @@ def create_calibration(payload: dict) -> dict:
         raise HTTPException(status_code=409, detail=str(err)) from err
     sampler.start(device)
     return session
+
+
+def _moment(payload: dict, key: str) -> datetime:
+    """One end of the range, as an aware UTC datetime.
+
+    A browser's `datetime-local` field has no zone, so a bare value is
+    read as the add-on's local time — the same clock the person was
+    reading when they decided the room was empty.
+    """
+    raw = str(payload.get(key) or "").strip()
+    if not raw:
+        raise HTTPException(status_code=422, detail=f"„{key}“ fehlt")
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"„{key}“ ist kein gültiger Zeitpunkt"
+        ) from None
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    return moment.astimezone(timezone.utc)
+
+
+@router.post("/api/calibrations/import", status_code=201)
+async def import_calibration(payload: dict) -> dict:
+    """Turn a past stretch of Home Assistant history into a session.
+
+    The room being empty is the measurement the rate detector actually
+    needs, and it is also the one nobody wants to sit through. The
+    recorder has already made it.
+    """
+    device = devices.get_device(str(payload.get("device_id") or ""))
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    if not device.entity_movement_score:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Für dieses Gerät kennt Echolot keinen Bewegungswert in Home "
+                "Assistant. Auf der Gerätekarte „Entities in Home Assistant "
+                "suchen“ drücken."
+            ),
+        )
+
+    label = str(payload.get("label") or "empty")
+    start = _moment(payload, "start")
+    end = _moment(payload, "end")
+    try:
+        history_import.check_range(start, end)
+    except history_import.RangeRejected as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+
+    try:
+        samples = await history_import.fetch(device, start, end)
+    except ha_client.HomeAssistantUnavailable as err:
+        raise HTTPException(
+            status_code=502, detail=f"Home Assistant antwortet nicht: {err}"
+        ) from err
+
+    try:
+        return calibration.store.adopt(
+            device.id, samples, label=label, name=str(payload.get("name") or "")
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
 
 @router.post("/api/calibrations/{session_id}/label")

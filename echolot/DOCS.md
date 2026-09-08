@@ -705,6 +705,69 @@ die schnelle würde das Licht ausschalten, während jemand im Raum steht.
 auch. Das Ergebnis steht als `rate_occupied` im Zonenstatus: `true`,
 `false`, oder `null`, wenn kein Mitglied einen Maßstab hat.
 
+### Kalibrierung aus dem Verlauf
+
+Der Raten-Detektor braucht mindestens zehn Minuten aus dem leeren Raum.
+Das ist ausgerechnet die Messung, die niemand machen will — man muss die
+Wohnung verlassen und einen Timer stellen. Sie liegt aber längst vor:
+Home Assistant speichert den Bewegungswert in voller Auflösung, rund zehn
+Tage lang. An einer echten Instanz gemessen: 0,7 Messwerte pro Sekunde,
+wenn im Raum nichts passiert, 3,2 wenn doch.
+
+`POST /api/calibrations/import` liest einen vergangenen Zeitraum aus dem
+Recorder und legt daraus eine fertige Sitzung an — gleiche Form, gleiche
+Label, gleiche Auswertung wie eine aufgezeichnete. Im Calibration Lab
+gibt es dafür ein Formular mit Von/Bis und einem Label.
+
+Drei Dinge, die dabei nicht offensichtlich sind:
+
+**Der Bewegungswert gibt die Zeitachse vor, die anderen beiden werden
+mitgeführt.** Die drei Entities sind drei unabhängige Reihen: der Wert
+ändert sich dauernd, `motion` ein paarmal pro Stunde, die Schwelle
+vielleicht seit Tagen nicht. Als parallele Zeilen gelesen hätte fast
+jeder Messwert keine Schwelle — derselbe Fehler, den 0.13.1 auf dem
+Live-Pfad behoben hat, nur von der anderen Seite. Der Verlauf liefert zu
+jeder Entity ihren Zustand zu Beginn des Fensters, gestempelt mit dem
+Zeitpunkt der letzten *echten* Änderung; deshalb hat schon der erste
+Messwert eine Schwelle.
+
+**`significant_changes_only=0` muss ausdrücklich gesetzt werden.** Home
+Assistant liest den Parameter als `query.get(name, "1") != "0"` — anders
+als die Nachbarn `minimal_response` und `no_attributes`, die reine
+Anwesenheitsflaggen sind. Ein leerer Wert lässt den Filter also *an*, der
+Recorder lässt Messwerte weg, und eine Rate pro Sekunde Wanduhr würde
+danach messen, was den Filter überlebt hat.
+
+**Ein Import ist keine Aufzeichnung.** Er wartet nicht darauf, dass eine
+laufende Aufzeichnung endet, und die Sitzung wird fertig geschrieben
+statt gestartet und gestoppt. Sie trägt `source: "history"`, damit später
+niemand sie für etwas hält, das jemand durchgesessen hat.
+
+Grenzen: höchstens 90 Minuten pro Import (ein Zeitraum wird vollständig
+im Speicher zusammengeführt und als JSON abgelegt), mindestens 30
+Sekunden, und der Recorder muss den Zeitraum noch haben.
+
+**Was sich damit messen ließ.** Dreizehn Minuten Wohnzimmer um vier Uhr
+morgens, durch denselben Detektor: **22 von 22 Fenstern exakt null
+Überschreitungen**. Diese Aufnahme liegt als
+`tests/data/recorder_room_empty_night.json` im Repo und ist der Grund,
+warum `MIN_BASELINE_RATE` existiert — ohne den Mindestwert wäre der
+Maßstab dieses Raums null, und eine einzige Überschreitung würde als
+Präsenz gelten.
+
+Damit sind es drei Ruhestufen statt zwei:
+
+| | Überschreitungen/s |
+| --- | --- |
+| Wohnung leer (nachts) | **0,000** |
+| Raum leer, Wohnung belegt | 0,027 |
+| Person sitzt still im Raum | 0,261 |
+
+Die mittlere Zeile ist der richtige Maßstab für den Alltag, nicht die
+obere: mit 0,000 als Leerwert würde der Melder losgehen, sobald jemand
+im Flur vorbeiläuft. Der Unterschied zwischen 0,000 und 0,027 ist
+zugleich der Beleg, dass das Signal wirklich durch Wände geht.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

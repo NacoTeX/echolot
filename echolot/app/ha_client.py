@@ -105,19 +105,34 @@ async def list_states() -> list[dict]:
 
 
 async def get_history(entity_id: str, minutes: int) -> list[dict]:
-    """Past states for one entity, oldest first.
+    """Past states for one entity over the last `minutes`, oldest first."""
+    end = datetime.now(timezone.utc)
+    return await get_history_range(entity_id, end - timedelta(minutes=minutes), end)
+
+
+async def get_history_range(entity_id: str, start: datetime, end: datetime) -> list[dict]:
+    """Past states for one entity between two moments, oldest first.
 
     /api/history/period/<start> answers with a list of per-entity lists;
     `minimal_response` trims the intermediate entries down to state +
-    last_changed, which is all the sparkline needs.
+    last_changed, which is all either caller needs.
+
+    `significant_changes_only=0` matters and is easy to get wrong. Home
+    Assistant reads that parameter as `query.get(name, "1") != "0"`, so —
+    unlike `minimal_response` and `no_attributes` next to it, which are
+    presence flags — an empty value leaves the filter *on*. With it on,
+    the recorder drops readings, and a rate measured per second of wall
+    time would then be a rate of whatever survived the filter.
     """
     headers = _headers()
-    start = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
     params = {
         "filter_entity_id": entity_id,
         "minimal_response": "",
         "no_attributes": "",
+        "significant_changes_only": "0",
+        "end_time": end.isoformat(),
     }
+    start = start.isoformat()
     try:
         client = await get_client()
         resp = await client.get(f"/history/period/{start}", headers=headers, params=params)

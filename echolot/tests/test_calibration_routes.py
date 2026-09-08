@@ -146,3 +146,134 @@ def test_direct_api_is_no_longer_a_precondition(api, monkeypatch):
     feature_api.live.reconcile([device])
 
     assert client.post("/api/calibrations", json={"device_id": "probe"}).status_code == 201
+
+
+# --- importing history through the API ---------------------------------
+
+
+def history_states(count: int, *, start: float = 1_757_300_000.0, step: float = 1.0):
+    """`count` movement-score states, as Home Assistant hands them back."""
+    from datetime import datetime, timezone
+
+    return [
+        {
+            "state": f"{0.001 * (index % 3):.6f}",
+            "last_changed": datetime.fromtimestamp(
+                start + index * step, timezone.utc
+            ).isoformat(),
+        }
+        for index in range(count)
+    ]
+
+
+def test_importing_a_range_stores_a_finished_session(api, monkeypatch):
+    from app import ha_client
+
+    async def fake_history(entity_id, start, end):
+        if entity_id == "sensor.probe_movement_score":
+            return history_states(120)
+        if entity_id == "number.probe_threshold":
+            # As Home Assistant really answers: the state as it stood at
+            # the start of the window, stamped with when it actually last
+            # changed — which for a threshold nobody touches is days
+            # earlier. Every sample in the window has to inherit it.
+            return [{"state": "0.5", "last_changed": "2025-09-01T00:00:00+00:00"}]
+        return []
+
+    monkeypatch.setattr(ha_client, "get_history_range", fake_history)
+
+    client, _sampler, _store, _opened = api
+    response = client.post(
+        "/api/calibrations/import",
+        json={
+            "device_id": "probe",
+            "start": "2026-09-08T04:00:00+00:00",
+            "end": "2026-09-08T04:10:00+00:00",
+            "label": "empty",
+        },
+    )
+    assert response.status_code == 201, response.text
+    session = response.json()
+    assert session["status"] == "complete"
+    assert session["source"] == "history"
+    assert session["label_counts"]["empty"] == 120
+    # Carried forward, not left empty — the whole reason merge exists.
+    csv = client.get(f"/api/calibrations/{session['id']}/export.csv").text
+    rows = [line for line in csv.splitlines()[1:] if line]
+    assert len(rows) == 120
+    assert all(row.split(",")[2] == "0.5" for row in rows)
+
+
+def test_a_range_that_is_too_long_is_refused_before_home_assistant_is_asked(api, monkeypatch):
+    from app import ha_client
+
+    asked = []
+
+    async def fake_history(entity_id, start, end):
+        asked.append(entity_id)
+        return []
+
+    monkeypatch.setattr(ha_client, "get_history_range", fake_history)
+
+    client, _sampler, _store, _opened = api
+    response = client.post(
+        "/api/calibrations/import",
+        json={
+            "device_id": "probe",
+            "start": "2026-09-08T00:00:00+00:00",
+            "end": "2026-09-08T09:00:00+00:00",
+        },
+    )
+    assert response.status_code == 422
+    assert asked == [], "der Recorder wurde trotz Ablehnung abgefragt"
+
+
+def test_an_unparseable_moment_is_reported_as_such(api):
+    client, _sampler, _store, _opened = api
+    response = client.post(
+        "/api/calibrations/import",
+        json={"device_id": "probe", "start": "gestern abend", "end": "2026-09-08T04:10:00+00:00"},
+    )
+    assert response.status_code == 422
+    assert "start" in response.json()["detail"]
+
+
+def test_a_recorder_outage_is_reported_as_a_gateway_problem(api, monkeypatch):
+    from app import ha_client
+
+    async def boom(entity_id, start, end):
+        raise ha_client.HomeAssistantUnavailable("connection refused")
+
+    monkeypatch.setattr(ha_client, "get_history_range", boom)
+
+    client, _sampler, _store, _opened = api
+    response = client.post(
+        "/api/calibrations/import",
+        json={
+            "device_id": "probe",
+            "start": "2026-09-08T04:00:00+00:00",
+            "end": "2026-09-08T04:10:00+00:00",
+        },
+    )
+    assert response.status_code == 502
+
+
+def test_a_range_with_no_readings_is_refused_rather_than_stored_empty(api, monkeypatch):
+    from app import ha_client
+
+    async def nothing(entity_id, start, end):
+        return []
+
+    monkeypatch.setattr(ha_client, "get_history_range", nothing)
+
+    client, _sampler, _store, _opened = api
+    response = client.post(
+        "/api/calibrations/import",
+        json={
+            "device_id": "probe",
+            "start": "2026-09-08T04:00:00+00:00",
+            "end": "2026-09-08T04:10:00+00:00",
+        },
+    )
+    assert response.status_code == 409
+    assert client.get("/api/calibrations").json() == []
