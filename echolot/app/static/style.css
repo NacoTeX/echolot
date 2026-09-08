@@ -905,6 +905,39 @@ button:disabled {
 .device-section > summary:hover { color: var(--text); }
 .device-section-body { padding: 0 0 1rem; }
 
+/* ---------- Replay comparison ---------- */
+
+/* Wide content scrolls inside its own box; the page never does. */
+.table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.replay-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.replay-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0.4rem 0.8rem 0.4rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.replay-table td {
+  padding: 0.4rem 0.8rem 0.4rem 0;
+  border-bottom: 1px solid var(--hairline);
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-table tr:last-child td { border-bottom: none; }
+.replay-reference td { font-weight: 600; }
+.replay-unavailable td { color: var(--muted); white-space: normal; }
+
 /* ---------- Zone timeline ---------- */
 
 .timeline-list {

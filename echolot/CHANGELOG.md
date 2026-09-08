@@ -274,6 +274,33 @@ Raum nichts getan.
 Nebenbei ein Layoutfehler, der dabei sichtbar wurde: die Chips mit der
 Feinabstimmung einer Zone saßen auf den Knöpfen darunter.
 
+**Und Replay: neue Verfahren messen, ohne etwas anzufassen.** Das Review
+verlangt, Algorithmusänderungen erst im Vergleichsbetrieb zu bewerten —
+zu Recht, denn die vorhandenen Zahlen kommen aus einem Raum und wenigen
+Sitzungen, und eine Änderung, die eine davon verbessert, kann eine andere
+ruinieren.
+
+`GET /api/calibrations/{id}/replay` spielt eine vorhandene Aufnahme durch
+fünf Verfahren gleichzeitig: die Rate bei 15, 30, 60 und 120 Sekunden
+sowie den Bewegungs-Boolean des Geräts als Referenz. Ausgegeben werden je
+Verfahren Fehlalarme auf „Raum leer", Verpasstes auf „belegt" und —
+getrennt ausgewiesen — die Fenster, die sich nicht beurteilen ließen. Eine
+Erfolgsquote, die ihre Unbekannten versteckt, ist keine.
+
+**Es ist ausdrücklich schreibfrei:** kein Zonen-Runtime, kein
+Geräteprofil, nicht der Live-Evaluator. Messen darf nicht das Licht
+bewegen.
+
+**Und es sagt, wenn die Zahlen sich selbst messen.** Wird der Maßstab aus
+derselben Aufnahme gelernt, die dann bewertet wird, steht das als Warnung
+über der Tabelle; `?baseline=<andere Sitzung>` macht daraus einen echten
+Vergleich. Im Calibration Lab unter „Vergleich".
+
+Dabei noch ein Fehler gefunden: der Kalibrierungs-Tab rendert die
+Sitzungsliste alle zwei Sekunden neu, wodurch sich aufgeklappte Bereiche
+unter der lesenden Person wieder schlossen — und das gerade geholte
+Ergebnis wegwarfen. Derselbe Fix wie bei den Gerätekarten.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

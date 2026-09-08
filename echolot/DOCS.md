@@ -1003,6 +1003,41 @@ Prüfprotokoll; eine Historie auf der Platte wäre ein zweites
 Speicherproblem obendrauf (siehe oben), mit weniger Grund. Nach einem
 Neustart des Add-ons ist der Verlauf leer, und die Oberfläche sagt das.
 
+### Verfahren vergleichen, ohne etwas anzufassen
+
+Die vorhandenen Zahlen kommen aus einem Raum und wenigen Sitzungen. Eine
+Änderung, die eine davon verbessert, kann eine andere ruinieren — also
+wird sie zuerst gemessen und nicht verdrahtet.
+
+`GET /api/calibrations/{id}/replay` spielt eine vorhandene Aufnahme durch
+fünf Verfahren gleichzeitig: die Ereignisrate bei 15, 30, 60 und 120
+Sekunden, dazu den Bewegungs-Boolean des Geräts als Referenz — der fährt
+heute das Licht und ist der Maßstab, den ein neues Verfahren schlagen
+muss.
+
+Je Verfahren:
+
+| | |
+| --- | --- |
+| **Fehlalarm** | Fenster mit Label „Raum leer", die als belegt gelten |
+| **Verpasst** | Fenster mit „belegt", die als leer gelten |
+| **Nicht beurteilbar** | zu kurz oder Lücke — getrennt ausgewiesen |
+
+Die letzte Spalte ist Absicht: eine Erfolgsquote, die ihre Unbekannten
+versteckt, ist keine.
+
+**Schreibfrei.** Kein Zonen-Runtime, kein Geräteprofil, nicht der
+Live-Evaluator. Messen darf nicht das Licht bewegen.
+
+**Es sagt, wenn die Zahlen sich selbst messen.** Wird der Maßstab aus
+derselben Aufnahme gelernt, die dann bewertet wird, steht das als Warnung
+über der Tabelle. `?baseline=<andere Sitzung>` lernt den Leerwert aus
+einer anderen Sitzung und macht daraus einen echten Vergleich — was das
+Review für belastbare Aussagen ohnehin verlangt: nach ganzen Sitzungen
+trennen, und Schwellen nicht auf den Testdaten optimieren.
+
+Im Calibration Lab unter „Vergleich" an jeder Messung.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

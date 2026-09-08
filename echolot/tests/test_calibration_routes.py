@@ -293,3 +293,64 @@ def test_a_recording_that_cannot_sample_is_refused_not_started(api, monkeypatch)
     response = client.post("/api/calibrations", json={"device_id": "probe"})
     assert response.status_code == 409
     assert client.get("/api/calibrations").json() == [], "eine tote Sitzung blieb zurück"
+
+
+def test_the_replay_route_compares_strategies(api, monkeypatch):
+    """From the external review (step 8). Read-only, and it says whether
+    the numbers measured themselves."""
+    from app import ha_client
+
+    async def fake_history(entity_id, start, end):
+        if entity_id == "sensor.probe_movement_score":
+            return history_states(2600, step=0.25)
+        return []
+
+    monkeypatch.setattr(ha_client, "get_history_range", fake_history)
+    client, _sampler, _store, _opened = api
+
+    created = client.post(
+        "/api/calibrations/import",
+        json={
+            "device_id": "probe",
+            "start": "2026-09-08T04:00:00+00:00",
+            "end": "2026-09-08T04:12:00+00:00",
+            "label": "empty",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.get(f"/api/calibrations/{created.json()['id']}/replay")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["in_sample"] is True
+    assert [s["name"] for s in body["strategies"]][:1] == ["rate_15s"]
+
+
+def test_replaying_an_unknown_session_is_a_404(api):
+    client, _sampler, _store, _opened = api
+    assert client.get("/api/calibrations/gibtsnicht/replay").status_code == 404
+
+
+def test_an_unknown_baseline_session_is_a_404(api, monkeypatch):
+    from app import ha_client
+
+    async def fake_history(entity_id, start, end):
+        if entity_id == "sensor.probe_movement_score":
+            return history_states(300)
+        return []
+
+    monkeypatch.setattr(ha_client, "get_history_range", fake_history)
+    client, _sampler, _store, _opened = api
+    created = client.post(
+        "/api/calibrations/import",
+        json={
+            "device_id": "probe",
+            "start": "2026-09-08T04:00:00+00:00",
+            "end": "2026-09-08T04:05:00+00:00",
+            "label": "empty",
+        },
+    )
+    response = client.get(
+        f"/api/calibrations/{created.json()['id']}/replay?baseline=gibtsnicht"
+    )
+    assert response.status_code == 404

@@ -20,6 +20,7 @@ from app import (
     history_import,
     live_presence,
     presence_rate,
+    replay,
     telemetry,
     zones,
 )
@@ -291,6 +292,34 @@ def calibration_presence_rate(session_id: str) -> dict:
         }
 
     return {"profile": profile.as_dict(), "labels": labels}
+
+
+@router.get("/api/calibrations/{session_id}/replay")
+def replay_calibration(session_id: str, baseline: str | None = None) -> dict:
+    """Replay a session through several detectors and compare them.
+
+    Read-only: it touches no zone runtime, no device profile and not the
+    live evaluator, so asking cannot change what the lights do. That is
+    the point — the review asks for new algorithms to be measured before
+    they are wired to anything.
+
+    `baseline` names another session to learn the empty-room rate from.
+    Without it the rate is learned from the material being judged, which
+    measures itself; the response says so rather than leaving the reader
+    to notice.
+    """
+    samples = calibration.store.samples(session_id)
+    if samples is None:
+        raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
+
+    baseline_samples = None
+    if baseline:
+        baseline_samples = calibration.store.samples(baseline)
+        if baseline_samples is None:
+            raise HTTPException(
+                status_code=404, detail="Die Maßstab-Sitzung gibt es nicht"
+            )
+    return replay.compare(samples, baseline_samples=baseline_samples)
 
 
 @router.post("/api/calibrations/{session_id}/apply")
