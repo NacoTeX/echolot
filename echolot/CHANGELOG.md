@@ -208,6 +208,27 @@ es muss einkompiliert werden. Deshalb keine stille Migration: die
 Übersicht meldet für jedes Gerät, das vor 0.13.5 gebaut wurde, dass Neu
 bauen und Flashen den offenen AP schließt.
 
+**Das Speichern der Kalibrierung lag im Asyncio-Pfad.** Das Review sagt:
+erst messen. Gemessen an diesem Code, sechs Sitzungen mit zusammen
+120.000 Messwerten, kostet ein Schreibvorgang **171 ms** — er serialisiert
+jedes Mal die gesamte Historie und ersetzt die Datei. Das passierte alle
+hundert Messwerte direkt in `ingest`, und `ingest` läuft auf demselben
+Loop wie die Websocket-Abonnements.
+
+Der heiße Pfad markiert den Speicher jetzt nur als geändert; ein einzelner
+Writer-Thread schreibt, und ein Schwall wird zu einem Schreibvorgang
+zusammengefasst. Gemessen: **1673 ms → 7 ms** für tausend Messwerte im
+aufrufenden Pfad. Alles andere — anlegen, markieren, beenden, löschen,
+importieren — schreibt weiterhin synchron: das sind Benutzeraktionen,
+deren Ergebnis auf der Platte sein soll, wenn die Antwort zurückgeht.
+
+*Offene Einschränkung, ausdrücklich:* `json.dumps` gibt den GIL nicht
+frei. Ein Schreibvorgang hält den Interpreter also weiterhin rund 171 ms
+an — nur eben einmal statt zehnmal, und niemand wartet mehr darauf. Der
+eigentliche Umbau (append-orientiert oder SQLite) bleibt offen, samt
+Migration mit Sicherung. Der Preis der Änderung: ein Absturz kostet jetzt
+die letzten zwei Sekunden statt der letzten hundert Messwerte.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

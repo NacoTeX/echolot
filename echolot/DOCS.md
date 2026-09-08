@@ -927,6 +927,32 @@ hinzu-geodert.
 `raw_motion` bezeichnet damit wieder Bewegung. Welche Quelle die Zone
 gerade hält, steht in `trigger`: `motion`, `rate` oder nichts.
 
+### Wo geschrieben wird, und wo nicht
+
+Kalibrierungsdaten liegen als eine JSON-Datei. Jeder Schreibvorgang
+serialisiert die **gesamte** Historie und ersetzt die Datei — an diesem
+Code gemessen, sechs Sitzungen mit zusammen 120.000 Messwerten: 171 ms.
+Das ist für eine Gerätekartei völlig in Ordnung und für eine wachsende
+Messreihe nicht.
+
+Bis 0.13.5 passierte das alle hundert Messwerte direkt in `ingest`, und
+`ingest` läuft auf demselben Event-Loop wie die Websocket-Abonnements.
+Jetzt markiert der heiße Pfad den Speicher nur als geändert, ein einzelner
+Writer-Thread schreibt, und ein Schwall wird zu einem Schreibvorgang
+zusammengefasst: **1673 ms → 7 ms** für tausend Messwerte im aufrufenden
+Pfad.
+
+Alles andere schreibt weiterhin synchron — anlegen, markieren, beenden,
+löschen, importieren sind Benutzeraktionen, deren Ergebnis auf der Platte
+sein soll, wenn die Antwort zurückgeht.
+
+**Was das nicht löst:** `json.dumps` gibt den GIL nicht frei. Ein
+Schreibvorgang hält den Interpreter weiterhin rund 171 ms an — nur eben
+einmal statt zehnmal, und niemand wartet mehr darauf. Eine
+append-orientierte Aufzeichnung oder SQLite wäre die eigentliche Antwort;
+das steht aus, samt Migration mit Sicherung. Und ein Absturz kostet jetzt
+die letzten zwei Sekunden statt der letzten hundert Messwerte.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

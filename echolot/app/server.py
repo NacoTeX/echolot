@@ -47,6 +47,9 @@ async def lifespan(application):
             yield
     finally:
         feature_api.sampler.stop_all()
+        # The writer thread is a daemon; a shutdown must not drop the last
+        # couple of seconds of a recording because of it.
+        calibration.store.flush()
         feature_api.live.stop_all()
         telemetry.hub.remove_listener(calibration.store.ingest)
         await telemetry.hub.stop()

@@ -9,6 +9,7 @@ inputs instead of hiding them in an opaque model.
 import csv
 import io
 import json
+import logging
 import os
 import statistics
 import threading
@@ -17,6 +18,8 @@ import uuid
 from pathlib import Path
 
 from app.telemetry import Sample
+
+logger = logging.getLogger("echolot.calibration")
 
 LABELS = {"unlabelled", "empty", "moving", "still", "interference"}
 MAX_SAMPLES_PER_SESSION = 100_000
@@ -83,9 +86,16 @@ def recommendation(samples: list[dict]) -> dict | None:
 
 
 class CalibrationStore:
+    #: How long the writer waits before saving, so a burst of readings
+    #: becomes one write rather than one write per hundred samples.
+    COALESCE_SECONDS = 2.0
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._sessions: dict[str, dict] = {}
+        self._dirty = threading.Event()
+        self._writer_lock = threading.Lock()
+        self._writer = None
         self._load()
 
     def _load(self) -> None:
@@ -107,6 +117,53 @@ class CalibrationStore:
                 session["ended_at"] = time.time()
                 changed = True
         if changed:
+            self._save()
+
+    # --- persistence ------------------------------------------------------
+    #
+    # Writing is O(the whole history): every save serialises every session
+    # and replaces the file. Measured on this code — six sessions, 120 000
+    # samples — one save takes 171 ms, and it used to happen inline in
+    # `ingest`, which runs on the asyncio path that also carries the
+    # websocket subscriptions. A sixth of a second of blocked event loop
+    # every hundred samples, growing with the history, for a write nobody
+    # is waiting on.
+    #
+    # So the hot path marks the store dirty and a single writer thread
+    # does the work. Everything else — creating, labelling, stopping,
+    # deleting, importing — still writes synchronously: those are user
+    # actions whose result should be on disk when the request returns,
+    # and they happen once, not per reading.
+    #
+    # The cost is that a crash can lose the last COALESCE_SECONDS of
+    # samples rather than the last hundred. Comparable, and a recording
+    # that survives a crash was never the point of this file.
+
+    def _schedule_save(self) -> None:
+        self._dirty.set()
+        with self._writer_lock:
+            if self._writer is None or not self._writer.is_alive():
+                self._writer = threading.Thread(
+                    target=self._writer_loop, name="echolot-calibration-writer", daemon=True
+                )
+                self._writer.start()
+
+    def _writer_loop(self) -> None:
+        while True:
+            self._dirty.wait()
+            # Coalesce a burst of readings into one write.
+            time.sleep(self.COALESCE_SECONDS)
+            self._dirty.clear()
+            try:
+                with self._lock:
+                    self._save()
+            except Exception:  # noqa: BLE001 - a failed write must not kill the writer
+                logger.exception("Kalibrierung konnte nicht gespeichert werden")
+
+    def flush(self) -> None:
+        """Write now and wait for it — for shutdown and for stop()."""
+        self._dirty.clear()
+        with self._lock:
             self._save()
 
     def _save(self) -> None:
@@ -162,6 +219,9 @@ class CalibrationStore:
                 session["segments"][-1]["ended_at"] = now
                 session["recommendation"] = recommendation(session["samples"])
                 self._save()
+            # A finished recording is on disk before the caller is told it
+            # finished, whatever the writer thread is doing.
+            self._dirty.clear()
             return self.public(session)
 
     def adopt(self, device_id: str, samples: list[Sample], *, label: str, name: str = "") -> dict:
@@ -220,8 +280,9 @@ class CalibrationStore:
             if active is None or len(active["samples"]) >= MAX_SAMPLES_PER_SESSION:
                 return
             active["samples"].append({**sample.as_dict(), "label": active["label"]})
-            if len(active["samples"]) % PERSIST_EVERY_SAMPLES == 0:
-                self._save()
+        # Outside the lock: the writer thread needs it to do the work.
+        if len(active["samples"]) % PERSIST_EVERY_SAMPLES == 0:
+            self._schedule_save()
 
     def list(self, device_id: str | None = None) -> list[dict]:
         with self._lock:
