@@ -978,6 +978,31 @@ eintreffen. Alles andere liest den Snapshot:
 
 Nur eine Zone, die noch nie ausgewertet wurde, zahlt einmal dafür.
 
+### Warum die Zone tut, was sie tut
+
+Die Frage, die ein Präsenzsystem tatsächlich gestellt bekommt, ist nie
+„ist der Raum belegt" — das beantwortet der Punkt auf der Kachel. Sie
+lautet „warum blieb das Licht noch eine Minute an" oder „warum ging es
+aus, während ich dasaß".
+
+Der Evaluator ist die einzige Stelle, die jeden Übergang sieht, also
+schreibt er sie mit: Zeitpunkt, Zustand vorher und nachher, die
+auslösende Quelle (`motion`, `rate`, oder eine ablaufende Haltezeit) und
+was jedes Mitgliedsgerät in dem Moment meldete.
+
+**Ein Verlust der Messung zählt als Übergang.** Vergliche man nur den
+Zustandsnamen, wäre er unsichtbar — dabei ist „das Gerät war weg" die
+häufigste Erklärung für etwas, das jemand hinterher nicht versteht.
+
+Im Zonen-Tab unter „Verlauf", oder über `GET /api/zones/{id}/timeline`
+und `GET /api/timeline`.
+
+**Bewusst im Arbeitsspeicher und bewusst begrenzt** — 200 Übergänge je
+Zone. Das ist zum Nachsehen, nachdem einen etwas überrascht hat, und kein
+Prüfprotokoll; eine Historie auf der Platte wäre ein zweites
+Speicherproblem obendrauf (siehe oben), mit weniger Grund. Nach einem
+Neustart des Add-ons ist der Verlauf leer, und die Oberfläche sagt das.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

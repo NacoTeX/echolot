@@ -70,6 +70,12 @@ function renderZone(zone) {
         <button class="tune-zone-btn">Abstimmen</button>
         <button class="delete-zone-btn">Löschen</button>
       </div>
+      <details class="device-section zone-timeline">
+        <summary>Verlauf — warum die Zone tut, was sie tut</summary>
+        <div class="device-section-body">
+          <div class="timeline-body"><p class="hint">wird geladen…</p></div>
+        </div>
+      </details>
     </div>`;
 }
 
@@ -92,7 +98,46 @@ async function loadZones() {
     const id = el.dataset.id;
     el.querySelector(".delete-zone-btn").addEventListener("click", () => deleteZone(id));
     el.querySelector(".tune-zone-btn").addEventListener("click", () => tuneZone(byId.get(id)));
+    // Loaded when the section is opened rather than with the list: most
+    // visits never ask, and the answer is only interesting after
+    // something surprised you.
+    const history = el.querySelector(".zone-timeline");
+    history.addEventListener("toggle", () => {
+      if (history.open) loadTimeline(id, history.querySelector(".timeline-body"));
+    });
     refreshZoneState(id);
+  }
+}
+
+//: The transitions, newest first, each with the sentence the backend
+//: wrote for it — the reason lives next to the state machine that knows
+//: it, not in a second copy over here.
+async function loadTimeline(id, target) {
+  target.innerHTML = '<p class="hint">wird geladen…</p>';
+  try {
+    const body = await (await fetch(`api/zones/${id}/timeline?limit=25`)).json();
+    if (!body.events.length) {
+      target.innerHTML =
+        '<p class="hint">Noch keine Übergänge aufgezeichnet. Der Verlauf liegt ' +
+        'im Arbeitsspeicher und beginnt nach jedem Neustart des Add-ons von vorn.</p>';
+      return;
+    }
+    target.innerHTML = `<ul class="timeline-list">${body.events
+      .map((event) => {
+        const when = new Date(event.t * 1000).toLocaleTimeString("de-DE");
+        const who = event.members
+          .filter((member) => member.motion)
+          .map((member) => member.name)
+          .join(", ");
+        return `<li>
+            <span class="timeline-when">${escapeHtml(when)}</span>
+            <span class="timeline-what">${escapeHtml(event.explanation)}</span>
+            ${who ? `<span class="timeline-who">${escapeHtml(who)}</span>` : ""}
+          </li>`;
+      })
+      .join("")}</ul>`;
+  } catch (err) {
+    target.innerHTML = '<p class="status status-err">Verlauf nicht abrufbar</p>';
   }
 }
 

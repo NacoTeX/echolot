@@ -247,6 +247,33 @@ Ein offenes Dashboard kostet damit **keine** Home-Assistant-Abfragen
 mehr, und eine Statusanzeige verändert nicht mehr den Zustandsautomaten,
 über den sie berichtet.
 
+**Und daraus fällt die erste neue Funktion des Reviews ab: eine
+erklärbare Präsenz-Zeitleiste.** Die Frage, die ein Präsenzsystem
+tatsächlich gestellt bekommt, ist nie „ist der Raum belegt" — das
+beantwortet der Punkt auf der Kachel. Sie lautet „warum blieb das Licht
+noch eine Minute an" oder „warum ging es aus, während ich dasaß", und
+darauf hatte Echolot bisher keine Antwort. Der Zustand war ein Urteil
+ohne Protokoll.
+
+Der Evaluator schreibt jetzt jeden Übergang mit: wann, von wo nach wo,
+welche Quelle ihn ausgelöst hat (schnelle Bewegung, die langsame Rate,
+oder eine ablaufende Haltezeit) und was jedes Mitgliedsgerät in dem
+Moment meldete. Ein Verlust der Messung zählt dabei als Übergang — genau
+das will man hinterher erklären, und es wäre unsichtbar, wenn man nur den
+Zustandsnamen vergliche. Zu sehen im Zonen-Tab unter „Verlauf".
+
+`GET /api/zones/{id}/timeline` und `GET /api/timeline`.
+
+Bewusst im Arbeitsspeicher und bewusst begrenzt (200 Übergänge je Zone):
+das ist zum Nachsehen, nachdem einen etwas überrascht hat, kein
+Prüfprotokoll — und eine Historie auf der Platte wäre ein zweites
+Speicherproblem obendrauf, mit weniger Grund. Nach einem Neustart ist der
+Verlauf leer, und die Oberfläche sagt das, statt so zu tun, als hätte der
+Raum nichts getan.
+
+Nebenbei ein Layoutfehler, der dabei sichtbar wurde: die Chips mit der
+Feinabstimmung einer Zone saßen auf den Knöpfen darunter.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

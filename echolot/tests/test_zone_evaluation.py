@@ -134,3 +134,50 @@ def test_concurrent_callers_share_one_evaluation(counted):
 
     asyncio.run(scenario())
     assert counted["n"] == 1
+
+
+# --- the timeline the evaluator feeds (review step 8) ------------------
+
+
+def test_the_evaluator_writes_down_its_transitions(counted, monkeypatch):
+    """It is the one place that sees every change, so it is the one place
+    that can record why."""
+    from app import timeline as timeline_module
+
+    log = timeline_module.Timeline()
+    monkeypatch.setattr(timeline_module, "timeline", log)
+
+    states = iter([
+        {"available": True, "members": [], "state": "clear", "occupied": False},
+        {"available": True, "members": [], "state": "detected", "occupied": True,
+         "trigger": "motion"},
+    ])
+
+    async def changing(z):
+        return next(states)
+
+    monkeypatch.setattr(main, "compute_zone_state", changing)
+
+    async def scenario():
+        target = zone()
+        await main.evaluator.refresh([target])
+        main.evaluator._last_run = 0.0
+        await main.evaluator.refresh([target])
+
+    asyncio.run(scenario())
+    events = log.events("z1")
+    assert len(events) == 1
+    assert events[0]["to_state"] == "detected"
+    assert events[0]["trigger"] == "motion"
+
+
+def test_deleting_a_zone_takes_its_timeline_too(counted, monkeypatch):
+    from app import timeline as timeline_module
+
+    log = timeline_module.Timeline()
+    monkeypatch.setattr(timeline_module, "timeline", log)
+    log.record("z1", "Küche", {"state": "clear", "available": True, "members": []})
+    log.record("z1", "Küche", {"state": "detected", "available": True, "members": []})
+
+    main.forget_zone_runtime("z1")
+    assert log.events("z1") == []

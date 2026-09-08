@@ -35,6 +35,7 @@ from app import (
     overview,
     presets,
     reachability,
+    timeline,
     zone_logic,
     zones,
 )
@@ -314,6 +315,7 @@ class ZoneEvaluator:
     def forget(self, zone_id: str) -> None:
         _zone_runtimes.pop(zone_id, None)
         self._snapshots.pop(zone_id, None)
+        timeline.timeline.forget(zone_id)
 
     def snapshot(self, zone_id: str) -> dict | None:
         return self._snapshots.get(zone_id)
@@ -337,6 +339,10 @@ class ZoneEvaluator:
                 self._snapshots.update(
                     {zone.id: state for zone, state in zip(zone_list, states)}
                 )
+                # The one place that sees every transition, so the one
+                # place that can write down why it happened.
+                for zone, state in zip(zone_list, states):
+                    timeline.timeline.record(zone.id, zone.name, state)
             return [
                 (zone, self._snapshots.get(zone.id))
                 for zone in zone_list
@@ -1188,6 +1194,31 @@ async def api_zone_state(zone_id: str) -> dict:
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
     return await evaluator.state_of(zone)
+
+
+@app.get("/api/zones/{zone_id}/timeline")
+def api_zone_timeline(zone_id: str, limit: int = 50) -> dict:
+    """Why this zone is where it is: its transitions, newest first.
+
+    In memory and bounded — for looking at the last while after something
+    surprised you, not for auditing. It is empty after a restart, and
+    says so rather than pretending the room did nothing.
+    """
+    if zones.get_zone(zone_id) is None:
+        raise HTTPException(status_code=404, detail="Zone nicht gefunden")
+    events = timeline.timeline.events(zone_id, limit=max(1, min(limit, 200)))
+    return {
+        "events": [{**event, "explanation": timeline.explain(event)} for event in events]
+    }
+
+
+@app.get("/api/timeline")
+def api_timeline(limit: int = 50) -> dict:
+    """Every zone's transitions interleaved, newest first."""
+    events = timeline.timeline.all_events(limit=max(1, min(limit, 200)))
+    return {
+        "events": [{**event, "explanation": timeline.explain(event)} for event in events]
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
