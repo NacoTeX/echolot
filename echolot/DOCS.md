@@ -470,6 +470,29 @@ leere Zeile.
 genommen läge jeder Messpunkt im Jahr 1970 und vor denen aller anderen
 Geräte; Echolot nimmt deshalb die Ankunftszeit.
 
+### Wenn keine Samples ankommen
+
+Die Aufzeichnung meldet es nach wenigen Sekunden selbst und nennt den
+Grund. Die vier Fälle und ihre jeweils eigene Antwort:
+
+| Meldung | Was los ist | Was hilft |
+| --- | --- | --- |
+| „Der Name … lässt sich nicht auflösen" | mDNS kommt nicht bis in den Add-on-Container | IP-Adresse auf der Gerätekarte eintragen |
+| „…weist die Verbindung … ab" | Port 62587 ist zu | Firmware ohne `direct_api` gebaut — neu bauen und flashen |
+| „…antwortet, kennt aber keinen der bekannten Telemetrie-Pfade" | Etwas lauscht und spricht HTTP, hat aber nichts an unseren Pfaden | ESPectre-Version mit anderem Endpunkt |
+| „…antwortet nicht innerhalb des Zeitlimits" | Paketverlust oder Client-Isolation im WLAN | WLAN-Einstellungen prüfen |
+
+**Der häufigste Fall ist der erste.** Ohne eingetragene Adresse benutzt
+Echolot `<gerätename>.local`, und mDNS scheitert im Container häufig,
+obwohl dasselbe Gerät in Home Assistant tadellos läuft — Home Assistant
+löst den Namen an anderer Stelle auf. Die IP steht als
+`sensor.<gerät>_ip_address` in Home Assistant.
+
+Die Unterscheidung selbst kommt aus dem Ausnahmetyp, nicht aus dem
+Fehlertext: httpx verbirgt die eigentliche Ursache hinter „All connection
+attempts failed", darunter steckt aber ein `ConnectionRefusedError` oder
+ein `socket.gaierror`.
+
 ### Calibration Lab
 
 The **Kalibrierung** tab turns live telemetry into a labelled room dataset:

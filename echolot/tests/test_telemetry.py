@@ -1,7 +1,10 @@
 """Direct ESPectre telemetry parsing, buffering, and fan-out."""
 
 import json
+import socket
 import sys
+
+import httpx
 import time
 from pathlib import Path
 
@@ -180,3 +183,87 @@ def test_a_threshold_only_event_updates_state_without_becoming_a_point():
     assert hub.snapshot("probe")["points"] == []
     # It still took effect: the next real measurement carries it.
     assert hub.ingest("probe", '{"state":"idle","score":0.1}').threshold == 0.5
+
+
+# --- Why a connection failed -----------------------------------------------
+#
+# Three failures used to share one sentence ("Kein ESPectre-Telemetrie-
+# Endpunkt erreichbar"), which is what a user saw after a recording came
+# back empty. They need opposite responses, so they must read differently.
+
+
+def test_a_device_answering_on_unknown_paths_is_a_version_mismatch():
+    message = telemetry.explain_failure("192.168.2.188", [404, 404], [], [])
+    assert "404" in message
+    assert "ESPectre-Version" in message
+    assert "auflösen" not in message
+
+
+def test_an_unresolvable_name_points_at_mdns_and_the_ip_field():
+    message = telemetry.explain_failure("test22.local", [], ["dns"], [])
+    assert "auflösen" in message
+    assert "IP-Adresse" in message
+
+
+def test_a_refused_connection_points_at_direct_api():
+    message = telemetry.explain_failure("192.168.2.188", [], ["refused"], [])
+    assert "direct_api" in message
+    assert "62587" in message
+
+
+def test_a_timeout_points_at_the_network_not_the_firmware():
+    message = telemetry.explain_failure("192.168.2.188", [], ["timeout"], [])
+    assert "Client-Isolation" in message
+    assert "direct_api" not in message
+
+
+def test_an_unrecognised_failure_still_names_the_target_and_the_detail():
+    message = telemetry.explain_failure("host", [], ["other"], ["OSError: something odd"])
+    assert "host:62587" in message
+    assert "something odd" in message
+
+
+def test_no_information_at_all_still_produces_a_sentence():
+    assert telemetry.explain_failure("host", [], [], []).startswith("Keine Telemetrieverbindung")
+
+
+def test_an_http_status_outranks_a_connection_error():
+    """One path may refuse while another answers 404; the answer is the
+    stronger signal, because it proves something is listening."""
+    assert "404" in telemetry.explain_failure("host", [404], ["refused"], [])
+
+
+# The classifier reads the exception chain, because httpx hides the real
+# cause behind "All connection attempts failed". These build the chains the
+# way httpx really does — an earlier version matched on the message text
+# and was wrong about every one of them.
+
+
+def test_a_refused_connection_is_recognised_through_httpxs_wrapper():
+    refused = ConnectionRefusedError(111, "Connect call failed")
+    wrapped = httpx.ConnectError("All connection attempts failed")
+    wrapped.__cause__ = OSError("All connection attempts failed")
+    wrapped.__cause__.__cause__ = refused
+    assert telemetry.failure_kind(wrapped) == "refused"
+
+
+def test_an_unresolvable_name_is_recognised_through_the_wrapper():
+    wrapped = httpx.ConnectError("[Errno -2] Name or service not known")
+    wrapped.__cause__ = socket.gaierror(-2, "Name or service not known")
+    assert telemetry.failure_kind(wrapped) == "dns"
+
+
+def test_a_timeout_is_recognised():
+    assert telemetry.failure_kind(httpx.ConnectTimeout("timed out")) == "timeout"
+
+
+def test_an_unknown_failure_is_not_forced_into_a_category():
+    assert telemetry.failure_kind(httpx.ProtocolError("odd")) == "other"
+
+
+def test_the_chain_walk_terminates_on_a_cycle():
+    a = httpx.ConnectError("a")
+    b = httpx.ConnectError("b")
+    a.__cause__ = b
+    b.__cause__ = a
+    assert telemetry.failure_kind(a) == "other"

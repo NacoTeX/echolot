@@ -155,4 +155,30 @@ def test_the_wrong_endpoint_produces_exactly_what_the_user_saw(device_server, st
     assert store.csv(session["id"]).strip().splitlines() == [
         "t,movement_score,threshold,motion,label"
     ]
-    assert hub.snapshot("probe")["available"] is False
+    snapshot = hub.snapshot("probe")
+    assert snapshot["available"] is False
+    # And it now says which of the three failures this was: the device
+    # answered, it just knows none of the paths we asked for.
+    assert "404" in snapshot["error"]
+    assert "ESPectre-Version" in snapshot["error"]
+
+
+def test_a_closed_port_reads_differently_from_a_wrong_path(store, monkeypatch):
+    """A refused connection means the firmware is not serving at all —
+    the opposite conclusion from a 404, and a different fix."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+    monkeypatch.setattr(telemetry, "DIRECT_PORT", closed_port)
+
+    hub = telemetry.TelemetryHub()
+
+    async def run():
+        task = asyncio.create_task(hub._collect("probe", "127.0.0.1"))
+        await asyncio.sleep(0.8)
+        task.cancel()
+
+    asyncio.run(run())
+    error = hub.snapshot("probe")["error"]
+    assert "direct_api" in error
+    assert "404" not in error

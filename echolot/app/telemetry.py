@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
@@ -128,6 +129,70 @@ def parse_payload(payload: str, *, now: float | None = None) -> Sample | None:
     return Sample(t=stamp, movement_score=score, threshold=threshold, motion=motion)
 
 
+def failure_kind(err: BaseException) -> str:
+    """Classify a failed connection by exception type, not by its text.
+
+    httpx hides the real cause behind "All connection attempts failed",
+    so the message says nothing; the chain underneath does. A refused
+    connection ends in ConnectionRefusedError, an unresolvable name in
+    socket.gaierror. Matching on the wording instead would break the
+    moment httpx rephrases it — which is how this was got wrong once
+    already.
+    """
+    seen = 0
+    current: BaseException | None = err
+    while current is not None and seen < 8:
+        if isinstance(current, socket.gaierror):
+            return "dns"
+        if isinstance(current, ConnectionRefusedError):
+            return "refused"
+        if isinstance(current, (httpx.ConnectTimeout, httpx.ReadTimeout, TimeoutError)):
+            return "timeout"
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return "other"
+
+
+def explain_failure(host: str, statuses: list[int], kinds: list[str], details: list[str]) -> str:
+    """Say which of several very different failures actually happened.
+
+    The collector used to report "Kein ESPectre-Telemetrie-Endpunkt
+    erreichbar" for all of them, so a name that does not resolve, a device
+    that refuses the connection and a device that answers 404 on every
+    path were indistinguishable — and they need opposite responses.
+    """
+    if statuses:
+        # Something is listening and speaking HTTP, it just has nothing at
+        # the paths we know. A version mismatch, not a network fault, and
+        # the strongest signal available: it proves the port is open.
+        codes = ", ".join(str(code) for code in sorted(set(statuses)))
+        return (
+            f"{host}:{DIRECT_PORT} antwortet, kennt aber keinen der bekannten "
+            f"Telemetrie-Pfade (HTTP {codes}). Meist läuft dort eine ESPectre-Version "
+            "mit einem anderen Endpunkt."
+        )
+    if "dns" in kinds:
+        return (
+            f"Der Name „{host}“ lässt sich nicht auflösen. Bei einem .local-Namen "
+            "kommt mDNS meist nicht bis in den Add-on-Container — trag auf der "
+            "Gerätekarte die IP-Adresse ein."
+        )
+    if "refused" in kinds:
+        return (
+            f"{host} ist erreichbar, weist die Verbindung auf Port {DIRECT_PORT} aber "
+            "ab. Die Firmware wurde vermutlich ohne `direct_api` gebaut; ein Neubau "
+            "schaltet es ein."
+        )
+    if "timeout" in kinds:
+        return (
+            f"{host}:{DIRECT_PORT} antwortet nicht innerhalb des Zeitlimits. Meist "
+            "trennt das WLAN seine Clients voneinander (Client-Isolation), oder das "
+            "Gerät hängt in einem anderen Netz."
+        )
+    detail = details[0] if details else ""
+    return f"Keine Telemetrieverbindung zu {host}:{DIRECT_PORT}" + (f" ({detail})" if detail else "")
+
+
 class TelemetryHub:
     def __init__(self) -> None:
         self._provider: Callable[[], Iterable] | None = None
@@ -191,11 +256,15 @@ class TelemetryHub:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=None)) as client:
             while True:
                 connected = False
+                statuses: list[int] = []
+                kinds: list[str] = []
+                details: list[str] = []
                 for path in self._paths():
                     url = f"http://{host}:{DIRECT_PORT}{path}"
                     try:
                         async with client.stream("GET", url, headers={"Accept": "text/event-stream"}) as response:
                             if response.status_code != 200:
+                                statuses.append(response.status_code)
                                 continue
                             connected = True
                             delay = 1
@@ -212,6 +281,8 @@ class TelemetryHub:
                             if data_lines:
                                 self.ingest(device_id, "\n".join(data_lines))
                     except (httpx.HTTPError, OSError) as err:
+                        kinds.append(failure_kind(err))
+                        details.append(f"{type(err).__name__}: {err}")
                         self._status[device_id] = {
                             "connected": False,
                             "url": url,
@@ -228,7 +299,7 @@ class TelemetryHub:
                     self._status[device_id] = {
                         "connected": False,
                         "url": None,
-                        "error": "Kein ESPectre-Telemetrie-Endpunkt erreichbar",
+                        "error": explain_failure(host, statuses, kinds, details),
                     }
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_MAX_SECONDS)

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.12
+
+Die Warnung aus 0.12.11 sagte „Kein ESPectre-Telemetrie-Endpunkt
+erreichbar" — und damit zu wenig. Der Collector hat den konkreten Fehler
+verworfen und alle Ursachen auf denselben Satz abgebildet.
+
+- **Der Grund steht jetzt in der Meldung.** Ein nicht auflösbarer Name,
+  eine abgewiesene Verbindung, ein 404 auf allen Pfaden und ein Timeout
+  sind vier verschiedene Dinge mit vier verschiedenen Antworten. Der
+  häufigste ist der erste: ohne eingetragene Adresse benutzt Echolot
+  `<gerätename>.local`, und mDNS kommt oft nicht bis in den
+  Add-on-Container, obwohl dasselbe Gerät in Home Assistant einwandfrei
+  läuft.
+- Antwortet der Port mit HTTP-Status, gewinnt das über jeden
+  Verbindungsfehler: es beweist, dass etwas lauscht, und verschiebt die
+  Diagnose von „Netz" zu „Version".
+- **Klassifiziert wird über den Ausnahmetyp, nicht über den Fehlertext.**
+  httpx verbirgt die Ursache hinter „All connection attempts failed";
+  darunter liegt ein `ConnectionRefusedError` oder ein `socket.gaierror`.
+  Ein erster Anlauf hat auf den Text geprüft und lag bei jedem einzelnen
+  Fall falsch — aufgefallen, weil der Test gegen einen echten
+  geschlossenen Port lief statt gegen eine erfundene Meldung.
+
+Geprüft: 178 Tests. Die Klassifizierung gegen die Ausnahmeketten, die
+httpx tatsächlich baut, und die beiden wichtigsten Fälle gegen echte
+Sockets — ein Server, der auf allen Pfaden 404 liefert, und ein
+geschlossener Port.
+
 ## 0.12.11
 
 Drei Aufzeichnungen im Calibration Lab kamen als CSV mit Kopfzeile und
