@@ -88,14 +88,53 @@ function statusClass(status) {
 const ENTITY_FIELDS = ["entity_motion", "entity_movement_score", "entity_threshold", "entity_calibrate"];
 const ENTITY_LABELS = { entity_motion: "Bewegung", entity_movement_score: "Bewegungswert", entity_threshold: "Schwelle", entity_calibrate: "Kalibrierung" };
 
-function renderDevice(device) {
+//: Which cards are open. A poll re-renders the whole list, so without
+//: this every open card would snap shut under the person reading it.
+const openCards = new Set();
+//: The status each device had when it was last drawn, so a build that
+//: fails can open its own card instead of hiding the reason.
+const lastStatus = new Map();
+
+function expandAllCards() {
+  return readPref("echolot.expandCards");
+}
+
+function shouldOpen(device, deviceCount) {
+  const previous = lastStatus.get(device.id);
+  const first = previous === undefined;
+  lastStatus.set(device.id, device.status);
+
+  // Something is happening or went wrong: the detail is the whole point,
+  // so open it — but only on the transition, never on every poll, or the
+  // card would spring back open each time it is closed.
+  const busy = device.status === "queued" || device.status === "running";
+  if ((first && (busy || device.status === "error")) || (!first && previous !== device.status && device.status === "error")) {
+    openCards.add(device.id);
+  }
+  // With one device there is nothing to scan past, so the list view buys
+  // nothing and the card opens.
+  if (first && deviceCount === 1) openCards.add(device.id);
+
+  return expandAllCards() || openCards.has(device.id);
+}
+
+//: A collapsible group inside a card. Kept out of the summary line so the
+//: card stays a list entry: name, state, done.
+function section(title, body, { open = false } = {}) {
+  return `<details class="device-section"${open ? " open" : ""}>
+      <summary>${escapeHtml(title)}</summary>
+      <div class="device-section-body">${body}</div>
+    </details>`;
+}
+
+function renderDevice(device, deviceCount) {
   const c = device.config;
   const title = c.friendly_name || c.name;
   const canBuild = device.status !== "queued" && device.status !== "running";
   const built = device.status === "success";
 
   const logBlock = device.build_log
-    ? `<details><summary>Build-Protokoll</summary><pre class="build-log">${escapeHtml(device.build_log.slice(-4000))}</pre></details>`
+    ? section("Build-Protokoll", `<pre class="build-log">${escapeHtml(device.build_log.slice(-4000))}</pre>`)
     : "";
   const errorLine = device.build_error
     ? `<p class="status status-err">${escapeHtml(device.build_error)}</p>`
@@ -136,6 +175,9 @@ function renderDevice(device) {
        <p class="flash-progress" hidden></p>`
     : "";
 
+  // The live state stays out of a collapsible group: it is the reason to
+  // open the card at all, and burying it behind a second click would put
+  // the most-wanted number two clicks deep.
   const liveBlock = built
     ? `<div class="live-block" data-live-id="${device.id}">
          <div class="live-row"><span class="live-label">Bewegung</span><span class="live-motion status status-pending">wird geprüft…</span></div>
@@ -149,68 +191,95 @@ function renderDevice(device) {
          <button type="button" class="calibrate-btn">Neu kalibrieren</button>
          <p class="live-error status status-err" hidden></p>
          <button type="button" class="detect-btn btn-secondary" hidden>Entities in Home Assistant suchen</button>
-       </div>
-       <div class="health-block">
-         <button type="button" class="health-btn btn-secondary">Diagnose stellen</button>
-         <div class="health-result" hidden></div>
-       </div>
-       <div class="network-block">
-         <label class="address-label">Netzwerkadresse
-           <input class="address-input" value="${escapeHtml(device.address || "")}"
-                  placeholder="${escapeHtml(device.config.name)}.local oder IP">
-         </label>
-         <div class="device-actions">
-           <button type="button" class="probe-btn btn-secondary">Erreichbarkeit prüfen</button>
-           <button type="button" class="ota-btn btn-secondary">Update über WLAN</button>
-           ${device.config.web_server
-             ? `<a class="status-page-link btn-secondary" target="_blank" rel="noopener"
-                   href="http://${encodeURIComponent(device.address || device.config.name + ".local")}/"
-                   >Statusseite öffnen</a>`
-             : ""}
-         </div>
-         <p class="probe-result status" hidden></p>
-         <p class="probe-direct status status-pending" hidden></p>
-       </div>
-       <details class="key-block">
-         <summary>Verschlüsselungscode für Home Assistant</summary>
-         <p class="hint">
-           ${device.config.api_encryption
-             ? "Home Assistant fragt danach, wenn es dieses Gerät übernimmt. Ohne den Code kann niemand im Netz das Gerät auslesen oder steuern."
-             : "Für dieses Gerät ist die API-Verschlüsselung <strong>abgeschaltet</strong> — der Code steckt also nicht in der Firmware und Home Assistant fragt nicht danach. Er bleibt gespeichert, falls du sie später einschaltest."}
-         </p>
-         <div class="key-row">
-           <code class="api-key">— aufklappen zum Anzeigen —</code>
-           <button type="button" class="copy-key-btn btn-secondary">Kopieren</button>
-         </div>
-       </details>
-       <details class="entity-editor">
-         <summary>HA-Entity-IDs</summary>
-         ${ENTITY_FIELDS.map((f) => `
-           <label>${ENTITY_LABELS[f]}
-             <input class="entity-input" data-field="${f}" value="${escapeHtml(device[f] || "")}">
-           </label>`).join("")}
-         <button type="button" class="save-entities-btn">Entity-IDs speichern</button>
-       </details>`
+       </div>`
+    : "";
+
+  const detailSections = built
+    ? section("Netzwerk und Update über WLAN", `
+         <div class="network-block">
+           <label class="address-label">Netzwerkadresse
+             <input class="address-input" value="${escapeHtml(device.address || "")}"
+                    placeholder="${escapeHtml(device.config.name)}.local oder IP">
+           </label>
+           <div class="device-actions">
+             <button type="button" class="probe-btn btn-secondary">Erreichbarkeit prüfen</button>
+             <button type="button" class="ota-btn btn-secondary">Update über WLAN</button>
+             ${device.config.web_server
+               ? `<a class="status-page-link btn-secondary" target="_blank" rel="noopener"
+                     href="http://${encodeURIComponent(device.address || device.config.name + ".local")}/"
+                     >Statusseite öffnen</a>`
+               : ""}
+           </div>
+           <p class="probe-result status" hidden></p>
+           <p class="probe-direct status status-pending" hidden></p>
+         </div>`)
+      + section("Diagnose", `
+         <div class="health-block">
+           <p class="hint">Prüft, ob das Gerät wirklich misst — und nicht nur erreichbar ist.</p>
+           <button type="button" class="health-btn btn-secondary">Diagnose stellen</button>
+           <div class="health-result" hidden></div>
+         </div>`)
+      + section("Verschlüsselungscode für Home Assistant", `
+         <div class="key-block">
+           <p class="hint">
+             ${device.config.api_encryption
+               ? "Home Assistant fragt danach, wenn es dieses Gerät übernimmt. Ohne den Code kann niemand im Netz das Gerät auslesen oder steuern."
+               : "Für dieses Gerät ist die API-Verschlüsselung <strong>abgeschaltet</strong> — der Code steckt also nicht in der Firmware und Home Assistant fragt nicht danach. Er bleibt gespeichert, falls du sie später einschaltest."}
+           </p>
+           <div class="key-row">
+             <code class="api-key">— aufklappen zum Anzeigen —</code>
+             <button type="button" class="copy-key-btn btn-secondary">Kopieren</button>
+           </div>
+         </div>`)
+      + section("HA-Entity-IDs", `
+         <div class="entity-editor">
+           <p class="hint">
+             Über diese IDs holt Echolot Zustand und Schwelle aus Home
+             Assistant. Sie sind begründete Vermutungen — wenn ein Gerät als
+             „nicht verfügbar“ angezeigt wird, stimmt hier meist etwas nicht.
+           </p>
+           ${ENTITY_FIELDS.map((f) => `
+             <label>${ENTITY_LABELS[f]}
+               <input class="entity-input" data-field="${f}" value="${escapeHtml(device[f] || "")}">
+             </label>`).join("")}
+           <button type="button" class="save-entities-btn">Entity-IDs speichern</button>
+         </div>`)
+    : "";
+
+  // The summary carries the two things worth scanning a list for: what the
+  // build is doing, and — once built — whether the room is occupied.
+  const summaryLive = built
+    ? `<span class="summary-live" data-summary-id="${device.id}">
+         <span class="summary-dot"></span><span class="summary-live-text">…</span>
+       </span>`
     : "";
 
   return `
-    <div class="card device-card" data-id="${device.id}">
-      <div class="device-card-header">
-        <h3>${escapeHtml(title)}</h3>
-        <span class="status ${statusClass(device.status)}">${statusLabel(device.status)}</span>
+    <details class="card device-card" data-id="${device.id}"${shouldOpen(device, deviceCount) ? " open" : ""}>
+      <summary class="device-summary">
+        <span class="device-summary-text">
+          <span class="device-title">${escapeHtml(title)}</span>
+          <span class="device-meta">${escapeHtml(c.name)} · ${escapeHtml(c.board)} · ${escapeHtml(c.detection_algorithm)}</span>
+        </span>
+        <span class="device-summary-state">
+          ${summaryLive}
+          <span class="status ${statusClass(device.status)}">${statusLabel(device.status)}</span>
+        </span>
+      </summary>
+      <div class="device-body">
+        ${errorLine}
+        ${otaLine}
+        <div class="device-actions">
+          <button class="build-btn${built ? " btn-secondary" : ""}" ${canBuild ? "" : "disabled"}>${built ? "Neu bauen" : "Firmware bauen"}</button>
+          ${repairBlock}
+          ${flashBlock}
+          <button class="delete-btn">Löschen</button>
+        </div>
+        ${liveBlock}
+        ${detailSections}
+        ${logBlock}
       </div>
-      <p class="device-meta">${escapeHtml(c.name)} · ${escapeHtml(c.board)} · ${escapeHtml(c.detection_algorithm)}</p>
-      ${errorLine}
-      ${otaLine}
-      <div class="device-actions">
-        <button class="build-btn${built ? " btn-secondary" : ""}" ${canBuild ? "" : "disabled"}>${built ? "Neu bauen" : "Firmware bauen"}</button>
-        ${repairBlock}
-        ${flashBlock}
-        <button class="delete-btn">Löschen</button>
-      </div>
-      ${liveBlock}
-      ${logBlock}
-    </div>`;
+    </details>`;
 }
 
 function addressOf(card) {
@@ -391,11 +460,27 @@ async function loadDevices() {
   }
 
   list.innerHTML = devices.length
-    ? devices.map(renderDevice).join("")
+    ? devices.map((device) => renderDevice(device, devices.length)).join("")
     : '<p class="status status-pending">Noch keine Geräte — lege oben eines an.</p>';
+
+  // With devices present, creating another one is the rare case, so the
+  // form folds away; with none, it is the only thing to do.
+  const createCard = document.getElementById("create-device");
+  if (createCard && !createCard.dataset.touched) createCard.open = devices.length === 0;
+  if (createCard && !createCard.dataset.wired) {
+    createCard.dataset.wired = "1";
+    createCard.querySelector("summary").addEventListener("click", () => {
+      createCard.dataset.touched = "1";
+    });
+  }
 
   for (const el of list.querySelectorAll(".device-card")) {
     const id = el.dataset.id;
+
+    el.addEventListener("toggle", () => {
+      if (el.open) openCards.add(id);
+      else openCards.delete(id);
+    });
     el.querySelector(".build-btn").addEventListener("click", () => startBuild(id));
     el.querySelector(".delete-btn").addEventListener("click", () => deleteDevice(id));
 
@@ -467,11 +552,20 @@ async function refreshLiveState(id) {
   }
 
   const detectBtn = block.querySelector(".detect-btn");
+  // The same reading, shown once in the open card and once on the closed
+  // summary line — otherwise a collapsed list says nothing about the rooms.
+  const summary = document.querySelector(`.summary-live[data-summary-id="${id}"]`);
+  const setSummary = (stateName, text) => {
+    if (!summary) return;
+    summary.querySelector(".summary-dot").dataset.state = stateName;
+    summary.querySelector(".summary-live-text").textContent = text;
+  };
 
   if (!state.available) {
     motionEl.textContent = "nicht verfügbar";
     motionEl.className = "live-motion status status-warn";
     scoreEl.textContent = "—";
+    setSummary("warn", "nicht verfügbar");
     errorEl.textContent = state.error || "Nicht verfügbar";
     errorEl.hidden = false;
     // The lookup only helps when the entity is missing; a broken
@@ -486,6 +580,10 @@ async function refreshLiveState(id) {
   motionEl.textContent = state.motion ? "erkannt" : "frei";
   motionEl.className = `live-motion status ${state.motion ? "status-ok" : "status-pending"}`;
   scoreEl.textContent = state.movement_score != null ? state.movement_score.toFixed(2) : "—";
+  setSummary(
+    state.motion ? "on" : "off",
+    state.motion ? "Bewegung" : "frei",
+  );
   if (state.threshold != null && document.activeElement !== thresholdInput) {
     thresholdInput.value = state.threshold;
   }
@@ -646,10 +744,39 @@ document.getElementById("device-form").addEventListener("submit", async (evt) =>
   }
 });
 
+// Web Serial needs a secure context. Where the page already has one, the
+// warning is noise on every visit, and permanent noise is what stops
+// warnings from being read at all.
+if (!window.isSecureContext) {
+  document.getElementById("web-serial-notice").hidden = false;
+}
+
+// Once the person opens or closes the create form themselves, stop
+// deciding it for them on every reload.
+//
+// The listener is on the summary's click rather than the element's
+// `toggle`, because `toggle` cannot tell a person apart from the line in
+// loadDevices that opens the form when there are no devices — and it is
+// fired asynchronously, so a flag set around that assignment would be
+// gone by the time the event arrived. A click on the summary only ever
+// comes from a person; the keyboard sends one too.
+
 loadBoards();
 loadPresets();
 loadDevices();
-setInterval(refreshAllLiveStates, 5000);
+setInterval(() => {
+  // One switch in the header stops every poller on the page.
+  if (!refreshPaused()) refreshAllLiveStates();
+}, 5000);
+
+// Flipping "cards open" in the header applies to the cards already drawn,
+// rather than only to the next poll.
+document.addEventListener("echolot:prefs", () => {
+  const open = expandAllCards();
+  for (const el of document.querySelectorAll(".device-card")) {
+    if (open) el.open = true;
+  }
+});
 
 // --- Diagnose ---------------------------------------------------------------
 //
