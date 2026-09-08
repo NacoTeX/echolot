@@ -104,6 +104,41 @@
         <p id="calibration-error" class="status status-err" hidden></p>
       </section>
 
+      <section class="card calibration-import">
+        <h2>Aus dem Verlauf importieren</h2>
+        <p>
+          Der Raten-Detektor braucht mindestens zehn Minuten Material aus dem
+          leeren Raum — und genau die hast du schon: Home Assistant speichert
+          den Bewegungswert rund zehn Tage lang in voller Auflösung. Such dir
+          einen Zeitraum aus, von dem du weißt, wie der Raum da war.
+        </p>
+        <form id="import-form" class="calibration-form">
+          <label>Gerät
+            <select name="device_id" id="import-device" required></select>
+          </label>
+          <label>Von
+            <input type="datetime-local" name="start" id="import-start" required>
+          </label>
+          <label>Bis
+            <input type="datetime-local" name="end" id="import-end" required>
+          </label>
+          <label>Was war da los?
+            <select name="label" id="import-label">
+              <option value="empty" selected>Raum leer</option>
+              <option value="moving">Person bewegt sich</option>
+              <option value="still">Person sitzt still</option>
+              <option value="interference">Störquelle aktiv</option>
+            </select>
+          </label>
+          <button type="submit">Importieren</button>
+        </form>
+        <p class="hint">
+          Höchstens 90 Minuten auf einmal. Die Zeiten sind Ortszeit.
+        </p>
+        <p id="import-error" class="status status-err" hidden></p>
+        <p id="import-ok" class="status status-ok" hidden></p>
+      </section>
+
       <section id="active-calibration" class="card" hidden>
         <div class="calibration-heading">
           <div>

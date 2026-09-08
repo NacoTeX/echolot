@@ -164,6 +164,46 @@ class CalibrationStore:
                 self._save()
             return self.public(session)
 
+    def adopt(self, device_id: str, samples: list[Sample], *, label: str, name: str = "") -> dict:
+        """Store a finished session built from history rather than recorded.
+
+        Not `create` + `ingest` + `stop`: those model a recording, and a
+        recording refuses to start while another one runs. Importing the
+        past has no reason to wait for the present, and the samples already
+        carry their own timestamps, so the session is written complete.
+        """
+        if label not in LABELS:
+            raise ValueError(f"Unbekanntes Label '{label}'")
+        if not samples:
+            raise ValueError("Der Zeitraum enthält keine Messwerte")
+
+        rows = [{**sample.as_dict(), "label": label} for sample in samples[:MAX_SAMPLES_PER_SESSION]]
+        started_at = min(row["t"] for row in rows)
+        ended_at = max(row["t"] for row in rows)
+        with self._lock:
+            session_id = uuid.uuid4().hex
+            session = {
+                "id": session_id,
+                "device_id": device_id,
+                "name": name.strip() or time.strftime(
+                    "Verlauf %Y-%m-%d %H:%M", time.localtime(started_at)
+                ),
+                "status": "complete",
+                "label": label,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "segments": [{"label": label, "started_at": started_at, "ended_at": ended_at}],
+                "samples": rows,
+                "recommendation": recommendation(rows),
+                #: So the UI can say where this came from, and so a later
+                #: reader does not mistake it for something somebody sat
+                #: through.
+                "source": "history",
+            }
+            self._sessions[session_id] = session
+            self._save()
+            return self.public(session)
+
     def delete(self, session_id: str) -> bool:
         with self._lock:
             removed = self._sessions.pop(session_id, None) is not None

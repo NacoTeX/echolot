@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.13.3
+
+Kalibrierung aus dem Verlauf, statt sie aufzuzeichnen.
+
+Der Raten-Detektor braucht mindestens zehn Minuten aus dem leeren Raum —
+ausgerechnet die Messung, die niemand machen will, weil man dafür die
+Wohnung verlassen und einen Timer stellen muss. Sie liegt aber längst
+vor: Home Assistant speichert den Bewegungswert rund zehn Tage lang in
+voller Auflösung (an einer echten Instanz gemessen: 0,7 Messwerte pro
+Sekunde bei Ruhe, 3,2 bei Betrieb).
+
+- **`POST /api/calibrations/import`** liest einen vergangenen Zeitraum
+  aus dem Recorder und legt daraus eine fertige Kalibriersitzung an.
+  Gleiche Form, gleiche Label, gleiche Auswertung wie eine
+  aufgezeichnete. Im Calibration Lab gibt es dafür ein Formular.
+- **Der Bewegungswert gibt die Zeitachse vor, Schwelle und `motion`
+  werden mitgeführt.** Die drei Entities sind drei unabhängige Reihen;
+  als parallele Zeilen gelesen hätte fast jeder Messwert keine Schwelle —
+  derselbe Fehler, den 0.13.1 auf dem Live-Pfad behoben hat, nur von der
+  anderen Seite.
+- **`significant_changes_only=0` wird ausdrücklich gesetzt.** Home
+  Assistant liest den Parameter als `query.get(name, "1") != "0"`, anders
+  als die Nachbarn `minimal_response` und `no_attributes` daneben. Der
+  leere Wert, den die vorhandene Abfrage benutzte, lässt den Filter *an*
+  — der Recorder lässt dann Messwerte weg, und eine Rate pro Sekunde
+  Wanduhr misst danach, was den Filter überlebt hat. Ein Test gegen einen
+  echten HTTP-Server prüft die tatsächlich gesendete Abfrage.
+- **Ein Import ist keine Aufzeichnung.** Er wartet nicht auf das Ende
+  einer laufenden, und die Sitzung wird fertig geschrieben statt
+  gestartet und gestoppt. Sie trägt `source: "history"`.
+- Grenzen: 30 Sekunden bis 90 Minuten pro Import, geprüft *bevor* der
+  Recorder abgefragt wird.
+
+**Was dabei herauskam.** Dreizehn Minuten Wohnzimmer um vier Uhr morgens,
+aus einer echten Instanz, durch denselben Detektor: **22 von 22 Fenstern
+exakt null Überschreitungen.** Die Aufnahme liegt als
+`tests/data/recorder_room_empty_night.json` im Repo und ist der Beleg
+dafür, warum `MIN_BASELINE_RATE` existiert — ohne Mindestwert wäre der
+Maßstab dieses Raums null, und eine einzige Überschreitung würde als
+Präsenz gelten.
+
+Damit sind es drei Ruhestufen statt zwei: 0,000 (Wohnung leer), 0,027
+(Raum leer, Wohnung belegt), 0,261 (Person sitzt still im Raum). Der
+Alltagsmaßstab ist die mittlere — mit 0,000 als Leerwert ginge der Melder
+los, sobald jemand im Flur vorbeiläuft. Der Abstand zwischen 0,000 und
+0,027 ist zugleich der Beleg, dass das Signal wirklich durch Wände geht.
+
 ## 0.13.2
 
 Der Raten-Detektor aus 0.13.0/0.13.1 war bisher ein Auswertungswerkzeug:

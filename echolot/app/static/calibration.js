@@ -38,6 +38,18 @@ async function loadCalibrationLab() {
       : '<option value="">Kein Gerät mit erkannten Entities verfügbar</option>';
     select.disabled = !eligible.length;
     document.querySelector("#calibration-form button").disabled = !eligible.length;
+
+    // The import form offers the same devices. Rebuilding it on every
+    // poll would throw away a half-filled selection, so it is only
+    // written while it is still empty or the device list changed.
+    const importSelect = document.getElementById("import-device");
+    const wanted = eligible.map((d) => d.id).join(",");
+    if (importSelect.dataset.devices !== wanted) {
+      importSelect.dataset.devices = wanted;
+      importSelect.innerHTML = select.innerHTML;
+      importSelect.disabled = !eligible.length;
+      document.querySelector("#import-form button").disabled = !eligible.length;
+    }
     activeCalibration = sessions.find((session) => session.status === "recording") || null;
     renderActiveCalibration();
     renderCalibrationSessions(sessions, Object.fromEntries(devices.map((d) => [d.id, d])));
@@ -164,6 +176,55 @@ document.getElementById("calibration-form").addEventListener("submit", async (ev
   }
 });
 
+// Prefill the range with "the hour before last", which is far enough back
+// that it has finished happening and close enough to still be remembered.
+function suggestImportRange() {
+  const end = new Date(Date.now() - 60 * 60 * 1000);
+  end.setMinutes(0, 0, 0);
+  const start = new Date(end.getTime() - 60 * 60 * 1000);
+  const local = (date) =>
+    new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const startField = document.getElementById("import-start");
+  const endField = document.getElementById("import-end");
+  if (!startField.value) startField.value = local(start);
+  if (!endField.value) endField.value = local(end);
+}
+
+document.getElementById("import-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = document.getElementById("import-error");
+  const ok = document.getElementById("import-ok");
+  const button = form.querySelector("button");
+  // The recorder can take a moment for an hour of full-resolution data,
+  // and a second click would import the same stretch twice.
+  button.disabled = true;
+  button.textContent = "wird importiert…";
+  try {
+    const session = await calibrationJson("api/calibrations/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_id: form.elements.device_id.value,
+        start: form.elements.start.value,
+        end: form.elements.end.value,
+        label: form.elements.label.value,
+      }),
+    });
+    error.hidden = true;
+    ok.textContent = `${session.sample_count} Messwerte übernommen als „${session.name}".`;
+    ok.hidden = false;
+    await loadCalibrationLab();
+  } catch (err) {
+    ok.hidden = true;
+    error.textContent = err.message;
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Importieren";
+  }
+});
+
 for (const button of document.querySelectorAll("#active-calibration [data-label]")) {
   button.addEventListener("click", async () => {
     if (!activeCalibration) return;
@@ -192,6 +253,7 @@ document.getElementById("stop-calibration").addEventListener("click", async () =
 });
 
 document.querySelector('.tab-btn[data-tab="calibration"]').addEventListener("click", () => {
+  suggestImportRange();
   loadCalibrationLab();
   if (!calibrationTimer) calibrationTimer = setInterval(loadCalibrationLab, CALIBRATION_REFRESH_MS);
 });
