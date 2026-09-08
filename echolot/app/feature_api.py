@@ -277,11 +277,15 @@ def calibration_presence_rate(session_id: str) -> dict:
 
     labels = {}
     for label, rows in by_label.items():
-        windows = presence_rate._split_windows(rows, profile.window_seconds)
-        verdicts = [presence_rate.evaluate(profile, window) for window in windows]
+        windows = presence_rate.split_windows(rows, profile.window_seconds)
+        verdicts = [presence_rate.evaluate(profile, w.samples, window=w) for w in windows]
         judged = [v for v in verdicts if v["available"]]
         labels[label] = {
             "windows": len(judged),
+            # Windows that elapsed but had no source behind them, or never
+            # elapsed at all. Reported rather than dropped: a label whose
+            # windows are mostly unusable is a fact about the recording.
+            "unusable_windows": len(verdicts) - len(judged),
             "occupied_windows": sum(1 for v in judged if v["occupied"]),
             "detail": judged,
         }

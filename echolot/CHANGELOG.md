@@ -131,8 +131,49 @@ der Knopf blieb deaktiviert und nirgends stand, warum. Beim Start werden
 solche Jobs jetzt als unterbrochen markiert, mit einem Text, der sagt,
 dass man einfach neu starten kann.
 
-Nicht in dieser Version: der letzte P1-Punkt des Reviews (Messfenster mit
-echter Beobachtungsdauer und Profilversionierung).
+**Ein Fenster war „so viele Messwerte, wie zufällig nebeneinander
+lagen".** Damit sahen drei verschiedene Fragen wie eine Antwort aus: wie
+lang die Strecke war, wie viel davon überhaupt jemand zugehört hat, und
+wie viele Ereignisse darin lagen. Zehn Bursts aus je fünf Messwerten,
+jeder 0,4 s lang und im Abstand von 60 s — zusammen **vier Sekunden**
+Beobachtung — wurden als zehn Ein-Minuten-Fenster für den Leerwert
+akzeptiert. Und fünf hohe Werte in 0,4 s ergaben `available: True` mit
+12,5 Ereignissen/s, also eine zuversichtliche Antwort aus einer
+Fünftelsekunde.
+
+Fenster liegen jetzt auf einem festen Raster, der Rest am Ende ist kein
+Fenster, und geteilt wird durch die **beobachtete** Zeit statt durch den
+Abstand zwischen erstem und letztem Messwert. Solange das Fenster noch
+nicht vergangen ist, lautet die Antwort `warming_up`; ist es vergangen,
+hatte aber überwiegend keine Datenquelle, `gap`.
+
+**Eine Lücke ist keine Ruhe — eine Ruhe aber auch keine Lücke.** Ein
+stiller Raum meldet trotzdem: das Wohnzimmer um vier Uhr morgens lieferte
+0,7 Messwerte pro Sekunde, und die längste Lücke in irgendeiner echten
+Aufnahme war 18,7 s. Zeit innerhalb einer Lücke über 30 s zählt deshalb
+nicht als beobachtet, eine gewöhnliche stille Strecke schon.
+
+**Die Messgröße heißt jetzt, was sie ist.** Gezählt werden Messwerte
+*über* der Schwelle, nicht Übergänge von darunter nach darüber — eine
+Ereignisrate, keine Übertrittsrate. Die Funktion heißt `event_rate`. Auf
+echte Übertritte umzustellen wäre eine Algorithmusänderung mit neuer
+Profilversion und Neukalibrierung und steht bewusst nicht hier drin.
+
+**Profile tragen eine Version und alte werden nicht weiterverwendet.**
+Der Leerwert derselben Aufnahme sinkt von 0,084 auf 0,067, weil der
+Divisor ein anderer ist — dieselbe Wohnung, andere Messgröße. Ein Gerät
+mit altem Profil trägt nichts mehr zur ratenbasierten Präsenz bei, und
+die Übersicht sagt, dass eine Leer-Aufnahme neu übernommen werden muss.
+Stillschweigend weiterrechnen wäre die schlechtere Variante.
+
+**Zwei dokumentierte Zahlen dieses Projekts waren falsch.** „Person
+direkt vor der Tür: 3,03 Ereignisse/s, 1 von 1 Fenstern erkannt" kam aus
+**neun Sekunden** Aufnahme. Neun Sekunden sind kein Fenster; diese
+Aufnahme ergibt jetzt gar keins, und die ehrliche Antwort ist, dass sie
+nichts sagt. Und „3 von 4 Couch-Fenstern" sind jetzt 3 von 3: das vierte
+war der Restbrocken am Ende der Aufnahme. Die bekannte Fehlstelle aus
+0.13.1 ist damit weg — **nicht weil besser erkannt wird, sondern weil
+das Bruchstück verschwunden ist.**
 
 ## 0.13.4
 

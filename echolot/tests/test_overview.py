@@ -176,3 +176,52 @@ def test_a_deliberately_chosen_threshold_is_not_second_guessed():
 
 def test_a_device_that_never_reported_a_threshold_is_not_judged():
     assert "threshold_profile_mismatch" not in kinds(collect(_high_accuracy(None)))
+
+
+def test_an_outdated_profile_is_reported_rather_than_ignored():
+    """From the external review (P1 #4).
+
+    A profile written under the old rate definition is refused, so the
+    device silently stops contributing to rate-based presence. Saying
+    nothing would leave its card showing a profile that no longer counts.
+    """
+    from app import presence_rate
+
+    subject = device()
+    subject.presence_profile = {
+        "crossing_threshold": 1e-3,
+        "baseline_rate": 0.084,
+        "window_seconds": 60.0,
+        # no "version": written before the definition changed
+    }
+    assert presence_rate.profile_outdated(subject.presence_profile) is True
+
+    problems = collect(
+        device_states=[(subject, {"available": True, "motion": False})]
+    )
+    assert "profile_outdated" in kinds(problems)
+
+
+def test_a_current_profile_is_not_reported():
+    from app import presence_rate
+
+    subject = device()
+    subject.presence_profile = {
+        "crossing_threshold": 1e-3,
+        "baseline_rate": 0.084,
+        "window_seconds": 60.0,
+        "version": presence_rate.PROFILE_VERSION,
+    }
+    problems = collect(
+        device_states=[(subject, {"available": True, "motion": False})]
+    )
+    assert "profile_outdated" not in kinds(problems)
+
+
+def test_a_device_without_a_profile_is_not_reported():
+    """Most devices have none, and "you have not calibrated" is not a
+    fault — it would train people to ignore the list."""
+    problems = collect(
+        device_states=[(device(), {"available": True, "motion": False})]
+    )
+    assert "profile_outdated" not in kinds(problems)

@@ -98,11 +98,18 @@ def test_the_clean_baseline_separates_the_couch_from_the_empty_room(
     empty_rows = [row for row in clean_baseline if row["label"] == "empty"]
 
     def occupied(rows):
-        windows = presence_rate._split_windows(rows, learned.window_seconds)
-        return sum(1 for w in windows if presence_rate.evaluate(learned, w)["occupied"]), len(windows)
+        windows = presence_rate.split_windows(rows, learned.window_seconds)
+        return (
+            sum(1 for w in windows if presence_rate.evaluate(learned, w.samples, window=w)["occupied"]),
+            len(windows),
+        )
 
-    assert occupied(still) == (3, 4), "eine Person auf der Couch"
-    assert occupied(next_door) == (1, 1), "jemand direkt vor der Tür"
+    # Three of three, not three of four. The fourth "window" was the
+    # trailing fragment of the recording and is no longer a window: a rate
+    # from part of a minute is not comparable with a rate from a whole
+    # one. The known miss from 0.13.1 is gone because the fragment is
+    # gone, not because anything detects better.
+    assert occupied(still) == (3, 3), "eine Person auf der Couch"
     assert occupied(empty_rows) == (1, 20), "leerer Raum, Wohnung belegt"
 
 
@@ -113,8 +120,8 @@ def test_walking_around_the_flat_is_far_quieter_than_sitting_in_the_room(
     through the wall? Twenty minutes of moving about the rest of the flat
     crossed at 0.027 a second against 0.261 sitting still in the room."""
     empty_rows = [row for row in clean_baseline if row["label"] == "empty"]
-    away = presence_rate.crossing_rate(empty_rows, presence_rate.DEFAULT_CROSSING_THRESHOLD)
-    inside = presence_rate.crossing_rate(still, presence_rate.DEFAULT_CROSSING_THRESHOLD)
+    away = presence_rate.event_rate(empty_rows, presence_rate.DEFAULT_CROSSING_THRESHOLD)
+    inside = presence_rate.event_rate(still, presence_rate.DEFAULT_CROSSING_THRESHOLD)
     assert inside > away * 5
 
 
@@ -127,7 +134,9 @@ def test_the_enter_level_clears_the_baseline_by_ratio_and_by_margin(profile):
 def test_a_very_quiet_room_is_not_tripped_by_two_stray_crossings():
     """Twice a very small number is still a very small number, which is
     what the absolute margin is for."""
-    silent = [{"t": i * 0.25, "movement_score": 0.0, "label": "empty"} for i in range(2400)]
+    # Ten full windows needs a little over ten minutes: the grid drops the
+    # trailing fragment, so exactly 600 s would give nine.
+    silent = [{"t": i * 0.25, "movement_score": 0.0, "label": "empty"} for i in range(2500)]
     learned = presence_rate.learn_baseline(silent)
     two_crossings = [
         {"t": i * 0.25, "movement_score": 1.0 if i < 2 else 0.0} for i in range(240)
@@ -170,15 +179,17 @@ def test_a_silent_room_does_not_get_an_infinite_ratio():
 
 
 def windows(samples, seconds=presence_rate.DEFAULT_WINDOW_SECONDS):
-    return presence_rate._split_windows(samples, seconds)
+    return presence_rate.split_windows(samples, seconds)
 
 
 def test_the_couch_reads_as_occupied(profile, still):
-    verdicts = [presence_rate.evaluate(profile, window)["occupied"] for window in windows(still)]
+    verdicts = [presence_rate.evaluate(profile, w.samples, window=w)["occupied"] for w in windows(still)]
     assert verdicts, "keine vollen Fenster in der Aufnahme"
-    # Three of four. The fourth window crossed at 0.041 a second — the last
-    # minute of the recording, and quite possibly the person already up.
+    # All three full windows. The fourth used to be counted and used to be
+    # the miss; it was the trailing fragment of the recording, which is no
+    # longer a window at all.
     assert sum(bool(v) for v in verdicts) == 3
+    assert len(verdicts) == 3
 
 
 def test_the_empty_room_stays_empty_while_the_flat_is_used(profile, clean_baseline):
@@ -186,14 +197,23 @@ def test_the_empty_room_stays_empty_while_the_flat_is_used(profile, clean_baseli
     territory, and almost certainly somebody walking past the door, which
     is why the profile flags it as suspect too."""
     empty_rows = [row for row in clean_baseline if row["label"] == "empty"]
-    verdicts = [presence_rate.evaluate(profile, w)["occupied"] for w in windows(empty_rows)]
+    verdicts = [presence_rate.evaluate(profile, w.samples, window=w)["occupied"] for w in windows(empty_rows)]
     assert len(verdicts) == 20
     assert sum(bool(v) for v in verdicts) == 1
 
 
-def test_someone_at_the_door_is_seen(profile, next_door):
-    verdicts = [presence_rate.evaluate(profile, w)["occupied"] for w in windows(next_door)]
-    assert verdicts and all(verdicts)
+def test_someone_at_the_door_cannot_be_judged_from_nine_seconds(profile, next_door):
+    """A correction to this project's own headline numbers.
+
+    "1 von 1 Fenstern erkannt, 3,03 Überschreitungen/s" came from nine
+    seconds of recording divided by the span between its first and last
+    reading. Nine seconds is not a minute, and the rate was a burst
+    extrapolated to a second. Under a fixed grid there is no window here
+    at all, and the honest answer is that this recording does not say.
+    """
+    span = next_door[-1]["t"] - next_door[0]["t"]
+    assert span < 15, "die Aufnahme ist kürzer als ein Fenster"
+    assert windows(next_door) == []
 
 
 def test_a_contaminated_baseline_is_flagged(profile):
@@ -219,7 +239,8 @@ def test_the_verdict_explains_itself(profile, still):
     burst at 12.5/s was reported as "1250 % der Messwerte" — the right
     number under a sentence that was not true of it.
     """
-    result = presence_rate.evaluate(profile, windows(still)[0])
+    first = windows(still)[0]
+    result = presence_rate.evaluate(profile, first.samples, window=first)
     assert "Ereignisse/s" in result["reason"]
     assert "%" not in result["reason"]
     assert "Faktor" in result["reason"]
@@ -241,7 +262,43 @@ def test_a_window_with_too_little_data_says_so_rather_than_empty(profile):
     result = presence_rate.evaluate(profile, [{"t": 1, "movement_score": 1.0}])
     assert result["available"] is False
     assert result["occupied"] is None
-    assert "zu wenige" in result["reason"]
+    assert result["state"] == "warming_up"
+
+
+def test_a_burst_is_not_a_window(profile):
+    """From the external review (P1 #4).
+
+    Five readings inside four tenths of a second were accepted and
+    reported 12.5 events a second — a confident answer from a fifth of a
+    second of evidence, because the divisor was the span between the
+    first and last reading rather than the window.
+    """
+    burst = [{"t": i * 0.1, "movement_score": 1.0} for i in range(5)]
+    result = presence_rate.evaluate(profile, burst)
+    assert result["available"] is False
+    assert result["state"] == "warming_up"
+    assert result["occupied"] is None
+
+
+def test_a_hole_in_the_data_is_not_a_quiet_minute(profile):
+    """A window that elapsed with nothing behind it for most of it is a
+    gap, and reporting it as a low rate would be reporting an empty room
+    every time the connection drops."""
+    rows = [{"t": i * 0.25, "movement_score": 0.0} for i in range(40)]   # 10 s
+    rows += [{"t": 100.0 + i * 0.25, "movement_score": 0.0} for i in range(40)]
+    result = presence_rate.evaluate(profile, rows)
+    assert result["available"] is False
+    assert result["state"] == "gap"
+
+
+def test_a_genuinely_quiet_minute_is_still_a_measurement(profile):
+    """The other half of the same rule: a room that reports steadily and
+    never crosses is quiet, not missing."""
+    rows = [{"t": i * 0.25, "movement_score": 0.0} for i in range(240)]
+    result = presence_rate.evaluate(profile, rows)
+    assert result["available"] is True
+    assert result["occupied"] is False
+    assert result["state"] == "ok"
 
 
 def _window_with_rate(rate: float, threshold: float) -> list[dict]:
@@ -263,13 +320,13 @@ def test_the_rate_is_per_second_not_per_reading():
     """
     busy = [{"t": i * 0.25, "movement_score": 1.0} for i in range(240)]
     quiet = [{"t": i * 6.0, "movement_score": 1.0} for i in range(10)]
-    assert presence_rate.crossing_rate(busy, 0.5) == pytest.approx(4.0, rel=0.02)
-    assert presence_rate.crossing_rate(quiet, 0.5) == pytest.approx(0.185, rel=0.05)
+    assert presence_rate.event_rate(busy, 0.5) == pytest.approx(4.0, rel=0.02)
+    assert presence_rate.event_rate(quiet, 0.5) == pytest.approx(0.185, rel=0.05)
 
 
 def test_a_single_reading_cannot_establish_a_rate():
-    assert presence_rate.crossing_rate([{"t": 1.0, "movement_score": 1.0}], 0.5) == 0.0
-    assert presence_rate.crossing_rate([], 0.5) == 0.0
+    assert presence_rate.event_rate([{"t": 1.0, "movement_score": 1.0}], 0.5) == 0.0
+    assert presence_rate.event_rate([], 0.5) == 0.0
 
 
 # --- through the API --------------------------------------------------------
@@ -306,7 +363,11 @@ def test_the_route_reproduces_the_analysis(tmp_path, monkeypatch):
     assert body["profile"]["suspect_windows"] == 1
     assert body["labels"]["still"]["occupied_windows"] == 3
     assert body["labels"]["empty"]["occupied_windows"] == 1
-    assert body["labels"]["interference"]["occupied_windows"] == 1
+    # Nine seconds of "somebody at the door" no longer produces a window
+    # at all, and the route says so rather than reporting a rate from a
+    # burst. The count of unusable windows is part of the answer.
+    assert body["labels"]["interference"]["windows"] == 0
+    assert body["labels"]["interference"]["occupied_windows"] == 0
 
 
 def test_a_session_without_an_empty_label_says_what_is_missing(tmp_path, monkeypatch):

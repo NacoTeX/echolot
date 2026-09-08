@@ -643,11 +643,17 @@ jemals mehr brauchen, sagt es das beim Bauen mit der genauen Zahl. Ohne
 
 Gemessen an echter Hardware, in drei Aufnahmen aus einem Wohnzimmer:
 
-| Situation | Überschreitungen/s |
+| Situation | Ereignisse/s |
 | --- | --- |
 | Raum leer, jemand bewegt sich in der übrigen Wohnung (20 min) | **0,027** |
 | Person sitzt still auf der Couch | **0,261** |
-| Person direkt vor der Tür | **3,03** |
+
+Eine dritte Zeile stand hier bis 0.13.5: „Person direkt vor der Tür,
+3,03". Die kam aus **neun Sekunden** Aufnahme, geteilt durch den Abstand
+zwischen erstem und letztem Messwert. Neun Sekunden sind kein Fenster,
+und die Rate war ein kurzer Ausschlag, auf eine Sekunde hochgerechnet.
+Seit die Fenster auf einem festen Raster liegen, ergibt diese Aufnahme
+gar kein Fenster mehr — die ehrliche Antwort ist, dass sie nichts sagt.
 
 Die wichtigste Zahl ist die erste: zwanzig Minuten durch die Wohnung
 laufen erzeugt **zehnmal weniger** als still im Raum sitzen. Das Signal
@@ -675,18 +681,28 @@ kontaminierte Fenster selbst. Zu kurz gemessen liefert nicht eine
 schwache, sondern eine zuversichtlich falsche Antwort. Es braucht daher
 mindestens zehn volle Fenster, also gut zehn Minuten.
 
-Am so gelernten Profil (Leerwert 0,084, Einschaltschwelle 0,167):
+Am so gelernten Profil (Leerwert 0,067, Einschaltschwelle 0,133):
 
 | | Fenster als belegt erkannt |
 | --- | --- |
-| Person sitzt still auf der Couch | 3 von 4 |
-| Person direkt vor der Tür | 1 von 1 |
+| Person sitzt still auf der Couch | 3 von 3 |
 | Raum leer, Wohnung belegt | **1 von 20** |
 
-Die beiden Ausreißer sind erklärbar: das verpasste Couch-Fenster ist die
-letzte Minute der Aufnahme, das falsch erkannte Leer-Fenster kreuzte bei
-0,286 — Couch-Niveau, vermutlich jemand direkt vor der Tür. Genau dieses
-Fenster meldet das Profil zusätzlich als verdächtig.
+Bis 0.13.5 stand hier „3 von 4". Das vierte Couch-Fenster war der
+Restbrocken am Ende der Aufnahme — kein volles Fenster, und eine Rate aus
+einer halben Minute ist mit einer aus einer ganzen nicht vergleichbar. Es
+zählt jetzt gar nicht mehr mit. **Die Erkennung ist dadurch nicht besser
+geworden; das Bruchstück ist verschwunden.**
+
+Das eine falsch erkannte Leer-Fenster liegt auf Couch-Niveau, vermutlich
+jemand direkt vor der Tür. Genau dieses Fenster meldet das Profil
+zusätzlich als verdächtig.
+
+Der Leerwert ist von 0,084 auf 0,067 gesunken, weil jetzt durch die
+beobachtete Zeit geteilt wird und nicht durch den Abstand zwischen erstem
+und letztem Messwert eines Fensters. Beides sind Zahlen über dasselbe
+Zimmer, aber nicht über dieselbe Messgröße — deshalb tragen Profile eine
+Version, und alte werden nicht weiterverwendet.
 
 `GET /api/calibrations/{id}/presence-rate` lernt die Rate aus den mit
 „Raum leer" markierten Messwerten einer Sitzung und bewertet die übrigen
@@ -698,6 +714,49 @@ Lichteinschalten will. Es beantwortet die andere Frage: ist noch jemand
 da.
 
 **Was nicht behauptet wird:** ein Raum, ein Gerät, drei Sitzungen.
+
+### Was ein Fenster ist
+
+Ein Fenster ist eine bekannte Strecke Wanduhr, und erst danach das, was
+hineinfiel. Bis 0.13.5 war es „so viele Messwerte, wie zufällig
+nebeneinander lagen", und das ließ drei verschiedene Fragen wie eine
+Antwort aussehen: wie lang die Strecke war, wie viel davon überhaupt
+jemand zugehört hat, und wie viele Ereignisse darin lagen.
+
+Was daraus folgte, in Zahlen: zehn Bursts aus je fünf Messwerten, jeder
+Burst 0,4 s lang und im Abstand von 60 s — insgesamt **vier Sekunden**
+Beobachtung — wurden als zehn Ein-Minuten-Fenster akzeptiert und als
+zehn Minuten Leerwert verbucht. Und fünf hohe Werte in 0,4 s ergaben
+`available: True` mit 12,5 Ereignissen/s: eine zuversichtliche Antwort
+aus einer Fünftelsekunde.
+
+Jetzt:
+
+- **Festes Raster.** Fenster laufen vom ersten Messwert an in festen
+  Schritten. Der Rest am Ende ist kein Fenster.
+- **Geteilt wird durch die beobachtete Zeit**, nicht durch den Abstand
+  zwischen erstem und letztem Messwert.
+- **Eine Lücke ist keine Ruhe.** Ein stiller Raum meldet trotzdem — das
+  Wohnzimmer um vier Uhr morgens lieferte 0,7 Messwerte pro Sekunde, und
+  die längste Lücke in irgendeiner echten Aufnahme war 18,7 s. Zeit
+  innerhalb einer Lücke über 30 s zählt deshalb nicht als beobachtet,
+  eine gewöhnliche stille Strecke schon.
+- **`warming_up` statt einer Antwort**, solange das Fenster noch nicht
+  vergangen ist, und `gap`, wenn es vergangen ist, aber überwiegend ohne
+  Datenquelle.
+
+**Die Messgröße heißt jetzt, was sie ist.** Gezählt werden Messwerte
+*über* der Schwelle, nicht Übergänge von darunter nach darüber. Das ist
+eine Ereignisrate, keine Übertrittsrate. Die Funktion heißt
+`event_rate`, und die Anzeige sagt „Ereignisse/s". Auf echte Übertritte
+umzustellen wäre eine Algorithmusänderung mit neuer Profilversion und
+Neukalibrierung — das steht hier bewusst nicht.
+
+**Profile tragen eine Version.** Ein Profil aus einer älteren Auswertung
+beschreibt eine andere Messgröße und wird nicht stillschweigend
+weiterverwendet: das Gerät trägt dann nichts zur ratenbasierten Präsenz
+bei, und die Übersicht sagt, dass eine Leer-Aufnahme neu übernommen
+werden muss.
 
 ### Ein Abonnement pro Gerät, dauerhaft
 

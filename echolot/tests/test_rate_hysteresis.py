@@ -34,6 +34,8 @@ PROFILE = {
     "baseline_spread": 0.01,
     "window_seconds": 60.0,
     "sample_count": 1200,
+    "observed_seconds": 1200.0,
+    "version": presence_rate.PROFILE_VERSION,
 }
 
 
@@ -103,7 +105,7 @@ def test_the_reviews_numbers_still_describe_this_profile():
     enter, exit_ = levels()
     assert round(enter, 4) == 0.168
     assert round(exit_, 4) == 0.1008
-    rate = presence_rate.crossing_rate(window(8), 1e-3)
+    rate = presence_rate.event_rate(window(8), 1e-3)
     assert exit_ < rate < enter
 
 

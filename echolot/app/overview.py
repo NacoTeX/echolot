@@ -13,7 +13,7 @@ way.
 
 from dataclasses import dataclass
 
-from app import health
+from app import health, presence_rate
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,25 @@ def collect_problems(
                         f"„{label}“ ist geflasht, aber Home Assistant liefert keine "
                         "Werte dafür."
                     ),
+                    device_id=device.id,
+                )
+            )
+
+        # A profile written under an older definition is not used, and
+        # saying nothing would leave the device quietly contributing
+        # nothing to rate-based presence while its card still shows a
+        # profile. The measurement changed; the recalibration is real
+        # work and has to be asked for.
+        if presence_rate.profile_outdated(device.presence_profile):
+            problems.append(
+                Problem(
+                    kind="profile_outdated",
+                    message=(
+                        f"Das Präsenzprofil von „{label}“ stammt aus einer älteren "
+                        "Auswertung und wird nicht mehr verwendet. Eine Leer-Aufnahme "
+                        "neu übernehmen."
+                    ),
+                    tab="calibration",
                     device_id=device.id,
                 )
             )

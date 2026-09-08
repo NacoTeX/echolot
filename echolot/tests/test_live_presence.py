@@ -423,6 +423,6 @@ def test_live_and_the_recorder_import_count_the_same_thing():
     ]
 
     assert len(live_rows) == len(imported)
-    assert presence_rate.crossing_rate(live_rows, 1e-3) == presence_rate.crossing_rate(
+    assert presence_rate.event_rate(live_rows, 1e-3) == presence_rate.event_rate(
         imported, 1e-3
     )

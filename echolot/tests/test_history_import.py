@@ -247,11 +247,8 @@ def test_the_empty_room_at_night_never_crosses():
     why the floor is needed."""
     samples = history_import.merge(load_night(), [], [])
     rows = [{**s.as_dict(), "label": "empty"} for s in samples]
-    windows = presence_rate._split_windows(rows, presence_rate.DEFAULT_WINDOW_SECONDS)
-    rates = [
-        presence_rate.crossing_rate(w, presence_rate.DEFAULT_CROSSING_THRESHOLD)
-        for w in windows
-    ]
+    windows = presence_rate.split_windows(rows, presence_rate.DEFAULT_WINDOW_SECONDS)
+    rates = [w.rate(presence_rate.DEFAULT_CROSSING_THRESHOLD) for w in windows]
     assert rates and max(rates) == 0.0
 
     profile = presence_rate.learn_baseline(rows)
