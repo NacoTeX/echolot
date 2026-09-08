@@ -11,7 +11,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.board_registry import get_board
-from app.devices import BuildStatus, Device, config_path, device_dir, save_device
+from app.devices import BuildStatus, Device, config_path, device_dir, update_device
 
 logger = logging.getLogger("echolot.builder")
 
@@ -253,10 +253,11 @@ def run_ota(device: Device, address: str) -> None:
     Runs synchronously; call via a worker thread like run_build.
     """
     ddir = device_dir(device.id)
-    device.ota_status = BuildStatus.RUNNING
-    device.ota_error = None
-    device.ota_log = ""
-    save_device(device)
+
+    def record(**fields) -> bool:
+        return update_device(device.id, **fields) is not None
+
+    record(ota_status=BuildStatus.RUNNING, ota_error=None, ota_log="")
 
     try:
         # Re-render first: the config carries the OTA password, and an
@@ -269,24 +270,29 @@ def run_ota(device: Device, address: str) -> None:
             1800,
         )
         log = (proc.stdout or "") + (proc.stderr or "")
-        device.ota_log = log[-_LOG_TAIL_CHARS:]
+        ota_log = log[-_LOG_TAIL_CHARS:]
 
         if proc.returncode != 0:
-            device.ota_status = BuildStatus.ERROR
-            device.ota_error = _explain_ota_failure(proc.returncode, log, address)
+            record(
+                ota_status=BuildStatus.ERROR,
+                ota_log=ota_log,
+                ota_error=_explain_ota_failure(proc.returncode, log, address),
+            )
         else:
-            device.ota_status = BuildStatus.SUCCESS
-            device.ota_last_success = time.time()
-        save_device(device)
+            record(
+                ota_status=BuildStatus.SUCCESS,
+                ota_log=ota_log,
+                ota_error=None,
+                ota_last_success=time.time(),
+            )
     except subprocess.TimeoutExpired:
-        device.ota_status = BuildStatus.ERROR
-        device.ota_error = "Das OTA-Update hat nach 30 Minuten aufgegeben"
-        save_device(device)
+        record(
+            ota_status=BuildStatus.ERROR,
+            ota_error="Das OTA-Update hat nach 30 Minuten aufgegeben",
+        )
     except Exception as err:  # noqa: BLE001 - surface it instead of killing the worker
         logger.exception("OTA failed for device %s", device.id)
-        device.ota_status = BuildStatus.ERROR
-        device.ota_error = str(err)
-        save_device(device)
+        record(ota_status=BuildStatus.ERROR, ota_error=str(err))
     finally:
         _discard_rendered_config(device.id)
         _finish_build(device.id)
@@ -314,10 +320,14 @@ def run_build(device: Device) -> None:
     ddir = device_dir(device.id)
     ddir.mkdir(parents=True, exist_ok=True)
 
-    device.status = BuildStatus.RUNNING
-    device.build_error = None
-    device.build_log = ""
-    save_device(device)
+    # Only the fields this job produces are written, and only while the
+    # device still exists — see devices.update_device. The Device object
+    # here is a snapshot from minutes ago; writing it back whole would
+    # undo anything changed meanwhile and resurrect a deleted device.
+    def record(**fields) -> bool:
+        return update_device(device.id, **fields) is not None
+
+    record(status=BuildStatus.RUNNING, build_error=None, build_log="")
 
     # Anything the build produces has to be newer than this; see
     # _find_factory_bin.
@@ -332,37 +342,39 @@ def run_build(device: Device) -> None:
 
         proc = _run_esphome(["esphome", "compile", str(config_path(device.id))], ddir, 1800)
         log = (proc.stdout or "") + (proc.stderr or "")
-        device.build_log = log[-_LOG_TAIL_CHARS:]
+        build_log = log[-_LOG_TAIL_CHARS:]
 
         if proc.returncode != 0:
-            device.status = BuildStatus.ERROR
-            device.build_error = _explain_failure(proc.returncode, log, board)
-            save_device(device)
+            record(
+                status=BuildStatus.ERROR,
+                build_log=build_log,
+                build_error=_explain_failure(proc.returncode, log, board),
+            )
             return
 
         firmware = _find_factory_bin(ddir / ".esphome" / "build" / device.config.name, started_at)
         if firmware is None:
-            device.status = BuildStatus.ERROR
-            device.build_error = (
-                "Der Build meldet Erfolg, aber es ist kein neues "
-                "firmware.factory.bin entstanden. Sieh ins Build-Protokoll."
+            record(
+                status=BuildStatus.ERROR,
+                build_log=build_log,
+                build_error=(
+                    "Der Build meldet Erfolg, aber es ist kein neues "
+                    "firmware.factory.bin entstanden. Sieh ins Build-Protokoll."
+                ),
             )
-            save_device(device)
             return
 
-        device.firmware_bin = str(firmware.relative_to(ddir))
-        device.chip_family = board.chip_family
-        device.status = BuildStatus.SUCCESS
-        save_device(device)
+        record(
+            status=BuildStatus.SUCCESS,
+            build_log=build_log,
+            firmware_bin=str(firmware.relative_to(ddir)),
+            chip_family=board.chip_family,
+        )
     except subprocess.TimeoutExpired:
-        device.status = BuildStatus.ERROR
-        device.build_error = "Build timed out after 30 minutes"
-        save_device(device)
+        record(status=BuildStatus.ERROR, build_error="Build timed out after 30 minutes")
     except Exception as err:  # noqa: BLE001 - surface any failure to the UI instead of crashing the worker
         logger.exception("Build failed for device %s", device.id)
-        device.status = BuildStatus.ERROR
-        device.build_error = str(err)
-        save_device(device)
+        record(status=BuildStatus.ERROR, build_error=str(err))
     finally:
         _discard_rendered_config(device.id)
         _finish_build(device.id)

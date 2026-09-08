@@ -364,6 +364,79 @@ def save_device(device: Device) -> None:
         _write_index(index)
 
 
+def update_device(device_id: str, **fields) -> Device | None:
+    """Write only the named fields, under the registry lock.
+
+    `save_device` replaces the whole record, which is right for a route
+    that has just read it and wrong for a job that has been holding a
+    Device object for minutes. A build or an OTA run does exactly that:
+    anything changed meanwhile — corrected entity ids, an address, a
+    freshly applied presence profile — was silently replaced by the copy
+    the job started with, and a device deleted during a build came back
+    when the build finished.
+
+    Returns None when the device is gone, so a job can tell that its
+    result has nowhere to go instead of re-creating it.
+    """
+    # Pydantic drops unknown keys silently, so a typo in a field name
+    # would write nothing and report success — the quietest possible way
+    # to lose a build result.
+    unknown = set(fields) - set(Device.model_fields)
+    if unknown:
+        raise ValueError(f"Unbekannte Gerätefelder: {sorted(unknown)}")
+
+    with _lock:
+        index = _read_index()
+        stored = index.get(device_id)
+        if stored is None:
+            return None
+        record = dict(stored)
+        record.update(fields)
+        record["updated_at"] = time.time()
+        # Round-trip through the model so a bad field fails here, next to
+        # its caller, rather than at the next read.
+        device = Device.model_validate(record)
+        index[device_id] = device.model_dump()
+        _write_index(index)
+        return device
+
+
+INTERRUPTED_MESSAGE = (
+    "Der Vorgang wurde durch einen Neustart des Add-ons unterbrochen. "
+    "Er lief in einem Prozess, den es nicht mehr gibt — einfach neu starten."
+)
+
+
+def mark_interrupted_jobs() -> list[str]:
+    """Fail anything still queued or running at start-up.
+
+    A build or an OTA run lives in a background task. After a restart —
+    an add-on update, most often — that task is gone, but the record kept
+    saying "wird gebaut…" forever: the button stayed disabled and nothing
+    anywhere said why. Called once from the lifespan.
+    """
+    busy = {BuildStatus.QUEUED, BuildStatus.RUNNING}
+    touched: list[str] = []
+    with _lock:
+        index = _read_index()
+        for device_id, record in index.items():
+            changed = False
+            if record.get("status") in busy:
+                record["status"] = BuildStatus.ERROR
+                record["build_error"] = INTERRUPTED_MESSAGE
+                changed = True
+            if record.get("ota_status") in busy:
+                record["ota_status"] = BuildStatus.ERROR
+                record["ota_error"] = INTERRUPTED_MESSAGE
+                changed = True
+            if changed:
+                record["updated_at"] = time.time()
+                touched.append(device_id)
+        if touched:
+            _write_index(index)
+    return touched
+
+
 def delete_device(device_id: str) -> bool:
     with _lock:
         index = _read_index()

@@ -114,8 +114,25 @@ eine echte zweite Messung und bleibt. Ein älterer Zeitstempel als der
 neueste wird verworfen, weil `_trim` und `window` auf der Reihenfolge
 aufbauen.
 
-Nicht in dieser Version: die übrigen P1-Punkte des Reviews (Messfenster
-und Beobachtungsdauer, Build-Ergebnisse gegen gleichzeitige Änderungen).
+**Ein fertiger Build hat zwischenzeitliche Änderungen überschrieben.**
+`run_build` und `run_ota` halten ein Device-Objekt über die Dauer eines
+Compilerlaufs — Minuten — und schrieben es am Ende komplett zurück. Alles,
+was inzwischen geändert wurde, war damit weg: korrigierte Entity-IDs, eine
+Adresse, ein frisch übernommenes Präsenzprofil. Ein während des Builds
+gelöschtes Gerät kam beim Abschluss wieder. Jobs schreiben jetzt nur die
+Felder, die sie selbst erzeugen, unter dem Registry-Lock, und nur solange
+das Gerät noch existiert (`devices.update_device`). Ein Tippfehler im
+Feldnamen wird abgelehnt statt still verworfen.
+
+**Unterbrochene Jobs bleiben nicht auf „wird gebaut…" stehen.** Ein Build
+lebt in einem Hintergrund-Task; nach einem Neustart — meist ein Update —
+gibt es den Task nicht mehr, der Datensatz sagte aber weiterhin „läuft":
+der Knopf blieb deaktiviert und nirgends stand, warum. Beim Start werden
+solche Jobs jetzt als unterbrochen markiert, mit einem Text, der sagt,
+dass man einfach neu starten kann.
+
+Nicht in dieser Version: der letzte P1-Punkt des Reviews (Messfenster mit
+echter Beobachtungsdauer und Profilversionierung).
 
 ## 0.13.4
 
