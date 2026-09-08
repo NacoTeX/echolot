@@ -84,119 +84,112 @@ def test_an_unparsable_timestamp_does_not_lose_the_reading():
     assert sample.movement_score == 0.4
 
 
-# --- the polling loop -------------------------------------------------------
+# --- driven by a subscription ----------------------------------------------
 
 
-class FakeHomeAssistant:
-    """Serves a scripted sequence, repeating the last entry forever."""
+class FakeSubscription:
+    """Stands in for the websocket, so a test can deliver states by hand."""
 
-    def __init__(self, readings):
-        self.readings = list(readings)
-        self.index = 0
-        self.threshold_reads = 0
+    instances: list["FakeSubscription"] = []
 
-    async def read(self, entity_id):
-        if entity_id.startswith("number."):
-            self.threshold_reads += 1
-            return state("0.5")
-        current = self.readings[min(self.index, len(self.readings) - 1)]
-        if entity_id.startswith("sensor."):
-            self.index += 1
-            return state(current[0], current[1])
-        return state("on" if current[0] > 0.5 else "off", current[1])
+    def __init__(self, entity_ids, on_state, *, loop=None):
+        self.entity_ids = list(entity_ids)
+        self.on_state = on_state
+        self.started = False
+        self.stopped = False
+        self.connected = False
+        self.error = None
+        FakeSubscription.instances.append(self)
+
+    def start(self):
+        self.started = True
+        self.connected = True
+
+    def stop(self):
+        self.stopped = True
+        self.connected = False
 
 
-def run_sampler(fake, *, ticks: int) -> list:
+@pytest.fixture
+def wired():
+    FakeSubscription.instances.clear()
     captured = []
     sampler = ha_sampler.HomeAssistantSampler(
-        lambda device_id, sample: captured.append((device_id, sample)), fake.read
+        lambda device_id, sample: captured.append((device_id, sample)), FakeSubscription
     )
-
-    async def run():
-        assert sampler.start(make_device()) is True
-        await asyncio.sleep(ha_sampler.POLL_SECONDS * ticks)
-        sampler.stop("probe")
-
-    asyncio.run(run())
-    return captured
+    assert sampler.start(make_device()) is True
+    return sampler, captured, FakeSubscription.instances[-1]
 
 
-def test_distinct_readings_are_recorded(monkeypatch):
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
-    fake = FakeHomeAssistant([
-        (0.1, "2026-09-08T12:00:00+00:00"),
-        (0.9, "2026-09-08T12:00:01+00:00"),
-        (0.2, "2026-09-08T12:00:02+00:00"),
-    ])
-    captured = run_sampler(fake, ticks=8)
-    scores = [sample.movement_score for _, sample in captured]
-    assert scores[:3] == [0.1, 0.9, 0.2]
-    assert all(device_id == "probe" for device_id, _ in captured)
+def test_all_three_entities_are_subscribed(wired):
+    _, _, subscription = wired
+    assert subscription.entity_ids == [
+        "sensor.probe_movement_score",
+        "binary_sensor.probe_motion_detected",
+        "number.probe_threshold",
+    ]
+    assert subscription.started is True
 
 
-def test_a_repeated_reading_is_not_counted_twice(monkeypatch):
-    """Polling faster than Home Assistant updates must not pile up copies —
-    that would skew the distribution the recommendation is computed from."""
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
-    fake = FakeHomeAssistant([(0.42, "2026-09-08T12:00:00+00:00")])
-    captured = run_sampler(fake, ticks=10)
+def test_a_score_change_becomes_a_sample(wired):
+    _, captured, subscription = wired
+    subscription.on_state("sensor.probe_movement_score", state("0.42"))
     assert len(captured) == 1
+    device_id, sample = captured[0]
+    assert device_id == "probe"
+    assert sample.movement_score == 0.42
 
 
-def test_the_threshold_is_not_re_read_on_every_tick(monkeypatch):
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(ha_sampler, "THRESHOLD_EVERY", 5)
-    fake = FakeHomeAssistant([
-        (index / 10, f"2026-09-08T12:00:{index:02d}+00:00") for index in range(20)
-    ])
-    run_sampler(fake, ticks=12)
-    assert 1 <= fake.threshold_reads <= 4
+def test_the_threshold_is_context_not_a_reading(wired):
+    """It changes only on recalibration. Emitting on it would put a row in
+    the export with no measurement in it."""
+    _, captured, subscription = wired
+    subscription.on_state("number.probe_threshold", state("0.5"))
+    assert captured == []
+
+    subscription.on_state("sensor.probe_movement_score", state("0.42"))
+    assert captured[0][1].threshold == 0.5
 
 
-def test_a_failing_read_does_not_end_the_recording(monkeypatch):
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
-    calls = {"n": 0}
-
-    async def flaky(entity_id):
-        calls["n"] += 1
-        if calls["n"] < 4:
-            raise RuntimeError("Home Assistant hustet")
-        return state(0.7, f"2026-09-08T12:00:{calls['n']:02d}+00:00")
-
-    captured = []
-    sampler = ha_sampler.HomeAssistantSampler(
-        lambda device_id, sample: captured.append(sample), flaky
-    )
-
-    async def run():
-        sampler.start(make_device())
-        await asyncio.sleep(0.2)
-        sampler.stop("probe")
-
-    asyncio.run(run())
-    assert captured, "nach dem Fehler muss weiter abgetastet werden"
+def test_motion_and_score_are_carried_across_messages(wired):
+    """They arrive as separate messages; a sample needs the latest of each."""
+    _, captured, subscription = wired
+    subscription.on_state("binary_sensor.probe_motion_detected", state("on"))
+    subscription.on_state("sensor.probe_movement_score", state("0.9"))
+    sample = captured[-1][1]
+    assert sample.motion is True
+    assert sample.movement_score == 0.9
 
 
-def test_starting_twice_does_not_double_the_sample_rate(monkeypatch):
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
-    sampler = ha_sampler.HomeAssistantSampler(lambda *_: None, FakeHomeAssistant([(0.1, "x")]).read)
+def test_stopping_ends_the_subscription(wired):
+    sampler, _, subscription = wired
+    sampler.stop("probe")
+    assert subscription.stopped is True
+    assert sampler.running_for("probe") is False
 
-    async def run():
-        device = make_device()
-        first = sampler.start(device)
-        second = sampler.start(device)
-        sampler.stop_all()
-        return first, second
 
-    assert asyncio.run(run()) == (True, False)
+def test_starting_twice_does_not_open_a_second_subscription(wired):
+    sampler, _, _ = wired
+    before = len(FakeSubscription.instances)
+    assert sampler.start(make_device()) is False
+    assert len(FakeSubscription.instances) == before
 
 
 def test_a_device_without_entities_cannot_be_sampled():
-    sampler = ha_sampler.HomeAssistantSampler(lambda *_: None, None)
+    sampler = ha_sampler.HomeAssistantSampler(lambda *_: None, FakeSubscription)
     device = make_device()
     device.entity_movement_score = None
     device.entity_motion = None
     assert sampler.start(device) is False
+
+
+def test_the_connection_state_is_reportable(wired):
+    sampler, _, subscription = wired
+    assert sampler.status("probe") == {"connected": True, "error": None}
+    subscription.connected = False
+    subscription.error = "getrennt"
+    assert sampler.status("probe") == {"connected": False, "error": "getrennt"}
+    assert sampler.status("gibtsnicht") == {"connected": False, "error": None}
 
 
 # --- through to the export --------------------------------------------------
@@ -204,29 +197,27 @@ def test_a_device_without_entities_cannot_be_sampled():
 
 def test_a_recording_from_home_assistant_reaches_the_csv(tmp_path, monkeypatch):
     monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
+    FakeSubscription.instances.clear()
     store = calibration.CalibrationStore()
-    fake = FakeHomeAssistant([
-        (score, f"2026-09-08T12:00:{index:02d}+00:00")
-        for index, score in enumerate([0.05, 0.06, 3.1, 3.4, 0.05, 0.07])
-    ])
-    sampler = ha_sampler.HomeAssistantSampler(store.ingest, fake.read)
+    sampler = ha_sampler.HomeAssistantSampler(store.ingest, FakeSubscription)
 
-    async def run():
-        session = store.create("probe", name="Gehtest")
-        store.set_label(session["id"], "empty")
-        sampler.start(make_device())
-        await asyncio.sleep(0.25)
-        sampler.stop("probe")
-        return session
+    session = store.create("probe", name="Gehtest")
+    store.set_label(session["id"], "empty")
+    sampler.start(make_device())
+    subscription = FakeSubscription.instances[-1]
 
-    session = asyncio.run(run())
+    subscription.on_state("number.probe_threshold", state("0.5"))
+    for index, score in enumerate([0.05, 0.06, 3.1, 3.4, 0.05, 0.07]):
+        subscription.on_state(
+            "sensor.probe_movement_score",
+            state(score, f"2026-09-08T12:00:{index:02d}+00:00"),
+        )
     store.stop(session["id"])
 
     rows = store.csv(session["id"]).strip().splitlines()
     assert rows[0] == "t,movement_score,threshold,motion,label"
-    assert len(rows) > 1, "die Aufzeichnung darf nicht leer bleiben"
     body = [row.split(",") for row in rows[1:]]
+    assert len(body) == 6
     assert all(row[1] for row in body), "jede Zeile braucht einen Bewegungswert"
     assert {row[2] for row in body} == {"0.5"}, "die Schwelle muss mitgeschrieben werden"
     assert all(row[4] == "empty" for row in body)

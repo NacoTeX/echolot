@@ -590,6 +590,46 @@ selbst gesetzter Wert hat Vorrang vor ESPHomes Rechnung; sollte ESPHome
 jemals mehr brauchen, sagt es das beim Bauen mit der genauen Zahl. Ohne
 `direct_api` bleibt die Rechnung unangetastet.
 
+### Präsenz aus der Überschreitungsrate
+
+Gemessen an echter Hardware, eine Person still auf der Couch gegen
+denselben Raum leer:
+
+- Ein **einzelner** Messwert trennt die beiden kaum. AUC 0,616 — Münzwurf
+  mit Neigung. Die `recommendation()` des Calibration Lab meldete das
+  korrekt als `quality: poor` mit 98 % Falsch-Negativ-Rate, statt sich
+  eine Schwelle auszudenken.
+- **Der leere Raum ist nicht still.** Bei Schwelle 0,5 überschreitet er
+  in 3,0 % der Messwerte, mit Person 8,7 %. Eine Haltezeit ist deshalb das
+  falsche Werkzeug: 60 s Haltezeit meldeten den Raum zu 95 % belegt mit
+  Person — und zu **40 % belegt ohne**.
+- **Die Rate über ein Fenster trennt.** Über 60 s: AUC 0,931, mit 17,7 %
+  der Messwerte über 1e-3 bei Anwesenheit gegen 3,8 % leer.
+
+Präsenz heißt daher: *die Überschreitungsrate der letzten Minute liegt
+deutlich über der Rate, die dieser Raum leer zeigt.* Die Leer-Aufnahme ist
+damit nicht Vorbereitung der Kalibrierung — sie **ist** die Kalibrierung.
+
+`GET /api/calibrations/{id}/presence-rate` lernt die Rate aus den mit
+„Raum leer" markierten Messwerten einer Sitzung und bewertet die übrigen
+Label daran.
+
+**Der Median, nicht der Mittelwert.** Die erste echte Leer-Aufnahme hatte
+in ihrer letzten Minute jemanden im Raum: die drei Fenster lagen bei
+0,014, 0,038 und 0,217. Der Mittelwert daraus ist 0,090 und liegt über
+jedem ehrlichen Fenster; der Median ist 0,038 und beschreibt, was der Raum
+tut. Ein Fenster weit über den übrigen wird zusätzlich gemeldet — es ist
+die Signatur einer Aufnahme, bei der jemand im Raum war.
+
+**Der Preis ist rund eine Minute Latenz.** Das ersetzt die vorhandene
+Bewegungserkennung nicht, die in einer Sekunde reagiert und die man zum
+Lichteinschalten will. Es beantwortet die andere Frage, die Bewegung nicht
+beantworten kann: ist noch jemand da.
+
+**Was nicht behauptet wird:** die 0,931 stehen auf zwölf Fenstern gegen
+sechs, aus einem Raum, einem Gerät, einer Sitzung. Der Mechanismus ist
+belastbar, die Zahlen wollen mehr Belege.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

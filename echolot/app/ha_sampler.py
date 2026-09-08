@@ -15,29 +15,19 @@ are: the Home Assistant entities the device publishes over the ESPHome
 API. That costs a hop and some resolution, and it needs nothing from the
 device that it is not already giving Home Assistant.
 
-Only genuinely new readings are recorded. Home Assistant stamps every
-state with `last_updated`, so a poll that returns the value it returned
-last time is a repeat, not a measurement — counting those would pile up
-identical numbers and skew the very distribution the recommendation is
-computed from.
+Readings arrive by subscription (see app/ha_stream.py). Home Assistant
+sends a message when a value changes, so there are no repeats to filter —
+which polling did need, and which cost three quarters of the data anyway.
+Each sample keeps Home Assistant's own `last_updated` as its timestamp.
 """
 
-import asyncio
 import logging
 from datetime import datetime
 
+from app import ha_stream
 from app.telemetry import Sample
 
 logger = logging.getLogger("echolot.ha_sampler")
-
-#: Home Assistant carries roughly six movement-score updates a second from
-#: an ESPectre node. Polling twice a second therefore never invents a
-#: sample, and the recommendation needs only twenty per label.
-POLL_SECONDS = 0.5
-
-#: The threshold changes when someone recalibrates, not continuously, so
-#: it is read once every this many ticks rather than on each one.
-THRESHOLD_EVERY = 20
 
 
 def _float(state) -> float | None:
@@ -83,76 +73,83 @@ def build_sample(score_state, motion_state, threshold: float | None) -> Sample |
 
 
 class HomeAssistantSampler:
-    """Feeds one recording device's readings into a sink."""
+    """Turns one device's Home Assistant state changes into calibration samples.
 
-    def __init__(self, sink, reader, loop: asyncio.AbstractEventLoop | None = None) -> None:
+    Driven by a subscription rather than a poll, so every update Home
+    Assistant receives becomes a sample. Home Assistant only sends a
+    message when a value changes, so the repeat-suppression the polling
+    version needed is gone with the polling.
+
+    The three entities arrive independently. A sample is emitted when the
+    movement score or the motion state changes; the threshold is kept as
+    context, because it changes only on recalibration and is never a
+    measurement of its own.
+    """
+
+    def __init__(self, sink, subscription_factory=None) -> None:
         #: sink(device_id, Sample) — CalibrationStore.ingest in production.
         self._sink = sink
-        #: reader(entity_id) -> state dict | None
-        self._reader = reader
-        #: The application's event loop. FastAPI runs a plain `def` route in
-        #: a worker thread, where asyncio.create_task raises "no running
-        #: event loop" — so starting a recording from the API needs the loop
-        #: handed in rather than discovered. Left unset, start() falls back
-        #: to the running loop, which is what tests have.
-        self._loop = loop
-        self._tasks: dict[str, object] = {}
+        self._factory = subscription_factory or ha_stream.StateSubscription
+        self._subscriptions: dict[str, object] = {}
+        self._latest: dict[str, dict] = {}
+        self._loop = None
 
-    def bind(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
+    def bind(self, loop) -> None:
+        """Hand in the application's event loop.
 
-    def _spawn(self, coro):
-        """Schedule the poll loop from whichever thread we happen to be on."""
-        if self._loop is not None:
-            return asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return asyncio.create_task(coro)
+        Recordings start from a plain `def` FastAPI route, which runs in a
+        worker thread with no running loop of its own.
+        """
+        self._loop = loop
 
     def running_for(self, device_id: str) -> bool:
-        task = self._tasks.get(device_id)
-        return task is not None and not task.done()
+        return device_id in self._subscriptions
+
+    def status(self, device_id: str) -> dict:
+        subscription = self._subscriptions.get(device_id)
+        if subscription is None:
+            return {"connected": False, "error": None}
+        return {"connected": subscription.connected, "error": subscription.error}
 
     def start(self, device) -> bool:
-        """Begin sampling, unless this device is already being sampled."""
         if self.running_for(device.id):
             return False
+        entity_ids = [
+            device.entity_movement_score,
+            device.entity_motion,
+            device.entity_threshold,
+        ]
         if not device.entity_movement_score and not device.entity_motion:
             return False
-        self._tasks[device.id] = self._spawn(self._poll(device))
+
+        cache: dict[str, dict] = {}
+        self._latest[device.id] = cache
+
+        def on_state(entity_id: str, state: dict) -> None:
+            cache[entity_id] = state
+            # The threshold alone is context, not a reading: emitting on it
+            # would put a row in the export with no measurement in it.
+            if entity_id == device.entity_threshold:
+                return
+            sample = build_sample(
+                cache.get(device.entity_movement_score),
+                cache.get(device.entity_motion),
+                _float(cache.get(device.entity_threshold)),
+            )
+            if sample is not None:
+                self._sink(device.id, sample)
+
+        subscription = self._factory([e for e in entity_ids if e], on_state, loop=self._loop)
+        subscription.start()
+        self._subscriptions[device.id] = subscription
         return True
 
     def stop(self, device_id: str) -> None:
-        task = self._tasks.pop(device_id, None)
-        if task is not None and not task.done():
-            task.cancel()
+        subscription = self._subscriptions.pop(device_id, None)
+        self._latest.pop(device_id, None)
+        if subscription is not None:
+            subscription.stop()
 
     def stop_all(self) -> None:
-        for device_id in list(self._tasks):
+        for device_id in list(self._subscriptions):
             self.stop(device_id)
-
-    async def _poll(self, device) -> None:
-        threshold: float | None = None
-        last_stamp: float | None = None
-        tick = 0
-        while True:
-            try:
-                if tick % THRESHOLD_EVERY == 0 and device.entity_threshold:
-                    threshold = _float(await self._reader(device.entity_threshold))
-                score_state, motion_state = await asyncio.gather(
-                    self._read(device.entity_movement_score),
-                    self._read(device.entity_motion),
-                )
-                sample = build_sample(score_state, motion_state, threshold)
-                # A reading Home Assistant has not refreshed is the same
-                # reading, not a second one.
-                if sample is not None and sample.t != last_stamp:
-                    last_stamp = sample.t
-                    self._sink(device.id, sample)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - one bad poll must not end the recording
-                logger.exception("Abtastung für %s fehlgeschlagen", device.id)
-            tick += 1
-            await asyncio.sleep(POLL_SECONDS)
-
-    async def _read(self, entity_id: str | None):
-        return await self._reader(entity_id) if entity_id else None

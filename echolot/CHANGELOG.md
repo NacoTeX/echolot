@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.13.0
+
+Aus zwei echten Aufnahmen entstanden — fünf Minuten still auf der Couch,
+zweieinhalb Minuten derselbe Raum leer. Beide liegen jetzt als
+`tests/data/*.csv` im Projekt und sind die Prüfsteine für alles Folgende.
+
+**Der Sampler abonniert, statt zu fragen.** Das Gerät veröffentlicht rund
+sechs Werte pro Sekunde an Home Assistant; das Polling holte 1,5 mit
+Lücken bis 13 s — etwa ein Viertel. Über Home Assistants Websocket-API
+(`subscribe_trigger`, serverseitig auf unsere drei Entities gefiltert)
+kommt jede Änderung an, und die Wiederholungsfilterung entfällt, weil
+Home Assistant nur bei Änderungen sendet.
+
+**Präsenz aus der Überschreitungsrate statt aus Einzelwerten.** Die Daten
+haben drei Dinge gezeigt:
+
+- Ein einzelner Messwert trennt „Person sitzt still" und „Raum leer" kaum
+  — AUC 0,616. Unsere eigene `recommendation()` sagte das korrekt mit
+  `quality: poor` und 98 % Falsch-Negativ-Rate.
+- Der leere Raum überschreitet ebenfalls, in 3,0 % der Messwerte. Damit
+  ist die Haltezeit, die ich zuvor empfohlen hatte, unbrauchbar: 60 s
+  Haltezeit ergaben 95 % belegt mit Person — und 40 % belegt ohne.
+- Über ein 60-Sekunden-Fenster trennt die Rate: AUC 0,931.
+
+`app/presence_rate.py` lernt die Leerlaufrate eines Raums und meldet
+Präsenz, wenn die Rate der letzten Minute deutlich darüber liegt. Preis:
+rund eine Minute Latenz. Das ersetzt die Bewegungserkennung nicht, es
+beantwortet die Frage, die sie nicht beantworten kann.
+
+**Median statt Mittelwert, und eine Warnung.** Die erste Leer-Aufnahme
+enthielt in ihrer letzten Minute jemanden, der zurück in den Raum kam:
+Fenster bei 0,014, 0,038 und 0,217. Der Mittelwert (0,090) liegt über
+jedem sauberen Fenster und hätte die Einschaltschwelle unerreichbar
+gemacht; der Median (0,038) hält stand. Ein Fenster weit über den übrigen
+wird zusätzlich gemeldet, statt eine halb belegte Leer-Aufnahme
+stillschweigend als Maßstab zu verwenden.
+
+`GET /api/calibrations/{id}/presence-rate` macht die Auswertung im
+Produkt verfügbar, die zuvor von Hand lief.
+
+Geprüft: 220 Tests, darunter die Websocket-Anmeldung gegen einen echten
+Server (auth_required → auth → auth_ok → subscribe_trigger, samt
+Wiederverbindung nach Abbruch) und der Detektor gegen die beiden echten
+Aufnahmen. Sechs von sieben Fenstern werden richtig eingeordnet; die
+beiden Ausreißer sind vermutlich der Detektor, der recht hat.
+
+**Nicht behauptet:** ein Raum, ein Gerät, eine Sitzung. Die 0,931 stehen
+auf zwölf Fenstern gegen sechs.
+
 ## 0.12.13
 
 Die verbesserte Fehlermeldung aus 0.12.12 hat geliefert, wofür sie gebaut

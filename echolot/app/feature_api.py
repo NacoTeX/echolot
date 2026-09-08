@@ -10,7 +10,7 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from app import calibration, devices, fusion, ha_client, ha_sampler, telemetry, zones
+from app import calibration, devices, fusion, ha_sampler, presence_rate, telemetry, zones
 
 router = APIRouter()
 
@@ -69,7 +69,7 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
 
 #: Samples for a recording come from Home Assistant, not from the device's
 #: Direct API — see app/ha_sampler.py for why that API is out of reach.
-sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest, ha_client.get_state)
+sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest)
 
 
 @router.get("/api/calibrations")
@@ -143,6 +143,47 @@ def _stop_sampling_if_idle(device_id: str) -> None:
     )
     if not still_recording:
         sampler.stop(device_id)
+
+
+@router.get("/api/calibrations/{session_id}/presence-rate")
+def calibration_presence_rate(session_id: str) -> dict:
+    """Learn this session's empty-room rate and score its other labels by it.
+
+    The analysis that produced app/presence_rate.py, done by the product
+    instead of by hand: what does this room do when empty, and does the
+    crossing rate over a minute separate that from the labels where
+    somebody was in it.
+    """
+    samples = calibration.store.samples(session_id)
+    if samples is None:
+        raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
+
+    profile = presence_rate.learn_baseline(samples)
+    if profile is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Zu wenig mit „Raum leer“ markiertes Material. Der leere Raum "
+                "ist der Maßstab — ohne ihn gibt es nichts zu vergleichen."
+            ),
+        )
+
+    by_label: dict[str, list[dict]] = {}
+    for row in samples:
+        by_label.setdefault(row.get("label") or "unlabelled", []).append(row)
+
+    labels = {}
+    for label, rows in by_label.items():
+        windows = presence_rate._split_windows(rows, profile.window_seconds)
+        verdicts = [presence_rate.evaluate(profile, window) for window in windows]
+        judged = [v for v in verdicts if v["available"]]
+        labels[label] = {
+            "windows": len(judged),
+            "occupied_windows": sum(1 for v in judged if v["occupied"]),
+            "detail": judged,
+        }
+
+    return {"profile": profile.as_dict(), "labels": labels}
 
 
 @router.get("/api/calibrations/{session_id}/export.csv")
