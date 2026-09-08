@@ -1,10 +1,12 @@
 """Presence from the crossing rate, checked against the recordings it came from.
 
-tests/data holds two real sessions from an ESP32-C5 in a living room: five
-minutes with one person sitting still on the couch, and two and a half
-minutes of the same room empty. Every threshold and ratio in
-app/presence_rate.py was derived from them, so they are the fixtures — an
-invented distribution would only confirm the arithmetic.
+tests/data holds three real sessions from an ESP32-C5 in a living room:
+five minutes with one person sitting still on the couch, two and a half
+minutes of the same room empty (its last minute occupied, which is how
+the contamination check came about), and twenty minutes of the room empty
+while somebody moved about the rest of the flat. Every threshold and
+ratio in app/presence_rate.py was derived from them, so they are the
+fixtures — an invented distribution would only confirm the arithmetic.
 """
 
 import csv
@@ -35,7 +37,24 @@ def load(name: str) -> list[dict]:
 
 @pytest.fixture
 def empty():
+    """The short, partly occupied recording."""
     return load("room_empty.csv")
+
+
+@pytest.fixture
+def clean_baseline():
+    """Twenty minutes, room empty, somebody moving about the flat.
+
+    The operational baseline: what matters is not an empty building but a
+    room nobody is in while life goes on elsewhere.
+    """
+    return load("flat_occupied_room_empty.csv")
+
+
+@pytest.fixture
+def next_door():
+    return [row for row in load("flat_occupied_room_empty.csv")
+            if row["label"] == "interference"]
 
 
 @pytest.fixture
@@ -44,8 +63,8 @@ def still():
 
 
 @pytest.fixture
-def profile(empty):
-    learned = presence_rate.learn_baseline(empty)
+def profile(clean_baseline):
+    learned = presence_rate.learn_baseline(clean_baseline)
     assert learned is not None
     return learned
 
@@ -54,25 +73,82 @@ def profile(empty):
 
 
 def test_the_baseline_matches_what_was_measured(profile):
-    """About 4 % of readings cross 1e-3 in an empty room. That number is
-    the whole point: it is what presence has to beat."""
-    assert 0.01 < profile.baseline_rate < 0.12
+    """The rate the room has to be beaten by, in crossings a second."""
+    assert 0.05 < profile.baseline_rate < 0.15
     assert profile.crossing_threshold == 1e-3
-    assert profile.sample_count == 199
+    assert profile.window_count == 20
 
 
-def test_the_enter_level_sits_above_the_empty_rooms_own_variation(profile):
-    assert profile.enter_rate > profile.baseline_rate
+def test_the_percentile_survives_a_baseline_that_is_mostly_silent(clean_baseline):
+    """Fourteen of twenty windows crossed exactly zero times. The median of
+    that is 0.0 and says nothing at all, so the level would fall back to
+    the floor and one stray crossing would read as presence. The
+    ninetieth percentile is 0.084 — what the room reached on the windows
+    where something did happen."""
+    learned = presence_rate.learn_baseline(clean_baseline)
+    assert learned.baseline_rate > presence_rate.MIN_BASELINE_RATE * 2
+    assert 0.05 < learned.baseline_rate < 0.15
+
+
+def test_the_clean_baseline_separates_the_couch_from_the_empty_room(
+    clean_baseline, still, next_door
+):
+    """The operating point, on the recordings it was chosen from."""
+    learned = presence_rate.learn_baseline(clean_baseline)
+    empty_rows = [row for row in clean_baseline if row["label"] == "empty"]
+
+    def occupied(rows):
+        windows = presence_rate._split_windows(rows, learned.window_seconds)
+        return sum(1 for w in windows if presence_rate.evaluate(learned, w)["occupied"]), len(windows)
+
+    assert occupied(still) == (3, 4), "eine Person auf der Couch"
+    assert occupied(next_door) == (1, 1), "jemand direkt vor der Tür"
+    assert occupied(empty_rows) == (1, 20), "leerer Raum, Wohnung belegt"
+
+
+def test_walking_around_the_flat_is_far_quieter_than_sitting_in_the_room(
+    clean_baseline, still
+):
+    """The question the whole per-room idea depends on: does the signal come
+    through the wall? Twenty minutes of moving about the rest of the flat
+    crossed at 0.027 a second against 0.261 sitting still in the room."""
+    empty_rows = [row for row in clean_baseline if row["label"] == "empty"]
+    away = presence_rate.crossing_rate(empty_rows, presence_rate.DEFAULT_CROSSING_THRESHOLD)
+    inside = presence_rate.crossing_rate(still, presence_rate.DEFAULT_CROSSING_THRESHOLD)
+    assert inside > away * 5
+
+
+def test_the_enter_level_clears_the_baseline_by_ratio_and_by_margin(profile):
+    assert profile.enter_rate >= profile.baseline_rate * presence_rate.DEFAULT_ENTER_RATIO
+    assert profile.enter_rate >= profile.baseline_rate + presence_rate.ENTER_MARGIN
     assert profile.exit_rate <= profile.enter_rate
 
 
+def test_a_very_quiet_room_is_not_tripped_by_two_stray_crossings():
+    """Twice a very small number is still a very small number, which is
+    what the absolute margin is for."""
+    silent = [{"t": i * 0.25, "movement_score": 0.0, "label": "empty"} for i in range(2400)]
+    learned = presence_rate.learn_baseline(silent)
+    two_crossings = [
+        {"t": i * 0.25, "movement_score": 1.0 if i < 2 else 0.0} for i in range(240)
+    ]
+    assert presence_rate.evaluate(learned, two_crossings)["occupied"] is False
+
+
 def test_too_little_data_yields_no_profile():
-    """A handful of readings cannot say how much an empty room varies, and
-    a profile invented from them would be worse than none."""
     assert presence_rate.learn_baseline([]) is None
     assert presence_rate.learn_baseline(
         [{"t": i, "movement_score": 0.0, "label": "empty"} for i in range(10)]
     ) is None
+
+
+def test_a_short_baseline_is_refused_rather_than_answered_wrongly(empty):
+    """Two and a half minutes is three windows, and the ninetieth
+    percentile of three values is the largest of them. This recording's
+    last minute was occupied, so a profile from it would have taken 0.393
+    — the contaminated window — as "what the empty room does", and gone
+    deaf. Refusing is the only safe answer."""
+    assert presence_rate.learn_baseline(empty) is None
 
 
 def test_samples_of_other_labels_are_not_baseline(still):
@@ -83,7 +159,7 @@ def test_a_silent_room_does_not_get_an_infinite_ratio():
     """Without a floor, one stray crossing in a never-crossing room reads
     as certain presence."""
     quiet = [
-        {"t": i * 0.5, "movement_score": 0.0, "label": "empty"} for i in range(400)
+        {"t": i * 0.25, "movement_score": 0.0, "label": "empty"} for i in range(6000)
     ]
     learned = presence_rate.learn_baseline(quiet)
     assert learned is not None
@@ -100,49 +176,40 @@ def windows(samples, seconds=presence_rate.DEFAULT_WINDOW_SECONDS):
 def test_the_couch_reads_as_occupied(profile, still):
     verdicts = [presence_rate.evaluate(profile, window)["occupied"] for window in windows(still)]
     assert verdicts, "keine vollen Fenster in der Aufnahme"
-    # Not every window: the person sat still, and stillness is exactly the
-    # hard case. A clear majority is the honest bar here.
-    assert sum(bool(v) for v in verdicts) > len(verdicts) / 2
+    # Three of four. The fourth window crossed at 0.041 a second — the last
+    # minute of the recording, and quite possibly the person already up.
+    assert sum(bool(v) for v in verdicts) == 3
 
 
-def test_the_empty_room_reads_as_empty_where_it_was_empty(profile, empty):
-    """The last window of this recording is not empty.
-
-    Its three windows cross at 0.014, 0.038 and 0.217 — the last as often
-    as the couch does. The spikes begin about a hundred seconds in and run
-    to the end: somebody walked back into the room while the "empty"
-    recording was still going. The detector calling that window occupied
-    is the detector being right, so the test says so rather than demanding
-    the wrong answer.
-    """
-    verdicts = [presence_rate.evaluate(profile, window)["occupied"] for window in windows(empty)]
-    assert verdicts[:2] == [False, False]
-    assert verdicts[2] is True
+def test_the_empty_room_stays_empty_while_the_flat_is_used(profile, clean_baseline):
+    """One window in twenty. It crossed at 0.286 a second — couch
+    territory, and almost certainly somebody walking past the door, which
+    is why the profile flags it as suspect too."""
+    empty_rows = [row for row in clean_baseline if row["label"] == "empty"]
+    verdicts = [presence_rate.evaluate(profile, w)["occupied"] for w in windows(empty_rows)]
+    assert len(verdicts) == 20
+    assert sum(bool(v) for v in verdicts) == 1
 
 
-def test_a_contaminated_baseline_is_flagged_rather_than_silently_used(profile):
-    """One occupied window in three moved the mean rate above every honest
-    window. The median survives it; the user still needs telling."""
+def test_someone_at_the_door_is_seen(profile, next_door):
+    verdicts = [presence_rate.evaluate(profile, w)["occupied"] for w in windows(next_door)]
+    assert verdicts and all(verdicts)
+
+
+def test_a_contaminated_baseline_is_flagged(profile):
     assert profile.suspect_windows == 1
-    assert profile.window_count == 3
+    assert profile.window_count == 20
     assert "jemand im Raum" in (profile.warning or "")
 
 
 def test_a_clean_baseline_carries_no_warning():
     clean = [
-        {"t": i * 0.5, "movement_score": 0.02 if i % 30 == 0 else 0.0, "label": "empty"}
-        for i in range(600)
+        {"t": i * 0.25, "movement_score": 0.02 if i % 400 == 0 else 0.0, "label": "empty"}
+        for i in range(6000)
     ]
     learned = presence_rate.learn_baseline(clean)
     assert learned.suspect_windows == 0
     assert learned.warning is None
-
-
-def test_the_median_ignores_a_minority_of_occupied_windows(empty):
-    """The number that matters: 0.038, what the room does when empty —
-    not 0.090, the average of two empty windows and one occupied one."""
-    profile = presence_rate.learn_baseline(empty)
-    assert profile.baseline_rate < 0.06
 
 
 def test_the_verdict_explains_itself(profile, still):
@@ -171,20 +238,31 @@ def test_a_window_with_too_little_data_says_so_rather_than_empty(profile):
 
 
 def _window_with_rate(rate: float, threshold: float) -> list[dict]:
-    total = 100
-    crossings = round(rate * total)
+    """A sixty-second window crossing at the given rate per second."""
+    total = 240                      # 4 Hz, the device's actual cadence
+    crossings = round(rate * 60.0)
     return [
-        {"t": i * 0.5, "movement_score": threshold * 2 if i < crossings else 0.0}
+        {"t": i * 0.25, "movement_score": threshold * 2 if i < crossings else 0.0}
         for i in range(total)
     ]
 
 
-def test_the_crossing_rate_is_a_share_not_a_count():
-    """Windows hold different numbers of readings; a count would make a
-    busy window look occupied for the wrong reason."""
-    dense = [{"t": i * 0.1, "movement_score": 1.0} for i in range(100)]
-    sparse = [{"t": i * 1.0, "movement_score": 1.0} for i in range(10)]
-    assert presence_rate.crossing_rate(dense, 0.5) == presence_rate.crossing_rate(sparse, 0.5) == 1.0
+def test_the_rate_is_per_second_not_per_reading():
+    """Home Assistant sends a message when a value changes, and the score
+    sits at zero for long stretches — one twenty-minute recording had gaps
+    up to 18.7 s. Counting per reading makes a quiet minute that produced
+    four readings weigh as much as a busy one that produced two hundred,
+    which flatters exactly the periods that should look quiet.
+    """
+    busy = [{"t": i * 0.25, "movement_score": 1.0} for i in range(240)]
+    quiet = [{"t": i * 6.0, "movement_score": 1.0} for i in range(10)]
+    assert presence_rate.crossing_rate(busy, 0.5) == pytest.approx(4.0, rel=0.02)
+    assert presence_rate.crossing_rate(quiet, 0.5) == pytest.approx(0.185, rel=0.05)
+
+
+def test_a_single_reading_cannot_establish_a_rate():
+    assert presence_rate.crossing_rate([{"t": 1.0, "movement_score": 1.0}], 0.5) == 0.0
+    assert presence_rate.crossing_rate([], 0.5) == 0.0
 
 
 # --- through the API --------------------------------------------------------
@@ -211,16 +289,17 @@ def test_the_route_reproduces_the_analysis(tmp_path, monkeypatch):
     with store._lock:  # noqa: SLF001 - loading a recorded session, not a live one
         store._sessions[session["id"]]["samples"] = [
             {**row, "threshold": 0.5, "motion": False}
-            for row in load("room_empty.csv") + load("couch_still.csv")
+            for row in load("flat_occupied_room_empty.csv") + load("couch_still.csv")
         ]
 
     client = TestClient(server.app)
     body = client.get(f"/api/calibrations/{session['id']}/presence-rate").json()
 
-    assert body["profile"]["baseline_rate"] < 0.06
+    assert 0.05 < body["profile"]["baseline_rate"] < 0.15
     assert body["profile"]["suspect_windows"] == 1
-    assert body["labels"]["still"]["occupied_windows"] >= 3
+    assert body["labels"]["still"]["occupied_windows"] == 3
     assert body["labels"]["empty"]["occupied_windows"] == 1
+    assert body["labels"]["interference"]["occupied_windows"] == 1
 
 
 def test_a_session_without_an_empty_label_says_what_is_missing(tmp_path, monkeypatch):

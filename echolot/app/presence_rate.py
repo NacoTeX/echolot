@@ -38,22 +38,50 @@ from dataclasses import dataclass
 DEFAULT_WINDOW_SECONDS = 60.0
 
 #: A crossing counts below the device's own motion threshold, because the
-#: rate carries the signal and a lower bar collects more of it: 17.4 % of
-#: readings against 8.7 % while occupied, and the empty-room rate rises
-#: only from 3.0 % to 7.0 %.
+#: rate carries the signal and a lower bar collects more of it: 0.261
+#: crossings a second against 0.130 while occupied, while the empty room
+#: rises only from 0.004 to 0.027.
 DEFAULT_CROSSING_THRESHOLD = 1e-3
 
-#: How many times the empty-room rate the window must reach before the
-#: room counts as occupied, and how far it must fall to be released. The
-#: gap between them is hysteresis: without it a rate hovering at the line
-#: chatters. Measured ratio was about 4.7.
-DEFAULT_ENTER_RATIO = 2.5
-DEFAULT_EXIT_RATIO = 1.5
+#: The baseline is the *worst* an empty room gets, not its typical value,
+#: so this percentile of its window rates rather than the median. A clean
+#: twenty-minute baseline had fourteen of twenty windows at exactly zero:
+#: the median is 0.0 and says nothing, while the ninetieth percentile
+#: (0.084) is the level the room reached on the few windows where
+#: something happened. It also survives one contaminated window in twenty,
+#: which a maximum would not.
+BASELINE_PERCENTILE = 0.90
+
+#: A high percentile needs enough windows to have anything to exclude. On
+#: three windows the ninetieth percentile *is* the maximum, so a
+#: two-and-a-half-minute baseline whose last minute was occupied produced
+#: a "baseline" of 0.393 — the contaminated window itself. Ten windows is
+#: the point at which the top decile is something the statistic can leave
+#: out, and it is also an honest statement about the measurement: a room
+#: cannot be characterised in three minutes.
+MIN_BASELINE_WINDOWS = 10
+
+#: How far above that the window must sit to count as occupied, and how
+#: far it must fall to be released. The gap is hysteresis: without it a
+#: rate at the line chatters. At the measured baseline of 0.084 this puts
+#: the entry at 0.168 — above nineteen of twenty empty windows and below
+#: three of four with someone sitting on the couch.
+DEFAULT_ENTER_RATIO = 2.0
+DEFAULT_EXIT_RATIO = 1.2
+
+#: An absolute margin as well as a ratio, for rooms so quiet that a ratio
+#: of a very small number is still a very small number.
+ENTER_MARGIN = 0.05
 
 #: An empty room that never crosses would make every ratio infinite, and
 #: one stray crossing would then read as presence. This floor is the
-#: smallest baseline rate taken seriously.
-MIN_BASELINE_RATE = 0.005
+#: smallest baseline rate taken seriously, in crossings a second. A clean
+#: twenty-minute baseline — the room empty while someone moved about the
+#: rest of the flat — measured 0.027.
+#: Roughly one crossing a minute. Below that a "baseline" is indis-
+#: tinguishable from silence, and a single stray crossing would read as
+#: presence.
+MIN_BASELINE_RATE = 0.02
 
 
 @dataclass(frozen=True)
@@ -98,14 +126,15 @@ class RateProfile:
 
     @property
     def enter_rate(self) -> float:
-        """Above the empty room's mean *and* above its spread.
+        """Clear of the empty room by a ratio *and* by an absolute margin.
 
-        Whichever is higher: a room whose empty rate is steady is judged
-        by the ratio, a twitchy one by its own variability.
+        The ratio scales with a noisy room; the margin keeps a very quiet
+        one from tripping on two stray crossings, where twice a small
+        number is still a small number.
         """
         return max(
             self.baseline_rate * DEFAULT_ENTER_RATIO,
-            self.baseline_rate + 2.0 * self.baseline_spread,
+            self.baseline_rate + ENTER_MARGIN,
         )
 
     @property
@@ -114,15 +143,27 @@ class RateProfile:
 
 
 def crossing_rate(samples: list[dict], threshold: float) -> float:
-    """The share of readings at or above the threshold."""
-    scores = [
-        row["movement_score"]
-        for row in samples
-        if row.get("movement_score") is not None
-    ]
-    if not scores:
+    """Crossings per second of wall time.
+
+    Per second, not per reading. Home Assistant sends a message when a
+    value *changes*, and the movement score sits at exactly zero for long
+    stretches — a twenty-minute recording had gaps up to 18.7 s with no
+    message at all. A share of readings therefore counts a quiet minute
+    that produced four readings the same as a busy minute that produced
+    two hundred, which flatters exactly the periods that should look
+    quiet. Measured on the same recordings, the per-second form separates
+    the far-away case from the next-door one by a factor of 112 where the
+    per-reading form managed 38.
+    """
+    scored = [row for row in samples if row.get("movement_score") is not None]
+    if len(scored) < 2:
         return 0.0
-    return sum(score >= threshold for score in scores) / len(scores)
+    stamps = [row.get("t") or 0.0 for row in scored]
+    span = max(stamps) - min(stamps)
+    crossings = sum(row["movement_score"] >= threshold for row in scored)
+    if span <= 0:
+        return 0.0
+    return crossings / span
 
 
 def learn_baseline(
@@ -133,9 +174,10 @@ def learn_baseline(
 ) -> RateProfile | None:
     """Derive a room's empty-state rate from its labelled `empty` samples.
 
-    Returns None when there is not enough to be worth trusting: a single
-    window says nothing about how much the rate varies, and the spread is
-    half of what makes the enter level defensible.
+    Returns None when there is not enough to be worth trusting. That is
+    not a formality: with three windows the percentile lands on the worst
+    of them, so a short baseline does not merely give a weak answer, it
+    gives a confidently wrong one.
     """
     empty = [
         row for row in samples
@@ -146,7 +188,7 @@ def learn_baseline(
 
     windows = _split_windows(empty, window_seconds)
     rates = [crossing_rate(window, crossing_threshold) for window in windows]
-    if len(rates) < 2:
+    if len(rates) < MIN_BASELINE_WINDOWS:
         return None
 
     # Median and MAD rather than mean and standard deviation. The first
@@ -156,8 +198,8 @@ def learn_baseline(
     # window in three moved the "empty" rate above every honest one and
     # pushed the enter level out of reach. The median is 0.038, which is
     # what the room actually does.
-    centre = _median(rates)
-    spread = _median([abs(rate - centre) for rate in rates]) * 1.4826
+    centre = _percentile(rates, BASELINE_PERCENTILE)
+    spread = _median([abs(rate - _median(rates)) for rate in rates]) * 1.4826
     return RateProfile(
         crossing_threshold=crossing_threshold,
         baseline_rate=max(centre, MIN_BASELINE_RATE),
@@ -173,6 +215,14 @@ def learn_baseline(
         ),
         window_count=len(rates),
     )
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    index = min(len(ordered) - 1, int(round(fraction * (len(ordered) - 1))))
+    return ordered[index]
 
 
 def _median(values: list[float]) -> float:

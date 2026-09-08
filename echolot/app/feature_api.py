@@ -163,8 +163,13 @@ def calibration_presence_rate(session_id: str) -> dict:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Zu wenig mit „Raum leer“ markiertes Material. Der leere Raum "
-                "ist der Maßstab — ohne ihn gibt es nichts zu vergleichen."
+                "Zu wenig mit „Raum leer“ markiertes Material. Der Maßstab ist, "
+                f"was der leere Raum schlimmstenfalls tut, und dafür braucht es "
+                f"mindestens {presence_rate.MIN_BASELINE_WINDOWS} volle Fenster "
+                f"à {int(presence_rate.DEFAULT_WINDOW_SECONDS)} s — also gut "
+                f"{presence_rate.MIN_BASELINE_WINDOWS * int(presence_rate.DEFAULT_WINDOW_SECONDS) // 60} "
+                "Minuten. Kürzer gemessen landet die Kennzahl auf dem lautesten "
+                "Fenster statt neben ihm."
             ),
         )
 

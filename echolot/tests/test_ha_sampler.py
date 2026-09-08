@@ -221,3 +221,79 @@ def test_a_recording_from_home_assistant_reaches_the_csv(tmp_path, monkeypatch):
     assert all(row[1] for row in body), "jede Zeile braucht einen Bewegungswert"
     assert {row[2] for row in body} == {"0.5"}, "die Schwelle muss mitgeschrieben werden"
     assert all(row[4] == "empty" for row in body)
+
+
+def test_the_cache_is_seeded_so_unchanging_entities_are_known():
+    """A subscription reports changes. The threshold does not change, so it
+    is never reported — and the first twenty-minute recording came back
+    with an empty threshold column throughout, because it had been 0.5 the
+    whole time and there was nothing to announce.
+    """
+    FakeSubscription.instances.clear()
+    captured = []
+    read = []
+
+    async def reader(entity_id):
+        read.append(entity_id)
+        return {"state": "0.5", "last_updated": "2026-09-08T12:00:00+00:00"}
+
+    async def run():
+        sampler = ha_sampler.HomeAssistantSampler(
+            lambda device_id, sample: captured.append(sample), FakeSubscription, reader
+        )
+        sampler.start(make_device())
+        await asyncio.sleep(0)  # let the seeding task run
+        FakeSubscription.instances[-1].on_state(
+            "sensor.probe_movement_score", state("0.42")
+        )
+
+    asyncio.run(run())
+    assert "number.probe_threshold" in read
+    assert captured and captured[-1].threshold == 0.5
+
+
+def test_a_change_that_arrived_first_is_not_overwritten_by_the_seed():
+    """The seed is a snapshot from before; a live message is newer."""
+    FakeSubscription.instances.clear()
+    captured = []
+    gate = asyncio.Event()
+
+    async def slow_reader(entity_id):
+        await gate.wait()
+        return {"state": "0.9", "last_updated": "2026-09-08T11:00:00+00:00"}
+
+    async def run():
+        sampler = ha_sampler.HomeAssistantSampler(
+            lambda device_id, sample: captured.append(sample), FakeSubscription, slow_reader
+        )
+        sampler.start(make_device())
+        subscription = FakeSubscription.instances[-1]
+        subscription.on_state("number.probe_threshold", state("0.5"))
+        gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        subscription.on_state("sensor.probe_movement_score", state("0.42"))
+
+    asyncio.run(run())
+    assert captured[-1].threshold == 0.5
+
+
+def test_a_failing_seed_does_not_stop_the_recording():
+    FakeSubscription.instances.clear()
+    captured = []
+
+    async def broken(entity_id):
+        raise RuntimeError("Home Assistant hustet")
+
+    async def run():
+        sampler = ha_sampler.HomeAssistantSampler(
+            lambda device_id, sample: captured.append(sample), FakeSubscription, broken
+        )
+        assert sampler.start(make_device()) is True
+        await asyncio.sleep(0)
+        FakeSubscription.instances[-1].on_state(
+            "sensor.probe_movement_score", state("0.42")
+        )
+
+    asyncio.run(run())
+    assert captured, "die Aufzeichnung muss auch ohne Startwerte laufen"
