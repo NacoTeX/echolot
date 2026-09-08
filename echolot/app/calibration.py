@@ -233,6 +233,18 @@ class CalibrationStore:
                     profiles[session["device_id"]] = profile
             return profiles
 
+    # The annotation is quoted because this class defines a method called
+    # `list`, which shadows the builtin for every annotation below it.
+    def samples(self, session_id: str) -> "list[dict] | None":
+        """The raw labelled readings, for analysis rather than display.
+
+        Kept out of public() on purpose: a session holds up to tens of
+        thousands of rows, and the session list would carry all of them.
+        """
+        with self._lock:
+            session = self._sessions.get(session_id)
+            return list(session["samples"]) if session else None
+
     def csv(self, session_id: str) -> str:
         with self._lock:
             session = self._require(session_id)

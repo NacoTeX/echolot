@@ -4,6 +4,10 @@ esphome>=2024.9
 jinja2>=3.1,<4.0
 pydantic>=2.9,<3.0
 httpx>=0.27,<1.0
+# uvicorn[standard] already pulls this in, but the calibration sampler now
+# talks Home Assistant's websocket API directly, so the dependency is ours
+# and belongs here rather than being inherited by accident.
+websockets>=12,<18
 # ESPHome pins paho-mqtt==1.6.1, so this range must admit 1.6.x — the
 # client code below works with both the 1.x and 2.x callback APIs.
 paho-mqtt>=1.6,<3.0

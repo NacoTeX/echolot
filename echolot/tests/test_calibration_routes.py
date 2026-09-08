@@ -49,41 +49,54 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(calibration, "store", store)
     monkeypatch.setattr(feature_api.calibration, "store", store)
 
-    reads: list[str] = []
+    opened: list["FakeSubscription"] = []
 
-    async def reader(entity_id):
-        reads.append(entity_id)
-        return {"state": "0.4", "last_updated": f"2026-09-08T12:00:{len(reads) % 60:02d}+00:00"}
+    class FakeSubscription:
+        def __init__(self, entity_ids, on_state, *, loop=None):
+            self.entity_ids = list(entity_ids)
+            self.on_state = on_state
+            self.connected = False
+            self.error = None
+            opened.append(self)
 
-    sampler = ha_sampler.HomeAssistantSampler(store.ingest, reader)
+        def start(self):
+            self.connected = True
+
+        def stop(self):
+            self.connected = False
+
+    sampler = ha_sampler.HomeAssistantSampler(store.ingest, FakeSubscription)
     monkeypatch.setattr(feature_api, "sampler", sampler)
-    monkeypatch.setattr(ha_sampler, "POLL_SECONDS", 0.01)
 
     device = make_device()
     monkeypatch.setattr(dev_mod, "get_device", lambda did: device if did == "probe" else None)
     monkeypatch.setattr(feature_api.devices, "get_device", dev_mod.get_device)
 
     with TestClient(server.app) as client:
-        yield client, sampler, store, reads
+        yield client, sampler, store, opened
 
 
 def test_starting_a_recording_through_the_api_actually_samples(api):
-    client, sampler, store, reads = api
+    client, sampler, store, opened = api
     response = client.post("/api/calibrations", json={"device_id": "probe"})
     assert response.status_code == 201
     # The regression: this used to raise "no running event loop" in the
     # worker thread and leave the session with nothing behind it.
     assert sampler.running_for("probe") is True
+    assert opened, "es wurde kein Abonnement geöffnet"
+    assert "sensor.probe_movement_score" in opened[-1].entity_ids
 
-    deadline = 2.0
-    while deadline > 0 and not reads:
-        client.get("/api/calibrations")
-        deadline -= 0.05
-    assert reads, "die Aufzeichnung hat Home Assistant nie gelesen"
+    # And a state change from that subscription reaches the session.
+    opened[-1].on_state(
+        "sensor.probe_movement_score",
+        {"state": "0.42", "last_updated": "2026-09-08T12:00:00+00:00"},
+    )
+    session = client.get("/api/calibrations").json()[0]
+    assert session["sample_count"] == 1
 
 
 def test_stopping_a_recording_stops_the_sampling(api):
-    client, sampler, store, reads = api
+    client, sampler, store, opened = api
     session = client.post("/api/calibrations", json={"device_id": "probe"}).json()
     assert sampler.running_for("probe") is True
     assert client.post(f"/api/calibrations/{session['id']}/stop").status_code == 200
@@ -91,14 +104,14 @@ def test_stopping_a_recording_stops_the_sampling(api):
 
 
 def test_deleting_the_last_recording_stops_the_sampling(api):
-    client, sampler, store, reads = api
+    client, sampler, store, opened = api
     session = client.post("/api/calibrations", json={"device_id": "probe"}).json()
     assert client.delete(f"/api/calibrations/{session['id']}").status_code == 204
     assert sampler.running_for("probe") is False
 
 
 def test_a_device_without_entities_is_refused_with_the_way_out(api, monkeypatch):
-    client, sampler, store, reads = api
+    client, sampler, store, opened = api
     bare = make_device(with_entities=False)
     monkeypatch.setattr(feature_api.devices, "get_device", lambda did: bare)
 
@@ -111,7 +124,7 @@ def test_a_device_without_entities_is_refused_with_the_way_out(api, monkeypatch)
 def test_direct_api_is_no_longer_a_precondition(api, monkeypatch):
     """The Direct HTTP API is closed to third parties, so requiring it here
     only locked people out of a feature that no longer uses it."""
-    client, sampler, store, reads = api
+    client, sampler, store, opened = api
     device = make_device()
     device.config.direct_api = False
     monkeypatch.setattr(feature_api.devices, "get_device", lambda did: device)
