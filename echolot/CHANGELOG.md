@@ -229,6 +229,24 @@ eigentliche Umbau (append-orientiert oder SQLite) bleibt offen, samt
 Migration mit Sicherung. Der Preis der Änderung: ein Absturz kostet jetzt
 die letzten zwei Sekunden statt der letzten hundert Messwerte.
 
+**Der Zonenzustand hat jetzt genau einen Besitzer.** `compute_zone_state`
+verändert den Zonen-Runtime — das Gedächtnis der Bewegungs-Hysterese und
+die Haltefrist — und liest bei jedem Aufruf alle Mitglieder aus Home
+Assistant. Aufgerufen wurde es aus drei Richtungen: dem Dashboard-Poll,
+der Übersicht und dem MQTT-Publisher.
+
+**Der ereignisgesteuerte Export weiter oben in dieser Version hat das
+verschlimmert statt verbessert:** ein Messwert, der dreimal pro Sekunde
+eintrifft, wurde zu drei vollen Runden Home-Assistant-Abfragen pro
+Sekunde — zusätzlich zu dem, was ein offenes Dashboard ohnehin abfragte.
+Das war ein Fehler, den ich in derselben Version eingebaut habe.
+
+Jetzt wertet ein `ZoneEvaluator` aus, mit einer Untergrenze von einer
+halben Sekunde zwischen zwei Runden, und alles andere liest den Snapshot.
+Ein offenes Dashboard kostet damit **keine** Home-Assistant-Abfragen
+mehr, und eine Statusanzeige verändert nicht mehr den Zustandsautomaten,
+über den sie berichtet.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

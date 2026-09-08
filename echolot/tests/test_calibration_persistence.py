@@ -57,12 +57,27 @@ def test_ingesting_does_not_write_inline(store, tmp_path):
 
 
 def test_the_writer_does_eventually_write(store):
+    """Without anyone calling flush().
+
+    Waits on the writer itself rather than polling for the file: the file
+    path comes from the environment at write time, and a store left over
+    from another test can be writing to the same place, which made a
+    file-existence check pass or fail depending on test order.
+    """
+    import threading
+
+    wrote = threading.Event()
+    original = store._save
+
+    def signalling():
+        original()
+        wrote.set()
+
+    store._save = signalling
     store.create("probe")
     feed(store, "probe", 200)
-    for _ in range(200):
-        time.sleep(0.01)
-        if calibration._data_path().exists():
-            break
+
+    assert wrote.wait(timeout=5.0), "der Writer hat nie geschrieben"
     assert calibration._data_path().exists()
 
 

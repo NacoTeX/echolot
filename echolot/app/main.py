@@ -287,9 +287,78 @@ async def _read_device_state(device: devices.Device, allow_detect: bool = True) 
 #: deleted zone should not keep its hold running if the id is reused.
 _zone_runtimes: dict[str, zone_logic.ZoneRuntime] = {}
 
+#: The floor between two evaluation rounds.
+#:
+#: Zone state has exactly one owner now. `compute_zone_state` mutates the
+#: zone's runtime — the motion hysteresis memory and the hold deadline —
+#: and re-reads every member from Home Assistant, and it used to be called
+#: from three places: the dashboard's poll, the overview, and the MQTT
+#: publisher. Making the publisher event-driven earlier in this same
+#: release made that worse rather than better: a reading arriving three
+#: times a second became three full rounds of Home Assistant requests a
+#: second, on top of whatever the open dashboard was already asking for.
+#:
+#: Half a second is below what anyone notices in a room and far above the
+#: rate at which readings arrive in bursts.
+MIN_EVALUATION_INTERVAL = 0.5
+
+
+class ZoneEvaluator:
+    """Owns the zone runtimes, and the latest answer for each zone."""
+
+    def __init__(self) -> None:
+        self._snapshots: dict[str, dict] = {}
+        self._last_run = 0.0
+        self._lock = asyncio.Lock()
+
+    def forget(self, zone_id: str) -> None:
+        _zone_runtimes.pop(zone_id, None)
+        self._snapshots.pop(zone_id, None)
+
+    def snapshot(self, zone_id: str) -> dict | None:
+        return self._snapshots.get(zone_id)
+
+    async def refresh(self, zone_list: list, *, force: bool = False) -> list[tuple]:
+        """Evaluate every zone, or hand back the last answer if it is fresh.
+
+        `force` is for a caller that has nothing to fall back on — a
+        request for a zone that has never been evaluated.
+        """
+        async with self._lock:
+            now = time.monotonic()
+            stale = force or (now - self._last_run) >= MIN_EVALUATION_INTERVAL
+            if stale:
+                states = await asyncio.gather(
+                    *(compute_zone_state(zone) for zone in zone_list)
+                )
+                self._last_run = now
+                # Updated, not replaced: a single-zone refresh must not
+                # throw away every other zone's answer.
+                self._snapshots.update(
+                    {zone.id: state for zone, state in zip(zone_list, states)}
+                )
+            return [
+                (zone, self._snapshots.get(zone.id))
+                for zone in zone_list
+                if self._snapshots.get(zone.id) is not None
+            ]
+
+    async def state_of(self, zone) -> dict:
+        """One zone's state: the snapshot, or an evaluation if there is none.
+
+        A dashboard polling every two seconds therefore costs nothing in
+        Home Assistant requests — it reads what the evaluator already
+        worked out. Only a zone nobody has evaluated yet pays for one.
+        """
+        await self.refresh([zone], force=zone.id not in self._snapshots)
+        return self._snapshots[zone.id]
+
+
+evaluator = ZoneEvaluator()
+
 
 def forget_zone_runtime(zone_id: str) -> None:
-    _zone_runtimes.pop(zone_id, None)
+    evaluator.forget(zone_id)
 
 
 async def _read_devices(device_ids: list[str]) -> list[tuple[str, devices.Device | None, dict]]:
@@ -455,14 +524,13 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
 
 
 async def compute_all_zone_states(zone_list: list) -> list[tuple]:
-    """Every zone's state, evaluated concurrently.
+    """Every zone's state, through the one evaluator.
 
-    The MQTT loop walks every zone on every tick. Walking them in sequence
-    would add up their latencies; running them together means the whole
-    cycle costs about as long as its slowest zone.
+    Zones are evaluated concurrently inside it: walking them in sequence
+    would add up their latencies, while running them together costs about
+    as long as the slowest zone.
     """
-    states = await asyncio.gather(*(compute_zone_state(zone) for zone in zone_list))
-    return list(zip(zone_list, states))
+    return await evaluator.refresh(zone_list)
 
 
 @app.get("/api/health")
@@ -493,10 +561,16 @@ async def api_overview() -> dict:
     )
     device_states = [(d, built_states.get(d.id)) for d in device_list]
 
-    zone_verdicts = await asyncio.gather(*(compute_zone_state(z) for z in zone_list))
+    # Reads the snapshot rather than evaluating: the overview is a status
+    # report, and a status report should not be advancing the state
+    # machine it is reporting on.
+    zone_verdicts = {
+        zone.id: state for zone, state in await evaluator.refresh(zone_list)
+    }
 
     zone_views = []
-    for zone, verdict in zip(zone_list, zone_verdicts):
+    for zone in zone_list:
+        verdict = zone_verdicts.get(zone.id) or {"available": False, "members": []}
         zone_views.append(
             {
                 "id": zone.id,
@@ -1113,7 +1187,7 @@ async def api_zone_state(zone_id: str) -> dict:
     zone = zones.get_zone(zone_id)
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
-    return await compute_zone_state(zone)
+    return await evaluator.state_of(zone)
 
 
 @app.get("/", response_class=HTMLResponse)

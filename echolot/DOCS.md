@@ -953,6 +953,31 @@ append-orientierte Aufzeichnung oder SQLite wäre die eigentliche Antwort;
 das steht aus, samt Migration mit Sicherung. Und ein Absturz kostet jetzt
 die letzten zwei Sekunden statt der letzten hundert Messwerte.
 
+### Wer den Zonenzustand besitzt
+
+Genau eine Komponente. `compute_zone_state` verändert den Zonen-Runtime —
+das Gedächtnis der Bewegungs-Hysterese und die Haltefrist — und liest bei
+jedem Aufruf alle Mitglieder aus Home Assistant. Bis 0.13.5 riefen das
+drei Stellen auf: der Dashboard-Poll alle zwei Sekunden, die Übersicht
+alle zehn, und der MQTT-Publisher. Eine Statusanzeige veränderte damit
+den Automaten, über den sie berichtet.
+
+Der ereignisgesteuerte Export in derselben Version machte es schlimmer:
+ein Messwert dreimal pro Sekunde wurde zu drei vollen Runden
+Home-Assistant-Abfragen pro Sekunde.
+
+`ZoneEvaluator` wertet jetzt aus — mit einer Untergrenze von einer halben
+Sekunde zwischen zwei Runden, weit unter dem, was man in einem Raum
+bemerkt, und weit über der Rate, mit der Messwerte in Schwällen
+eintreffen. Alles andere liest den Snapshot:
+
+- Ein offenes Dashboard kostet **keine** Abfragen mehr.
+- Die Übersicht liest, statt auszuwerten.
+- MQTT bekommt weiterhin sofort mit, dass etwas passiert ist — nur eben
+  aus derselben Auswertung wie alle anderen.
+
+Nur eine Zone, die noch nie ausgewertet wurde, zahlt einmal dafür.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second
