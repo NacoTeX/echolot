@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.12.13
+
+Die verbesserte Fehlermeldung aus 0.12.12 hat geliefert, wofür sie gebaut
+wurde: **HTTP 403**. Kein Netzwerkproblem, sondern eine Designentscheidung
+von ESPectre.
+
+Der Direct-HTTP-Dienst wird mit `for_first_party_portals()` konfiguriert
+und akzeptiert nur `https://espectre.dev` und zwei Geschwister-Domains;
+ohne `Origin`-Header antwortet er „403 Origin required". Die vorgesehene
+Ausnahme `CONFIG_ESPECTRE_DIRECT_DEV_ORIGINS_ENABLED` ist in keiner
+Kconfig deklariert, die der ESPHome-Build erreicht — über
+`sdkconfig_options` gesetzt würde sie als unbekanntes Symbol verworfen.
+Für ein per ESPHome gebautes Gerät gibt es also keinen vorgesehenen Weg,
+einen anderen Client zuzulassen.
+
+- **Das Calibration Lab liest jetzt aus Home Assistant.** Dieselben drei
+  Werte — `movement_score`, `motion_detected`, `threshold` — liegen dort
+  ohnehin. Das kostet einen Umweg und etwas Auflösung, verlangt vom Gerät
+  aber nichts, was es Home Assistant nicht schon gibt.
+- **`direct_api` ist keine Voraussetzung mehr.** Es wurde verlangt und
+  hat Leute von einer Funktion ausgesperrt, die es nicht mehr benutzt.
+  Verlangt werden jetzt erkannte Entities, und die Fehlermeldung nennt
+  den Knopf, der sie beschafft.
+- Aufgezeichnet werden nur **neue** Messwerte. Home Assistant stempelt
+  jeden Zustand mit `last_updated`; eine Abfrage mit unverändertem Wert
+  ist eine Wiederholung. Sie mitzuzählen würde identische Zahlen aufhäufen
+  und die Verteilung verzerren, aus der die Empfehlung entsteht.
+- Nach einem Neustart des Add-ons — meist ein Update — nehmen laufende
+  Aufzeichnungen ihre Abtastung wieder auf, statt mit leuchtender
+  Live-Anzeige und nichts dahinter dazustehen.
+
+Ein Fehler dabei ist erwähnenswert, weil ihn nur der Browser fand: der
+Sampler startete mit `asyncio.create_task` in `create_calibration`. Diese
+Route ist ein einfaches `def`, FastAPI führt sie im Worker-Thread ohne
+Event-Loop aus, und der Aufruf scheiterte — **nachdem** die Sitzung
+angelegt war. Ergebnis: eine Aufzeichnung, die live aussah und nichts
+sammelte, also genau das, was diese Funktion verhindern soll. Die
+Unit-Tests liefen in `asyncio.run` und sahen es nicht.
+`tests/test_calibration_routes.py` geht jetzt durch die App.
+
+Geprüft: 195 Tests, und im Browser eine vollständige Aufzeichnung von der
+Geräteauswahl bis zur CSV mit Zeilen darin.
+
 ## 0.12.12
 
 Die Warnung aus 0.12.11 sagte „Kein ESPectre-Telemetrie-Endpunkt
