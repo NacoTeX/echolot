@@ -104,6 +104,19 @@ main {
 
 /* ---------- Header & tabs ---------- */
 
+/* The mark sits next to the wordmark rather than above it: the header is
+   already three rows tall, and Ingress gives it less height than a page. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.brand img {
+  flex: none;
+  border-radius: 22.5%;
+}
+
 header h1 {
   margin: 0;
   font-size: 2.1rem;

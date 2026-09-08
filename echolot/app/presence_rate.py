@@ -142,6 +142,24 @@ class RateProfile:
         return min(self.enter_rate, self.baseline_rate * DEFAULT_EXIT_RATIO)
 
 
+def profile_from_dict(data) -> RateProfile | None:
+    """Rebuild a profile from what as_dict() produced, or None if unusable."""
+    if not isinstance(data, dict):
+        return None
+    try:
+        return RateProfile(
+            crossing_threshold=float(data["crossing_threshold"]),
+            baseline_rate=float(data["baseline_rate"]),
+            baseline_spread=float(data.get("baseline_spread") or 0.0),
+            window_seconds=float(data["window_seconds"]),
+            sample_count=int(data.get("sample_count") or 0),
+            suspect_windows=int(data.get("suspect_windows") or 0),
+            window_count=int(data.get("window_count") or 0),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def crossing_rate(samples: list[dict], threshold: float) -> float:
     """Crossings per second of wall time.
 

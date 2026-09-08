@@ -137,4 +137,64 @@ def test_the_result_is_a_typed_value_not_a_bag_of_keys():
     # The JSON shape the API publishes has to stay the same.
     assert set(result.as_dict()) == {
         "state", "occupied", "hold_remaining", "raw_motion", "score",
+        "rate_occupied",
     }
+
+
+# --- the second, slower opinion ---------------------------------------------
+
+
+def test_the_crossing_rate_can_hold_a_zone_that_motion_has_lost():
+    """The case the whole rate detector exists for: somebody sitting still.
+
+    Motion says no, because they are not moving. The rate says yes,
+    because the room is still crossing about ten times as often as it does
+    empty. The zone stays occupied.
+    """
+    runtime = ZoneRuntime()
+    result = evaluate(
+        runtime, motion=False, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0.0, now=100.0, rate_occupied=True,
+    )
+    assert result.occupied is True
+    assert result.state == DETECTED
+    assert result.rate_occupied is True
+
+
+def test_the_rate_only_ever_adds():
+    """It cannot switch a zone off that motion has switched on. Motion
+    reacts in a second and the rate needs a minute; letting the slow signal
+    veto the fast one would make the zone drop out just as somebody walks
+    in."""
+    runtime = ZoneRuntime()
+    result = evaluate(
+        runtime, motion=True, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0.0, now=100.0, rate_occupied=False,
+    )
+    assert result.occupied is True
+
+
+def test_without_a_baseline_the_zone_behaves_exactly_as_before():
+    """A device with no learned profile contributes no rate opinion, and
+    nothing about the existing behaviour may change for it."""
+    runtime = ZoneRuntime()
+    result = evaluate(
+        runtime, motion=False, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0.0, now=100.0, rate_occupied=None,
+    )
+    assert result.occupied is False
+    assert result.rate_occupied is None
+
+
+def test_a_rate_that_falls_away_starts_the_hold_like_motion_would():
+    runtime = ZoneRuntime()
+    evaluate(
+        runtime, motion=False, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=30.0, now=100.0, rate_occupied=True,
+    )
+    result = evaluate(
+        runtime, motion=False, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=30.0, now=110.0, rate_occupied=False,
+    )
+    assert result.state == HOLDING
+    assert result.occupied is True

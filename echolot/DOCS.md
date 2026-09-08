@@ -650,6 +650,61 @@ da.
 
 **Was nicht behauptet wird:** ein Raum, ein Gerät, drei Sitzungen.
 
+### Ein Abonnement pro Gerät, dauerhaft
+
+Die Rate ist eine Aussage über die letzte Minute, und es gibt keine letzte
+Minute, wenn niemand zugehört hat. Bis 0.13.1 wurden Messwerte nur
+während einer laufenden Aufzeichnung gesammelt — für eine Kalibrierung
+genug, für Live-Präsenz nicht.
+
+Jedes gebaute Gerät hat deshalb jetzt ein eigenes, dauerhaftes Abonnement
+auf seine drei Entities und ein rollendes Fenster von drei Minuten
+(`app/live_presence.py`). Eine Aufzeichnung öffnet kein zweites
+Abonnement mehr, sondern hängt sich als Zuhörer an das vorhandene: zwei
+Abonnements auf dieselben drei Entities funktionieren zwar, aber das
+zweite bringt nichts, und das erste weiß ohnehin schon, was angekommen
+ist.
+
+Drei Details, die aus echten Aufnahmen stammen:
+
+- **Der Zwischenspeicher wird beim Start gefüllt.** Ein Abonnement meldet
+  *Änderungen*; die Schwelle ändert sich nie und stünde sonst in keinem
+  einzigen Sample.
+- **Das Fenster wird nach Zeit begrenzt, nicht nach Anzahl.** Der
+  Bewegungswert ändert sich nur, wenn er sich ändert — eine
+  Zwanzig-Minuten-Aufnahme hatte Lücken bis 18,7 s. Eine feste Anzahl
+  Messwerte überspannt damit völlig unterschiedlich lange Zeiträume, und
+  die Rate ist pro Sekunde.
+- **Beschnitten wird relativ zum neuesten Messwert**, nicht zur Wanduhr.
+  Sonst leert ein Gerät, das gerade nichts meldet, sein eigenes Fenster.
+
+Alle 30 Sekunden wird die Geräteliste abgeglichen: neue Geräte bekommen
+ein Abonnement, gelöschte verlieren es, abgestürzte werden neu
+verbunden.
+
+### Das Profil an der Zone
+
+`POST /api/calibrations/{id}/apply` übernimmt den Leerwert einer Sitzung
+als Maßstab des Geräts (`Device.presence_profile`). Ohne diesen Maßstab
+trägt ein Gerät zur ratenbasierten Präsenz **nichts** bei — es stimmt
+nicht etwa für „leer", es schweigt. Ein Zuhause, in dem niemand
+kalibriert hat, verhält sich damit exakt wie vorher.
+
+In der Zone kommt die Rate als zweite Quelle neben die Bewegung:
+
+    if rate_occupied:
+        raw = True
+
+Sie kann nur hinzufügen, nie widersprechen. Das ist Absicht — die
+Bewegungserkennung reagiert in einer Sekunde und ist das, was man zum
+Lichteinschalten will; die Rate braucht eine Minute und beantwortet die
+andere Frage: sitzt da noch jemand. Ein Veto der langsamen Quelle über
+die schnelle würde das Licht ausschalten, während jemand im Raum steht.
+
+Über die Mitglieder einer Zone wird ODER gebildet, wie bei der Bewegung
+auch. Das Ergebnis steht als `rate_occupied` im Zonenstatus: `true`,
+`false`, oder `null`, wenn kein Mitglied einen Maßstab hat.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

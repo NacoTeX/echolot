@@ -168,6 +168,11 @@ class Device(BaseModel):
     entity_movement_score: str | None = None
     entity_threshold: str | None = None
     entity_calibrate: str | None = None
+    #: What this room does when empty, learned from a calibration recording
+    #: (see app/presence_rate.py). Presence from the crossing rate is
+    #: meaningless without it, so a device without one simply does not
+    #: contribute that signal.
+    presence_profile: dict | None = None
     #: Baked into the firmware, and needed again when Home Assistant adopts
     #: the device — so it has to be readable here, not just generated.
     api_encryption_key: str = Field(default_factory=new_api_key)

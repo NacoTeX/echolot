@@ -1,10 +1,10 @@
 name: Echolot
-version: "0.13.1"
+version: "0.13.2"
 slug: echolot
 description: >-
-  Self-hosted Wi-Fi CSI presence detection hub built on ESPectre — a
-  license-free, open-source alternative to TOMMY.
-url: "https://github.com/NacoTeX/claudeandI/tree/main/echolot"
+  Wi-Fi CSI presence detection: build ESPectre firmware, flash it from the
+  browser, and publish zones to Home Assistant.
+url: "https://github.com/NacoTeX/echolot/tree/main/echolot"
 arch:
   - aarch64
   - amd64
