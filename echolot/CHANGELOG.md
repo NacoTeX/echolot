@@ -92,9 +92,30 @@ wandert auf das neue Abonnement mit.
 die Route hat das ignoriert: die Sitzung wurde angelegt, die Oberfläche
 zeigte „läuft", und es wurde nie etwas gesammelt.
 
+**Ein Messwert wurde doppelt gezählt.** Nur der Bewegungswert ist eine
+Messung; Schwelle und Bewegungs-Boolean sagen, was eine Messung bedeutet,
+nicht dass es eine neue gibt. Ein Motion-Ereignis erzeugte aber ebenfalls
+ein Sample — gebaut aus dem *gecachten* Score und mit dessen älterem
+Zeitstempel, weil `build_sample` den Stempel des Scores nimmt, wenn es
+einen hat. Ein Messwert plus eine Bewegungsumschaltung legte dieselbe
+Zahl also zweimal ins Fenster, zum selben Zeitpunkt: die Zahl der
+Überschreitungen stieg, die beobachtete Zeitspanne nicht. Genau das
+verfälscht eine Rate pro Sekunde. Schlimmer noch, Live-Pfad und
+Recorder-Import maßen dadurch verschieden — der Import liest nur die
+Score-Reihe —, ein aus dem Verlauf gelerntes Profil beurteilte also
+anders gezählte Daten. Ein Test hält jetzt fest, dass beide Wege dieselbe
+Rate ergeben.
+
+Dazu eine bewusste Regel gegen doppelt zugestellte Ereignisse: ein
+Messwert wird über den Zeitpunkt identifiziert, mit dem Home Assistant
+ihn gestempelt hat. Derselbe Zeitpunkt zweimal ist eine Messung, die
+zweimal zugestellt wurde — derselbe *Wert* zu einem neuen Zeitpunkt ist
+eine echte zweite Messung und bleibt. Ein älterer Zeitstempel als der
+neueste wird verworfen, weil `_trim` und `window` auf der Reihenfolge
+aufbauen.
+
 Nicht in dieser Version: die übrigen P1-Punkte des Reviews (Messfenster
-und Beobachtungsdauer, doppelt gezählte Messpunkte, Build-Ergebnisse
-gegen gleichzeitige Änderungen).
+und Beobachtungsdauer, Build-Ergebnisse gegen gleichzeitige Änderungen).
 
 ## 0.13.4
 

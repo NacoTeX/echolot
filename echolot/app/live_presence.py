@@ -92,9 +92,24 @@ class DeviceStream:
 
     def _on_state(self, entity_id: str, state: dict) -> None:
         self._cache[entity_id] = state
-        if entity_id == self._entities["threshold"]:
-            # Context, not a measurement.
+
+        # Only the movement score is a measurement. The threshold and the
+        # motion boolean are context: they say what a reading means, not
+        # that there is a new one.
+        #
+        # Until 0.13.5 a motion event also produced a sample — built from
+        # the *cached* score, and carrying that score's own older
+        # timestamp, because build_sample takes the score's stamp when it
+        # has one. So one score reading plus a motion flip put the same
+        # number into the window twice, at the same instant: the crossing
+        # count went up while the observed span did not, which inflates a
+        # rate measured per second. Worse, it made the live path and the
+        # recorder import disagree — the import reads the score series
+        # alone — so a profile learned from history judged data that had
+        # been counted differently.
+        if entity_id != self._entities["score"]:
             return
+
         sample = build_sample(
             self._cache.get(self._entities["score"]),
             self._cache.get(self._entities["motion"]),
@@ -102,6 +117,20 @@ class DeviceStream:
         )
         if sample is None:
             return
+
+        # A reading is identified by the instant Home Assistant stamped it
+        # with. The same instant arriving twice is one measurement
+        # delivered twice, not two measurements — while the same *value*
+        # at a new instant is a real second reading and is kept. An older
+        # stamp than the newest would also break the ordering `_trim` and
+        # `window` rely on.
+        if self._samples and sample.t <= self._samples[-1].t:
+            logger.debug(
+                "Messwert für %s verworfen: Zeitstempel %s nicht neuer als %s",
+                self.device_id, sample.t, self._samples[-1].t,
+            )
+            return
+
         self._samples.append(sample)
         self._trim()
         for listener in tuple(self._listeners):
