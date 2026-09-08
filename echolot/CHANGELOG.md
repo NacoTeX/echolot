@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.13.1
+
+Eine zwanzigminütige Aufnahme — Raum leer, während jemand durch die übrige
+Wohnung lief — hat zwei Fehler von 0.13.0 aufgedeckt und die wichtigste
+offene Frage beantwortet.
+
+**Das Signal geht durch Wände, aber nicht weit genug, um zu stören.**
+Zwanzig Minuten Herumlaufen in der Wohnung erzeugten 0,027
+Überschreitungen pro Sekunde, still auf der Couch sitzen 0,261 — Faktor
+zehn. Raumbezogene Präsenz ist damit erreichbar. Das war das größte
+verbliebene Risiko.
+
+- **Die Schwelle fehlte in jeder Zeile der Aufnahme.** Ein Abonnement
+  meldet *Änderungen*; die Schwelle ändert sich nie, wurde also nie
+  gemeldet und stand in keinem Sample. Der Sampler liest die drei Entities
+  jetzt einmal beim Start und füllt den Zwischenspeicher vor. Eine
+  Meldung, die vorher eintrifft, gewinnt gegen den Startwert.
+- **Gezählt wird pro Sekunde statt pro Messwert.** Home Assistant meldet
+  nur Änderungen, und der Bewegungswert steht lange exakt auf null — die
+  Aufnahme hatte Lücken bis 18,7 s. Ein Anteil an den Messwerten wertet
+  damit ausgerechnet die stillen Zeiträume auf. Die Trennung zwischen
+  „nebenan" und „weit weg" verbessert sich dadurch von Faktor 38 auf 112.
+- **Der Leerwert ist das 90er-Perzentil der Fenster, nicht ihr Median.**
+  Vierzehn von zwanzig Fenstern kreuzten exakt null Mal; der Median ist
+  0,0 und lässt einen willkürlichen Mindestwert die Arbeit machen — 6 von
+  20 Leer-Fenstern galten dann als belegt. Maßgeblich ist nicht, was der
+  leere Raum üblicherweise tut, sondern was er schlimmstenfalls tut.
+- **Kurze Leer-Aufnahmen werden abgelehnt.** Bei drei Fenstern ist das
+  90er-Perzentil das größte davon: die alte Zweieinhalb-Minuten-Aufnahme
+  ergab einen „Leerwert" von 0,393 — das kontaminierte Fenster selbst. Zu
+  kurz gemessen gibt keine schwache, sondern eine zuversichtlich falsche
+  Antwort. Mindestens zehn volle Fenster.
+
+Am neuen Profil: **3 von 4** Couch-Fenstern erkannt, **1 von 1** vor der
+Tür, **1 von 20** Leer-Fenstern falsch — und genau dieses eine meldet das
+Profil selbst als verdächtig.
+
+Bestätigt nebenbei: das Abonnement aus 0.13.0 arbeitet. Der häufigste
+Abstand zwischen Messwerten ist 0,25 s statt des früheren Polling-Takts
+von 0,5 s. Die Gesamtrate bleibt bei 1,6/s, weil der Wert lange
+unverändert bleibt und dann nichts zu melden ist — meine frühere Schätzung
+von 6/s stammte aus einer Phase direkt nach dem Boot und war falsch.
+
+Geprüft: 229 Tests. Die dritte echte Aufnahme liegt als
+`tests/data/flat_occupied_room_empty.csv` bei.
+
 ## 0.13.0
 
 Aus zwei echten Aufnahmen entstanden — fünf Minuten still auf der Couch,

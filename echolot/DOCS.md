@@ -592,43 +592,63 @@ jemals mehr brauchen, sagt es das beim Bauen mit der genauen Zahl. Ohne
 
 ### Präsenz aus der Überschreitungsrate
 
-Gemessen an echter Hardware, eine Person still auf der Couch gegen
-denselben Raum leer:
+Gemessen an echter Hardware, in drei Aufnahmen aus einem Wohnzimmer:
 
-- Ein **einzelner** Messwert trennt die beiden kaum. AUC 0,616 — Münzwurf
-  mit Neigung. Die `recommendation()` des Calibration Lab meldete das
-  korrekt als `quality: poor` mit 98 % Falsch-Negativ-Rate, statt sich
-  eine Schwelle auszudenken.
-- **Der leere Raum ist nicht still.** Bei Schwelle 0,5 überschreitet er
-  in 3,0 % der Messwerte, mit Person 8,7 %. Eine Haltezeit ist deshalb das
-  falsche Werkzeug: 60 s Haltezeit meldeten den Raum zu 95 % belegt mit
-  Person — und zu **40 % belegt ohne**.
-- **Die Rate über ein Fenster trennt.** Über 60 s: AUC 0,931, mit 17,7 %
-  der Messwerte über 1e-3 bei Anwesenheit gegen 3,8 % leer.
+| Situation | Überschreitungen/s |
+| --- | --- |
+| Raum leer, jemand bewegt sich in der übrigen Wohnung (20 min) | **0,027** |
+| Person sitzt still auf der Couch | **0,261** |
+| Person direkt vor der Tür | **3,03** |
 
-Präsenz heißt daher: *die Überschreitungsrate der letzten Minute liegt
-deutlich über der Rate, die dieser Raum leer zeigt.* Die Leer-Aufnahme ist
-damit nicht Vorbereitung der Kalibrierung — sie **ist** die Kalibrierung.
+Die wichtigste Zahl ist die erste: zwanzig Minuten durch die Wohnung
+laufen erzeugt **zehnmal weniger** als still im Raum sitzen. Das Signal
+geht zwar durch Wände, aber nicht stark genug, um raumbezogene Präsenz
+unmöglich zu machen.
+
+**Gezählt wird pro Sekunde, nicht pro Messwert.** Home Assistant meldet
+nur Änderungen, und der Bewegungswert steht lange exakt auf null — eine
+Zwanzig-Minuten-Aufnahme hatte Lücken bis 18,7 s ohne jede Meldung. Ein
+Anteil an den Messwerten würde eine stille Minute mit vier Meldungen so
+schwer wiegen wie eine geschäftige mit zweihundert, also ausgerechnet
+die Zeiträume aufwerten, die still aussehen sollten.
+
+**Der Maßstab ist das 90er-Perzentil der Leer-Fenster, nicht ihr Median.**
+Vierzehn von zwanzig Fenstern kreuzten exakt null Mal; der Median ist 0,0
+und sagt nichts. Die Frage ist nicht, was der leere Raum üblicherweise
+tut, sondern was er **schlimmstenfalls** tut — und das ist ein hohes
+Perzentil. Es übersteht außerdem ein kontaminiertes Fenster unter zwanzig,
+was ein Maximum nicht täte.
+
+**Eine kurze Leer-Aufnahme wird abgelehnt.** Bei drei Fenstern *ist* das
+90er-Perzentil das größte davon: eine zweieinhalbminütige Aufnahme, deren
+letzte Minute belegt war, ergab einen „Leerwert" von 0,393 — das
+kontaminierte Fenster selbst. Zu kurz gemessen liefert nicht eine
+schwache, sondern eine zuversichtlich falsche Antwort. Es braucht daher
+mindestens zehn volle Fenster, also gut zehn Minuten.
+
+Am so gelernten Profil (Leerwert 0,084, Einschaltschwelle 0,167):
+
+| | Fenster als belegt erkannt |
+| --- | --- |
+| Person sitzt still auf der Couch | 3 von 4 |
+| Person direkt vor der Tür | 1 von 1 |
+| Raum leer, Wohnung belegt | **1 von 20** |
+
+Die beiden Ausreißer sind erklärbar: das verpasste Couch-Fenster ist die
+letzte Minute der Aufnahme, das falsch erkannte Leer-Fenster kreuzte bei
+0,286 — Couch-Niveau, vermutlich jemand direkt vor der Tür. Genau dieses
+Fenster meldet das Profil zusätzlich als verdächtig.
 
 `GET /api/calibrations/{id}/presence-rate` lernt die Rate aus den mit
 „Raum leer" markierten Messwerten einer Sitzung und bewertet die übrigen
 Label daran.
 
-**Der Median, nicht der Mittelwert.** Die erste echte Leer-Aufnahme hatte
-in ihrer letzten Minute jemanden im Raum: die drei Fenster lagen bei
-0,014, 0,038 und 0,217. Der Mittelwert daraus ist 0,090 und liegt über
-jedem ehrlichen Fenster; der Median ist 0,038 und beschreibt, was der Raum
-tut. Ein Fenster weit über den übrigen wird zusätzlich gemeldet — es ist
-die Signatur einer Aufnahme, bei der jemand im Raum war.
-
 **Der Preis ist rund eine Minute Latenz.** Das ersetzt die vorhandene
 Bewegungserkennung nicht, die in einer Sekunde reagiert und die man zum
-Lichteinschalten will. Es beantwortet die andere Frage, die Bewegung nicht
-beantworten kann: ist noch jemand da.
+Lichteinschalten will. Es beantwortet die andere Frage: ist noch jemand
+da.
 
-**Was nicht behauptet wird:** die 0,931 stehen auf zwölf Fenstern gegen
-sechs, aus einem Raum, einem Gerät, einer Sitzung. Der Mechanismus ist
-belastbar, die Zahlen wollen mehr Belege.
+**Was nicht behauptet wird:** ein Raum, ein Gerät, drei Sitzungen.
 
 ### Confidence fusion
 

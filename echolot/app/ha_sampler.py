@@ -21,10 +21,11 @@ which polling did need, and which cost three quarters of the data anyway.
 Each sample keeps Home Assistant's own `last_updated` as its timestamp.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
-from app import ha_stream
+from app import ha_client, ha_stream
 from app.telemetry import Sample
 
 logger = logging.getLogger("echolot.ha_sampler")
@@ -86,10 +87,17 @@ class HomeAssistantSampler:
     measurement of its own.
     """
 
-    def __init__(self, sink, subscription_factory=None) -> None:
+    def __init__(self, sink, subscription_factory=None, reader=None) -> None:
         #: sink(device_id, Sample) — CalibrationStore.ingest in production.
         self._sink = sink
         self._factory = subscription_factory or ha_stream.StateSubscription
+        #: reader(entity_id) -> state dict, used once per recording to seed
+        #: the cache. A subscription only reports *changes*, so an entity
+        #: that never changes is never seen: the first twenty-minute
+        #: recording came back with an empty threshold column throughout,
+        #: because the threshold had been 0.5 all along and there was
+        #: nothing to report.
+        self._reader = reader or ha_client.get_state
         self._subscriptions: dict[str, object] = {}
         self._latest: dict[str, dict] = {}
         self._loop = None
@@ -124,6 +132,7 @@ class HomeAssistantSampler:
 
         cache: dict[str, dict] = {}
         self._latest[device.id] = cache
+        self._seed(device, cache)
 
         def on_state(entity_id: str, state: dict) -> None:
             cache[entity_id] = state
@@ -143,6 +152,41 @@ class HomeAssistantSampler:
         subscription.start()
         self._subscriptions[device.id] = subscription
         return True
+
+    def _seed(self, device, cache: dict) -> None:
+        """Read the three entities once, so unchanging ones are known.
+
+        Scheduled onto the loop rather than awaited: start() is called from
+        a worker thread, and a recording must not wait on Home Assistant
+        before it begins collecting.
+        """
+        async def read_all():
+            for entity_id in (
+                device.entity_threshold,
+                device.entity_movement_score,
+                device.entity_motion,
+            ):
+                if not entity_id:
+                    continue
+                try:
+                    state = await self._reader(entity_id)
+                except Exception:  # noqa: BLE001 - a missing seed is not fatal
+                    logger.warning("Startwert für %s nicht lesbar", entity_id)
+                    continue
+                # A change that arrived first is newer than this read.
+                if state is not None and entity_id not in cache:
+                    cache[entity_id] = state
+
+        if self._loop is not None:
+            asyncio.run_coroutine_threadsafe(read_all(), self._loop)
+            return
+        try:
+            asyncio.get_running_loop().create_task(read_all())
+        except RuntimeError:
+            # No loop to schedule on. Seeding is an optimisation — the
+            # subscription still delivers everything that changes — so a
+            # recording must not fail for want of it.
+            logger.debug("Kein Event-Loop zum Vorbelegen der Startwerte")
 
     def stop(self, device_id: str) -> None:
         subscription = self._subscriptions.pop(device_id, None)
