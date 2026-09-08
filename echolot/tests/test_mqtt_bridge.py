@@ -101,13 +101,60 @@ def test_an_unavailable_zone_publishes_no_state(bridge):
     assert discovery_count(bridge._client, "z1") == 1
 
 
-def test_forgetting_a_zone_clears_both_retained_topics(bridge):
+# --- Regressions from the external review (P1 #7) ----------------------
+
+
+def test_an_unavailable_zone_says_so_instead_of_going_quiet(bridge):
+    """Publishing nothing left Home Assistant holding the last ON/OFF.
+
+    The add-on's own LWT stayed "online" the whole time, so nothing in
+    Home Assistant could tell a stale value from a current one — and a
+    stale "clear" is exactly the value an automation acts on.
+    """
+    bridge.publish_zone("z1", "Küche", occupied=False, available=False)
+    assert (mqtt_bridge.zone_availability_topic("z1"), "offline", True) in bridge._client.published
+
+
+def test_an_available_zone_is_marked_online(bridge):
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    published = bridge._client.published
+    assert (mqtt_bridge.zone_availability_topic("z1"), "online", True) in published
+    assert (mqtt_bridge.zone_state_topic("z1"), "ON", True) in published
+
+
+def test_one_zone_going_unavailable_leaves_the_others_alone(bridge):
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    bridge.publish_zone("z2", "Flur", occupied=False, available=False)
+    published = bridge._client.published
+    assert (mqtt_bridge.zone_availability_topic("z1"), "online", True) in published
+    assert (mqtt_bridge.zone_availability_topic("z2"), "offline", True) in published
+
+
+def test_discovery_requires_both_availability_sources():
+    """`availability_mode: all` — the add-on has to be up *and* the zone
+    has to have a measurement. Either one failing marks it unavailable."""
+    payload = mqtt_bridge.zone_discovery_payload("z1", "Küche")
+    assert payload["availability_mode"] == "all"
+    topics = [entry["topic"] for entry in payload["availability"]]
+    assert mqtt_bridge.AVAILABILITY_TOPIC in topics
+    assert mqtt_bridge.zone_availability_topic("z1") in topics
+    # The old single-topic form must be gone, or HA would use it instead.
+    assert "availability_topic" not in payload
+
+
+def test_the_unique_id_is_unchanged_by_the_availability_rework():
+    """Existing installations must keep their entity, not gain a second."""
+    assert mqtt_bridge.zone_discovery_payload("z1", "Küche")["unique_id"] == "echolot_zone_z1"
+
+
+def test_forgetting_a_zone_clears_every_retained_topic(bridge):
     bridge.publish_zone("z1", "Küche", occupied=True, available=True)
     bridge._client.published.clear()
     bridge.forget_zone("z1")
     assert bridge._client.published == [
         (mqtt_bridge.zone_discovery_topic("z1"), "", True),
         (mqtt_bridge.zone_state_topic("z1"), "", True),
+        (mqtt_bridge.zone_availability_topic("z1"), "", True),
     ]
     assert bridge._announced == set()
 

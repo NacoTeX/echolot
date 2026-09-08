@@ -58,16 +58,7 @@ async def lifespan(_app: FastAPI):
     if os.environ.get("ECHOLOT_MQTT_EXPORT", "true").lower() in ("0", "false", "no"):
         logger.info("MQTT export disabled by configuration")
     else:
-        try:
-            await mqtt_bridge.bridge.start()
-            task = asyncio.create_task(
-                mqtt_bridge.publish_loop(compute_all_zone_states, zones.list_zones, forget_zone_runtime)
-            )
-        except mqtt_bridge.MqttUnavailable as err:
-            # Entirely normal without the Mosquitto add-on; everything else
-            # keeps working, the zones just stay local to this UI.
-            logger.info("MQTT export inactive: %s", err)
-            mqtt_bridge.bridge.error = str(err)
+        task = asyncio.create_task(_run_mqtt_export())
 
     try:
         yield
@@ -80,6 +71,42 @@ async def lifespan(_app: FastAPI):
                 pass
         mqtt_bridge.bridge.stop()
         await ha_client.close_client()
+
+
+#: How long to wait before asking the Supervisor about MQTT again, in
+#: seconds, doubling up to the last value. Starting the add-on before the
+#: broker used to mean no export until the add-on itself was restarted —
+#: a plausible order on a rebooting machine, and an invisible failure.
+MQTT_RETRY_BACKOFF = (10, 30, 60, 300)
+
+
+async def _run_mqtt_export() -> None:
+    """Connect to MQTT and mirror zones, retrying until the broker exists."""
+    from app import feature_api
+
+    attempt = 0
+    while True:
+        try:
+            await mqtt_bridge.bridge.start()
+        except mqtt_bridge.MqttUnavailable as err:
+            # Entirely normal without the Mosquitto add-on; everything else
+            # keeps working, the zones just stay local to this UI. Worth
+            # retrying anyway: the broker may simply not be up yet.
+            delay = MQTT_RETRY_BACKOFF[min(attempt, len(MQTT_RETRY_BACKOFF) - 1)]
+            attempt += 1
+            logger.info("MQTT export inactive: %s — neuer Versuch in %ss", err, delay)
+            mqtt_bridge.bridge.error = str(err)
+            await asyncio.sleep(delay)
+            continue
+
+        # Publish when a reading arrives, not when a timer comes round: the
+        # device reacts in a second and a ten-second export would add ten.
+        wakeup = asyncio.Event()
+        feature_api.live.on_any_change(lambda *_: wakeup.set())
+        await mqtt_bridge.publish_loop(
+            compute_all_zone_states, zones.list_zones, forget_zone_runtime, wakeup=wakeup
+        )
+        return
 
 
 app = FastAPI(title="Echolot", lifespan=lifespan)

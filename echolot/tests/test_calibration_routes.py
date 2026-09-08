@@ -277,3 +277,19 @@ def test_a_range_with_no_readings_is_refused_rather_than_stored_empty(api, monke
     )
     assert response.status_code == 409
     assert client.get("/api/calibrations").json() == []
+
+
+def test_a_recording_that_cannot_sample_is_refused_not_started(api, monkeypatch):
+    """From the external review (P1 #5).
+
+    `sampler.start()` returns False when there is no live subscription to
+    attach to, and the route ignored it: the session was created, the UI
+    showed "recording", and nothing was ever collected. Three sessions
+    were once recorded and exported before anyone noticed they were empty.
+    """
+    client, sampler, store, _opened = api
+    monkeypatch.setattr(sampler, "start", lambda device: False)
+
+    response = client.post("/api/calibrations", json={"device_id": "probe"})
+    assert response.status_code == 409
+    assert client.get("/api/calibrations").json() == [], "eine tote Sitzung blieb zurück"

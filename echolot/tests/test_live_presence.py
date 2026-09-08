@@ -217,3 +217,64 @@ def test_stopping_everything_closes_every_stream():
     live.stop_all()
     assert live.statuses() == {}
     assert all(instance.stopped for instance in FakeSubscription.instances)
+
+
+# --- Regressions from the external review (P1 #5) ----------------------
+
+
+def test_a_corrected_entity_id_rebuilds_the_subscription():
+    """Until 0.13.5 `reconcile` matched on the device id alone.
+
+    Correcting an entity id — by hand or through the automatic lookup —
+    therefore repaired the stored value while the running subscription
+    stayed on the old entity: the device page said it was fixed and no
+    readings ever arrived. The automatic lookup made it worse, because it
+    fires exactly when the ids are wrong.
+    """
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    first = live.stream(device.id)
+    assert "sensor.probe_movement_score" in first._subscription.entity_ids
+
+    device.entity_movement_score = "sensor.wohnzimmer_movement_score"
+    live.reconcile([device])
+    second = live.stream(device.id)
+
+    assert second is not first, "das Abonnement blieb auf der alten Entity"
+    assert "sensor.wohnzimmer_movement_score" in second._subscription.entity_ids
+    assert first.connected is False, "das alte Abonnement läuft weiter"
+    live.stop_all()
+
+
+def test_an_unchanged_device_keeps_its_stream_and_its_history():
+    """Rebuilding on every pass would throw the rolling window away every
+    thirty seconds, and the rate has nothing left to measure."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    first = live.stream(device.id)
+    live.reconcile([device])
+    assert live.stream(device.id) is first
+    live.stop_all()
+
+
+def test_a_recording_survives_the_entity_correction():
+    """Its listener moves to the new stream. Detaching it silently would
+    leave a session that looks live and collects nothing."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+
+    got = []
+    live.stream(device.id).add_listener(lambda device_id, sample: got.append(sample))
+
+    device.entity_movement_score = "sensor.wohnzimmer_movement_score"
+    live.reconcile([device])
+
+    live.stream(device.id)._subscription.on_state(
+        "sensor.wohnzimmer_movement_score",
+        {"state": "0.5", "last_updated": "2026-09-08T12:00:00+00:00"},
+    )
+    assert len(got) == 1, "die laufende Aufzeichnung hat ihren Zuhörer verloren"
+    live.stop_all()

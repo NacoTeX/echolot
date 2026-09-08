@@ -53,10 +53,48 @@ formatierte eine Rate pro Sekunde als Prozentsatz der Messwerte — aus
 12,5/s wurde „1250 % der Messwerte". Richtige Zahl, falscher Satz. Jetzt
 steht dort „Ereignisse/s".
 
+**Eine ausgefallene Zone sah in Home Assistant aus wie vorher.** Die
+Discovery nannte nur die Verfügbarkeit des Add-ons, und `publish_zone`
+schwieg, wenn eine Zone keine Messung hatte — Home Assistant behielt also
+den letzten ON/OFF-Wert, unbegrenzt, während das Add-on selbst munter
+„online" meldete. Ein veralteter „frei"-Wert ist schlimmer als gar keiner:
+eine Automation kann ihn nicht von einem echten unterscheiden. Jede Zone
+hat jetzt ein eigenes Verfügbarkeits-Topic, und die Discovery verlangt
+`availability_mode: all` — Add-on **und** Zone müssen online sein. Die
+`unique_id` bleibt unverändert, bestehende Entities also auch.
+
+**Der Export wartet nicht mehr auf den Timer.** Zehn Sekunden Polling
+hießen: eine Bewegung kurz nach einem Takt wartet fast einen ganzen
+Zyklus, und ein kurzer Impuls zwischen zwei Takten fehlt ganz — das Gerät
+reagiert in einer Sekunde, der Export legte zehn drauf. Die
+Live-Abonnements bekommen die Zustandsänderungen ohnehin, sobald sie
+passieren; sie wecken jetzt den Export. Der Timer bleibt für die zwei
+Dinge ohne Ereignis: eine ablaufende Haltezeit und eine hinzugekommene
+oder entfernte Zone.
+
+**MQTT wird nach einem Fehlstart erneut versucht.** Das Add-on vor dem
+Broker zu starten — eine plausible Reihenfolge beim Hochfahren einer
+Maschine — bedeutete bisher: kein Export, bis das Add-on selbst neu
+gestartet wird. Jetzt mit Backoff bis fünf Minuten.
+
+**Das Live-Abonnement klebte an alten Entity-IDs.** Der Abgleich prüfte
+nur die Geräte-ID. Eine korrigierte Entity-ID — von Hand oder über die
+automatische Suche — reparierte damit den gespeicherten Wert, während das
+laufende Abonnement auf der alten Entity blieb: die Geräteseite meldete
+„behoben", und es kamen weiterhin keine Werte. Die automatische Suche
+machte es schlimmer, weil sie genau dann anspringt, wenn die IDs falsch
+sind. Verglichen wird jetzt ein Fingerabdruck der abonnierten Entities.
+Eine laufende Aufzeichnung verliert ihren Zuhörer dabei nicht — der
+wandert auf das neue Abonnement mit.
+
+**Eine Aufzeichnung ohne Sampler wird abgelehnt statt gestartet.**
+`sampler.start()` liefert False, wenn es kein Live-Abonnement gibt, und
+die Route hat das ignoriert: die Sitzung wurde angelegt, die Oberfläche
+zeigte „läuft", und es wurde nie etwas gesammelt.
+
 Nicht in dieser Version: die übrigen P1-Punkte des Reviews (Messfenster
-und Beobachtungsdauer, Entity-Wechsel im Live-Abonnement, doppelt
-gezählte Messpunkte, MQTT-Zonenverfügbarkeit, Build-Ergebnisse gegen
-gleichzeitige Änderungen).
+und Beobachtungsdauer, doppelt gezählte Messpunkte, Build-Ergebnisse
+gegen gleichzeitige Änderungen).
 
 ## 0.13.4
 

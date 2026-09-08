@@ -118,7 +118,22 @@ def create_calibration(payload: dict) -> dict:
         session = calibration.store.create(device_id, name)
     except ValueError as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
-    sampler.start(device)
+
+    # A session with no sampler behind it looks live and collects nothing,
+    # which is the exact failure a ground-truth recording exists to rule
+    # out. Three sessions were once recorded and exported before anyone
+    # noticed there had never been any data in them, so a start that did
+    # not start is now a refusal rather than a green light.
+    if not sampler.start(device):
+        calibration.store.delete(session["id"])
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Für dieses Gerät läuft gerade kein Live-Abonnement, die "
+                "Aufzeichnung würde nichts aufnehmen. Ist das Gerät in Home "
+                "Assistant verfügbar?"
+            ),
+        )
     return session
 
 

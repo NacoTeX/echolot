@@ -41,6 +41,11 @@ class DeviceStream:
             "motion": device.entity_motion,
             "threshold": device.entity_threshold,
         }
+        #: What this stream is subscribed to, so `reconcile` can notice
+        #: when the device's entity ids have been corrected underneath it.
+        self.entity_fingerprint = tuple(
+            self._entities[role] for role in ("score", "motion", "threshold")
+        )
         self._cache: dict[str, dict] = {}
         self._samples: deque = deque()
         self._listeners: set = set()
@@ -129,6 +134,11 @@ class DeviceStream:
             if sample.t >= cutoff
         ]
 
+    @property
+    def listeners(self) -> tuple:
+        """Whoever is attached, so a rebuilt stream can take them over."""
+        return tuple(self._listeners)
+
     def add_listener(self, listener) -> None:
         self._listeners.add(listener)
 
@@ -151,6 +161,10 @@ class LivePresence:
         self._reader = reader or ha_client.get_state
         self._loop = None
         self._supervisor = None
+        #: Called as `(device_id, sample)` after any device's reading
+        #: changes. The MQTT export uses it to publish when something
+        #: happens rather than when a timer next comes round.
+        self._on_any_change = None
 
     def bind(self, loop) -> None:
         self._loop = loop
@@ -158,21 +172,63 @@ class LivePresence:
     def stream(self, device_id: str) -> DeviceStream | None:
         return self._streams.get(device_id)
 
+    def on_any_change(self, callback) -> None:
+        """Register one `(device_id, sample)` callback for any device.
+
+        Attached to every stream, including ones opened later, so the
+        caller does not have to track devices coming and going itself.
+        """
+        self._on_any_change = callback
+        for stream in self._streams.values():
+            stream.add_listener(callback)
+
     def statuses(self) -> dict:
         return {
             device_id: {"connected": stream.connected, "error": stream.error}
             for device_id, stream in self._streams.items()
         }
 
+    @staticmethod
+    def _fingerprint(device) -> tuple:
+        return (
+            device.entity_movement_score,
+            device.entity_motion,
+            device.entity_threshold,
+        )
+
     def reconcile(self, devices) -> None:
-        """Open a stream for every device that can supply readings, close the rest."""
+        """Open a stream for every device that can supply readings, close the rest.
+
+        A device is matched on its id *and* on the entities it wants. Only
+        the id was checked until 0.13.5, so correcting an entity id — by
+        hand or through the automatic lookup — repaired the stored value
+        while the running subscription stayed on the old entity: the
+        device page said it was fixed and no readings ever arrived. The
+        automatic lookup made this worse, because it fires exactly when
+        the ids are wrong.
+        """
         wanted = {
             device.id: device
             for device in devices
             if (device.entity_movement_score or device.entity_motion)
         }
+        carry_over: dict[str, tuple] = {}
         for device_id in list(self._streams):
             if device_id not in wanted:
+                self._streams.pop(device_id).stop()
+                continue
+            existing = self._streams[device_id]
+            if existing.entity_fingerprint != self._fingerprint(wanted[device_id]):
+                logger.info(
+                    "Entities für %s geändert — Abonnement wird neu aufgebaut", device_id
+                )
+                # The cached readings describe the old entities and are
+                # dropped with the stream. The listeners are not: one of
+                # them may be a calibration recording in progress, and
+                # silently detaching it would leave a session that looks
+                # live and collects nothing — the exact failure the
+                # recording exists to rule out.
+                carry_over[device_id] = tuple(existing.listeners)
                 self._streams.pop(device_id).stop()
         for device_id, device in wanted.items():
             if device_id not in self._streams:
@@ -182,6 +238,10 @@ class LivePresence:
                     reader=self._reader,
                     loop=self._loop,
                 )
+                if self._on_any_change is not None:
+                    stream.add_listener(self._on_any_change)
+                for listener in carry_over.get(device_id, ()):
+                    stream.add_listener(listener)
                 self._streams[device_id] = stream
                 stream.start()
                 self._seed(stream)
