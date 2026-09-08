@@ -817,6 +817,57 @@ obere: mit 0,000 als Leerwert würde der Melder losgehen, sobald jemand
 im Flur vorbeiläuft. Der Unterschied zwischen 0,000 und 0,027 ist
 zugleich der Beleg, dass das Signal wirklich durch Wände geht.
 
+### Wann ein Messwert keiner ist
+
+Home Assistant kennt zwei Zustände, die wie ein Wert aussehen und keiner
+sind: `unavailable`, wenn die Integration das Gerät verloren hat, und
+`unknown`, wenn es nie einen geliefert hat. Bis 0.13.5 stand im Code
+`motion["state"] == "on"` — beide wurden damit zu „keine Bewegung" auf
+einem als verfügbar gemeldeten Gerät. Ein Gerät, das aus dem Netz
+gefallen war, veröffentlichte nach Ablauf der Haltezeit einen
+zuversichtlich leeren Raum.
+
+Gültig sind jetzt nur `on` und `off`. Alles andere ist das Fehlen einer
+Messung, und die Zone meldet dann `available: false` statt „frei".
+
+**Ein Bewegungswert ohne funktionierenden Bewegungssensor zählt bewusst
+nicht als halber Beleg.** Die Zonenlogik fällt ohne konfigurierten
+Schwellwert genau auf den Bewegungs-Boolean zurück; ein halb verfügbares
+Gerät würde diesen Rückfallpfad auf einen Wert stellen, den es nicht
+gibt.
+
+`NaN` und `inf` überleben `float()`, und jeder spätere Vergleich mit
+ihnen ist False — ein kaputter Messwert läse sich als ruhiger Raum.
+Zahlen müssen `math.isfinite` erfüllen.
+
+### Zwei Hysteresen, zwei Gedächtnisse
+
+Es gibt zwei unabhängige Hysteresen, und 0.13.2 hat sie sich teilen
+lassen. Beides waren Fehler.
+
+**Die Rate braucht ihr eigenes pro Gerät.** `evaluate` wählt über
+`occupied_now` zwischen Einschalt- und Ausschaltschwelle, und gemeint ist
+der Vorzustand *dieses Geräts*. Übergeben wurde das laufende
+ODER-Ergebnis der Zonenschleife: das erste Gerät jeder Zone galt damit
+immer als gerade noch leer, die Ausschaltschwelle kam nie zum Einsatz.
+Der Zustand liegt jetzt in `main._rate_state`, gemerkt am neuesten
+Messwert des Fensters — ohne neuen Messwert kann sich die Antwort nicht
+geändert haben, also wird pro Datenpunkt genau einmal ausgewertet, egal
+wie viele Zonen das Gerät enthalten. Ein Profilwechsel verwirft die
+Historie, ein gelöschtes Gerät ebenso. Eine Datenlücke meldet
+„unbekannt", setzt die Erinnerung aber nicht zurück.
+
+**Nur Bewegung schreibt das Bewegungs-Gedächtnis.** `runtime.raw` ist das
+Gedächtnis der Bewegungs-Hysterese: zwischen den beiden Schwellen liefert
+`_raw_decision` das, was es zuletzt gesagt hat. Das kombinierte Ergebnis
+dort hineinzuschreiben rastete den Bewegungspfad ein — lag der
+Bewegungswert im Zwischenband, blieb die Zone belegt, lange nachdem die
+Rate gefallen war. Die Rate wird jetzt erst *nach* dem Gedächtnis
+hinzu-geodert.
+
+`raw_motion` bezeichnet damit wieder Bewegung. Welche Quelle die Zone
+gerade hält, steht in `trigger`: `motion`, `rate` oder nichts.
+
 ### Confidence fusion
 
 For zones whose devices stream direct telemetry, Echolot computes a second

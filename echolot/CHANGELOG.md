@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.13.5
+
+Drei Fehler aus einem externen Code-Review, alle drei in der Kette, die
+entscheidet, ob ein Raum als leer gilt. Zwei davon habe ich in 0.13.2
+selbst eingebaut. Zu jedem Punkt zuerst ein Regressionstest gegen den
+alten Code, dann die minimale Korrektur.
+
+**Ein ausgefallener Sensor galt als „keine Bewegung".** `_read_device_state`
+las `motion["state"] == "on"`. Home Assistant meldet aber `unavailable`,
+wenn die Integration das Gerät verloren hat, und `unknown`, wenn es nie
+einen Wert geliefert hat — beides wurde damit zu `available: True,
+motion: False`. Ein Gerät, das aus dem Netz gefallen war, veröffentlichte
+nach Ablauf der Haltezeit also einen zuversichtlich leeren Raum. Nur `on`
+und `off` sind jetzt Messwerte; alles andere ist das Fehlen einer Messung
+und wird als solches gemeldet. Ein Bewegungswert ohne funktionierenden
+Bewegungssensor gilt bewusst nicht als Teilbeleg: die Zonenlogik fällt
+ohne Schwellwert auf genau diesen Bewegungswert zurück.
+
+Dazu: `NaN` und `inf` überleben `float()`, und jeder spätere Vergleich
+damit ist False — ein kaputter Messwert hätte sich als ruhiger Raum
+gelesen. `_safe_float` verlangt jetzt `math.isfinite`.
+
+**Die Raten-Hysterese hatte kein Gedächtnis.** `presence_rate.evaluate`
+hat zwei Schwellen — eine höhere zum Einschalten, eine niedrigere zum
+Anbleiben — und wählt über `occupied_now`, was der *eigene* Vorzustand
+des Geräts sein soll. Übergeben wurde stattdessen das laufende
+ODER-Ergebnis der Zonenschleife, also war das erste Gerät jeder Zone
+immer „gerade noch leer" und die Ausschaltschwelle kam nie zum Einsatz.
+Genau der Fall, für den die zwei Schwellen existieren — ein Raum, der
+leiser wird, aber nicht still —, fiel sofort heraus. Der Zustand liegt
+jetzt pro Gerät, gemerkt am neuesten Messwert des Fensters: ein Gerät in
+zwei Zonen wird einmal ausgewertet, die Reihenfolge der Mitglieder ändert
+kein Ergebnis, und ein Profilwechsel verwirft die alte Historie. Eine
+Datenlücke meldet weiterhin „unbekannt", setzt aber die Erinnerung nicht
+zurück — wer still sitzt, soll sich nach einem Aussetzer nicht erst wieder
+bewegen müssen.
+
+**Die langsame Erkennung hat die Bewegungs-Hysterese verunreinigt.**
+`runtime.raw` ist das Gedächtnis der *Bewegungs*-Hysterese: zwischen Ein-
+und Ausschaltschwelle liefert `_raw_decision` das, was es zuletzt gesagt
+hat. 0.13.2 schrieb das kombinierte Ergebnis aus Bewegung und Rate dort
+hinein, also rastete eine Minute erhöhter Rate den Bewegungspfad ein: lag
+der Bewegungswert im Zwischenband, blieb die Zone belegt, lange nachdem
+die Rate wieder gefallen war. Nur Bewegung schreibt jetzt dieses
+Gedächtnis. `raw_motion` bezeichnet wieder tatsächlich Bewegung, und ein
+neues Feld `trigger` sagt, welche Quelle die Zone gerade hält
+(`motion`, `rate` oder nichts).
+
+**Nebenbei eine falsche Aussage entfernt.** Die Begründung im Verdikt
+formatierte eine Rate pro Sekunde als Prozentsatz der Messwerte — aus
+12,5/s wurde „1250 % der Messwerte". Richtige Zahl, falscher Satz. Jetzt
+steht dort „Ereignisse/s".
+
+Nicht in dieser Version: die übrigen P1-Punkte des Reviews (Messfenster
+und Beobachtungsdauer, Entity-Wechsel im Live-Abonnement, doppelt
+gezählte Messpunkte, MQTT-Zonenverfügbarkeit, Build-Ergebnisse gegen
+gleichzeitige Änderungen).
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

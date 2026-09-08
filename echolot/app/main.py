@@ -12,6 +12,7 @@ these as HA entities already, so no direct device protocol is needed.
 
 import asyncio
 import logging
+import math
 import os
 import subprocess
 import time
@@ -99,9 +100,36 @@ def _validation_detail(err: ValidationError) -> list[dict]:
 
 def _safe_float(value) -> float | None:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    # NaN and the infinities survive float() but poison every comparison
+    # downstream: NaN >= threshold is False, so a broken sensor would read
+    # as a quiet room rather than as a broken sensor.
+    return number if math.isfinite(number) else None
+
+
+#: What Home Assistant says when it has no reading. Both are states of the
+#: transport, not measurements — `unavailable` means the integration lost
+#: the device, `unknown` that it has never reported one.
+NO_READING = ("unavailable", "unknown", "none", "")
+
+
+def _binary_state(state) -> bool | None:
+    """A binary_sensor's reading, or None when it has not got one.
+
+    Only `on` and `off` are readings. Until 0.13.5 this was written as
+    `state["state"] == "on"`, which quietly turned `unavailable` into
+    "no motion" — so a device that had fallen off the network published a
+    confidently empty room once the hold time ran out. Every other value
+    is the absence of a measurement and has to be reported as such.
+    """
+    if not isinstance(state, dict):
+        return None
+    raw = state.get("state")
+    if raw in ("on", "off"):
+        return raw == "on"
+    return None
 
 
 def _parse_ts(value) -> float | None:
@@ -200,9 +228,28 @@ async def _read_device_state(device: devices.Device, allow_detect: bool = True) 
                 "Einrichtung anbieten."
             ),
         }
+    detected = _binary_state(motion)
+    if detected is None:
+        # The entity exists but is not reporting. That is a transport
+        # failure, and the honest answer is "no measurement" — not "no
+        # motion". A movement score without a working motion sensor is
+        # deliberately not treated as partial evidence: the zone machine
+        # falls back to the motion boolean whenever no threshold is
+        # configured, so admitting a half-available device would put that
+        # fallback on a value that is not there.
+        reported = motion.get("state") if isinstance(motion, dict) else None
+        return {
+            "available": False,
+            "error": (
+                f"Entity {device.entity_motion} meldet „{reported}“ statt on/off. "
+                "Home Assistant hat für dieses Gerät gerade keinen Messwert — "
+                "ist es im Netz erreichbar?"
+            ),
+        }
+
     return {
         "available": True,
-        "motion": motion["state"] == "on",
+        "motion": detected,
         "movement_score": _safe_float(score["state"]) if score else None,
         "threshold": _safe_float(threshold["state"]) if threshold else None,
     }
@@ -243,6 +290,73 @@ async def _missing_device_state() -> dict:
     return {"available": False, "motion": None, "error": "Gerät existiert nicht mehr"}
 
 
+#: The crossing rate's own memory, per device.
+#:
+#: `presence_rate.evaluate` has two levels — a higher one to switch on and
+#: a lower one to stay on — and picks between them from `occupied_now`,
+#: which is meant to be *that device's* previous verdict. 0.13.2 passed
+#: the running OR of the zone loop instead, so the first device in every
+#: zone was always judged as if it had just been vacant and the exit level
+#: was never used: a device that had gone quiet but not silent dropped out
+#: immediately, which is the one case the two levels exist for.
+#:
+#: Keyed by device id rather than by zone, so a device in two zones is one
+#: history and the member order cannot change any device's answer.
+_rate_state: dict[str, dict] = {}
+
+
+def _profile_key(profile) -> tuple:
+    """What a verdict's history is only valid for.
+
+    Recalibrating moves the levels, so the state from the old profile
+    describes a different question and is dropped rather than carried.
+    """
+    return (profile.crossing_threshold, profile.baseline_rate, profile.window_seconds)
+
+
+def _device_rate_verdict(device) -> bool | None:
+    """One device's rate verdict, or None when the rate cannot say.
+
+    Memoised on the newest sample in the window: with no new reading the
+    answer cannot have changed, so the two zone-walking call sites and the
+    single-zone route all get one evaluation and one hysteresis step per
+    piece of data — not one per request.
+
+    Imported lazily because app.feature_api imports app.main.
+    """
+    from app import feature_api, presence_rate
+
+    profile = presence_rate.profile_from_dict(device.presence_profile)
+    stream = feature_api.live.stream(device.id)
+    if profile is None or stream is None:
+        _rate_state.pop(device.id, None)
+        return None
+
+    window = stream.window(profile.window_seconds)
+    newest = window[-1].get("t") if window else None
+    key = _profile_key(profile)
+
+    state = _rate_state.get(device.id)
+    if state is not None and state["key"] != key:
+        state = None
+    if state is not None and state["newest"] == newest:
+        return state["verdict"]
+
+    # The memory survives a gap in the data even though the *reported*
+    # verdict does not: a hiccup should not silently re-arm the higher
+    # enter level for someone who is still sitting in the room.
+    previous = bool(state["remembered"]) if state else False
+    result = presence_rate.evaluate(profile, window, occupied_now=previous)
+    verdict = bool(result["occupied"]) if result["available"] else None
+    _rate_state[device.id] = {
+        "key": key,
+        "newest": newest,
+        "verdict": verdict,
+        "remembered": previous if verdict is None else verdict,
+    }
+    return verdict
+
+
 def _zone_rate_verdict(zone) -> bool | None:
     """What the crossing rate says about this zone, or None if it cannot say.
 
@@ -250,27 +364,20 @@ def _zone_rate_verdict(zone) -> bool | None:
     seeing an elevated rate is enough. A device with no learned baseline
     contributes nothing — not a "vacant" vote — so a zone where nobody has
     calibrated behaves exactly as it did before.
-
-    Imported lazily because app.feature_api imports app.main.
     """
-    from app import feature_api, presence_rate
-
     verdict = None
     for device_id in zone.device_ids:
         device = devices.get_device(device_id)
-        if device is None or not device.presence_profile:
+        if device is None:
+            _rate_state.pop(device_id, None)
             continue
-        profile = presence_rate.profile_from_dict(device.presence_profile)
-        stream = feature_api.live.stream(device_id)
-        if profile is None or stream is None:
+        if not device.presence_profile:
+            _rate_state.pop(device_id, None)
             continue
-        window = stream.window(profile.window_seconds)
-        result = presence_rate.evaluate(
-            profile, window, occupied_now=bool(verdict)
-        )
-        if not result["available"]:
+        one = _device_rate_verdict(device)
+        if one is None:
             continue
-        verdict = bool(verdict) or bool(result["occupied"])
+        verdict = bool(verdict) or one
     return verdict
 
 

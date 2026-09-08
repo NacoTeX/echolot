@@ -213,8 +213,15 @@ def test_a_clean_baseline_carries_no_warning():
 
 
 def test_the_verdict_explains_itself(profile, still):
+    """In events per second, not as a share of the readings.
+
+    The old wording said "% der Messwerte" for a per-second rate, so a
+    burst at 12.5/s was reported as "1250 % der Messwerte" — the right
+    number under a sentence that was not true of it.
+    """
     result = presence_rate.evaluate(profile, windows(still)[0])
-    assert "%" in result["reason"]
+    assert "Ereignisse/s" in result["reason"]
+    assert "%" not in result["reason"]
     assert "Faktor" in result["reason"]
     assert result["samples"] > 5
 

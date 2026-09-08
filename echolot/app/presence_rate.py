@@ -310,9 +310,12 @@ def evaluate(
         "rate": round(rate, 5),
         "ratio": round(ratio, 2),
         "samples": len(scored),
+        # Events per second of wall time, not a share of the readings —
+        # the old wording said "% der Messwerte", which turned 12.5/s into
+        # "1250 % der Messwerte". Same number, false sentence.
         "reason": (
-            f"{rate:.1%} der Messwerte über {profile.crossing_threshold:g}, "
-            f"leerer Raum {profile.baseline_rate:.1%} — "
+            f"{rate:.3f} Ereignisse/s über {profile.crossing_threshold:g}, "
+            f"leerer Raum {profile.baseline_rate:.3f}/s — "
             f"Faktor {ratio:.1f}"
         ),
     }
