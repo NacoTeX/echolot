@@ -44,6 +44,27 @@ DEFAULT_SOURCE = SOURCE_HOME_ASSISTANT
 #: Roughly an hour at four readings a second, per device.
 MAX_POINTS = 3_600
 
+#: What a device can report that is not a number.
+#:
+#: The numerical samples answer "how often did this room cross"; these
+#: answer "what happened". Motion going on and off between two score
+#: readings is the case that matters: the live path sees it, and until
+#: 0.13.7 nothing wrote it down, so a recording could not reproduce it
+#: and replay could not either — the two ran the same decision function
+#: over different inputs and were called equal.
+#:
+#: They are kept apart from the samples on purpose. The crossing rate is
+#: events per second of observed time; letting a motion flip into that
+#: count would inflate the very number these events exist to explain.
+EVENT_MOTION = "motion"
+EVENT_CONNECTION = "connection"
+EVENT_SOURCE = "source"
+
+#: How many events to keep per device. They are sparse compared with the
+#: readings — a motion flip, a dropout — so this is a long memory.
+MAX_EVENTS = 500
+
+
 #: Numbers the runs of readings, across every device. A counter rather
 #: than a per-device one so two devices can never share a generation and
 #: a memory can never be mistaken for the other's.
@@ -106,6 +127,8 @@ class SampleBus:
         self._max_points = max_points
         self._lock = threading.RLock()
         self._samples: dict[str, deque] = {}
+        self._events: dict[str, deque] = {}
+        self._event_listeners: set = set()
         #: device id -> which run of readings the buffer currently holds.
         #: Bumped whenever the readings stop being a continuation of what
         #: was there: a rebuilt subscription, a source change, a device
@@ -181,6 +204,51 @@ class SampleBus:
         for queue in queues:
             self._offer(queue, stamped)
         return True
+
+    def publish_event(
+        self, device_id: str, kind: str, value, *, at: float, source: str | None = None
+    ) -> bool:
+        """Record something that happened. Never a measurement.
+
+        Refused from a non-canonical source like a reading is, so a
+        collector nobody reads cannot write history either. It does not
+        touch the sample buffer, the accepted count or the crossing rate.
+        """
+        if source is None:
+            source = self.source
+        if source != self.source:
+            with self._lock:
+                self._refused[source] = self._refused.get(source, 0) + 1
+            return False
+
+        event = {"t": at, "kind": kind, "value": value, "source": source}
+        with self._lock:
+            self._events.setdefault(device_id, deque(maxlen=MAX_EVENTS)).append(event)
+            listeners = tuple(self._event_listeners)
+        for listener in listeners:
+            try:
+                listener(device_id, dict(event))
+            except Exception:  # noqa: BLE001 - one consumer must not stop the rest
+                logger.exception("Ereignis-Listener für %s fehlgeschlagen", device_id)
+        return True
+
+    def events(self, device_id: str, seconds: float | None = None,
+               *, now: float | None = None) -> list[dict]:
+        """What happened, oldest first. All of it when no span is given."""
+        with self._lock:
+            recorded = list(self._events.get(device_id, ()))
+        if seconds is None:
+            return recorded
+        cutoff = (time.time() if now is None else now) - seconds
+        return [event for event in recorded if event["t"] >= cutoff]
+
+    def add_event_listener(self, listener) -> None:
+        with self._lock:
+            self._event_listeners.add(listener)
+
+    def remove_event_listener(self, listener) -> None:
+        with self._lock:
+            self._event_listeners.discard(listener)
 
     def _offer(self, queue: asyncio.Queue, sample) -> None:
         """Hand a reading to one watcher, dropping the oldest when full."""
@@ -271,12 +339,17 @@ class SampleBus:
             self._accepted.pop(device_id, None)
             generation = next(_generations)
             self._generations[device_id] = generation
+        # Not the events: what happened still happened. They carry their
+        # own instant and source, so a reader can see the break rather
+        # than find the history quietly shortened.
+        self.publish_event(device_id, EVENT_SOURCE, generation, at=time.time())
         logger.info("Messwertpuffer für %s neu begonnen", device_id)
         return generation
 
     def forget(self, device_id: str) -> None:
         with self._lock:
             self._samples.pop(device_id, None)
+            self._events.pop(device_id, None)
             self._accepted.pop(device_id, None)
             self._generations.pop(device_id, None)
             self._subscribers.pop(device_id, None)

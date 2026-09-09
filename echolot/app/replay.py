@@ -226,13 +226,21 @@ def _rows_until(samples: list[dict], index: int, now: float, window_seconds: flo
     return samples[start:index]
 
 
-def _steps(samples: list[dict], tick_seconds: float) -> list[float]:
+def _steps(samples: list[dict], tick_seconds: float, events: list[dict] | None = None) -> list[float]:
     """Every moment the live path would have looked at, in order.
 
     A reading is an event and wakes the evaluation; between events the
     loop still ticks, because a hold time expires on nobody's event.
+
+    Non-numerical events wake it too — a motion flip is exactly the case
+    the live path added a wake-up for. Leaving them out of the schedule
+    meant replay could hold the same recording and still look at
+    different moments than the loop it claims to reproduce.
     """
-    stamps = sorted({row["t"] for row in samples})
+    stamps = sorted(
+        {row["t"] for row in samples}
+        | {event["t"] for event in (events or []) if isinstance(event.get("t"), (int, float))}
+    )
     if not stamps:
         return []
     moments = []
@@ -265,6 +273,7 @@ def simulate(
     tick_seconds: float = DEFAULT_TICK_SECONDS,
     use_rate: bool = True,
     include_timeline: bool = False,
+    events: list[dict] | None = None,
 ) -> dict:
     """Replay the recording chronologically through the productive path.
 
@@ -278,6 +287,13 @@ def simulate(
     the per-step record — thousands of rows for a long recording, so it
     is off in the API response and on when something wants to look at
     individual moments.
+
+    `events` is the session's non-numerical stream. Motion between two
+    score readings lives there and nowhere else: the score row carries
+    the motion state *at that reading*, so a flip that happened and
+    reverted in between is invisible without it. Live saw it through the
+    latch; replay sees it here, and the two now look at the same moments
+    because a motion event schedules a step of its own.
     """
     ordered = sorted(
         (row for row in samples if isinstance(row.get("t"), (int, float))),
@@ -289,6 +305,13 @@ def simulate(
             "reason": "Die Aufnahme enthält keine Messwerte mit Zeitstempel",
         }
 
+    motion_events = sorted(
+        (event for event in (events or [])
+         if event.get("kind") == "motion"
+         and isinstance(event.get("t"), (int, float))),
+        key=lambda event: event["t"],
+    )
+
     first, last = ordered[0]["t"], ordered[-1]["t"]
     total = last - first
     runtime = zone_logic.ZoneRuntime()
@@ -298,9 +321,20 @@ def simulate(
     transitions: list[dict] = []
     previous_state = None
 
-    for moment in _steps(ordered, tick_seconds):
+    event_index = 0
+    motion_from_events: bool | None = None
+    motion_pulse = False
+    for moment in _steps(ordered, tick_seconds, motion_events):
         while index < len(ordered) and ordered[index]["t"] <= moment:
             index += 1
+        # The same "did it go on since the last look" the live latch
+        # answers, rebuilt from the recorded events rather than guessed
+        # from the score rows.
+        motion_pulse = False
+        while event_index < len(motion_events) and motion_events[event_index]["t"] <= moment:
+            motion_from_events = bool(motion_events[event_index]["value"])
+            motion_pulse = motion_pulse or motion_from_events
+            event_index += 1
         window_rows = _rows_until(ordered, index, moment, profile.window_seconds)
 
         rate_state = "off"
@@ -321,9 +355,16 @@ def simulate(
             )["state"]
 
         current = ordered[index - 1] if index else None
+        # The event stream wins where it has an opinion: it is the finer
+        # record. A score row's motion flag is the state at that reading,
+        # which says nothing about the gap after it.
+        motion_now = (
+            motion_from_events if motion_from_events is not None
+            else bool(current and current.get("motion"))
+        )
         result = zone_logic.evaluate(
             runtime,
-            motion=bool(current and current.get("motion")),
+            motion=motion_now or motion_pulse,
             score=current.get("movement_score") if current else None,
             enter_threshold=enter_threshold,
             exit_threshold=exit_threshold,
@@ -482,6 +523,7 @@ def report(
     transfer: bool = False,
     hold_seconds: float = 0.0,
     windows: tuple = DEFAULT_WINDOWS,
+    events: list[dict] | None = None,
 ) -> dict:
     """Everything replay can say about one session, with its provenance.
 
@@ -582,8 +624,15 @@ def report(
         # stronger question and the one to read.
         "window_comparison": compare(samples, baseline_samples=measure, windows=windows),
     }
+    # A fact about the input, so it is reported whether or not a baseline
+    # could be learned from it.
+    provenance = {
+        "events_recorded": events is not None,
+        "event_count": len(events or []),
+    }
     if profile is None:
         result["simulation"] = {
+            **provenance,
             "available": False,
             "reason": (
                 "Zu wenig mit \u201eRaum leer\u201c markiertes Material, um einen "
@@ -593,11 +642,17 @@ def report(
         return result
 
     result["simulation"] = {
+        # `events` is what happened between the readings. A recording made
+        # before 0.13.7 has none, and the report says so rather than
+        # letting a reader assume nothing happened.
+        **provenance,
         "profile": profile.as_dict(),
-        "with_rate": simulate(samples, profile, hold_seconds=hold_seconds),
+        "with_rate": simulate(samples, profile, hold_seconds=hold_seconds, events=events),
         # The same machine with the rate switched off: motion, hysteresis
         # and hold time, which is what the add-on did before the rate
         # existed and what it has to beat.
-        "motion_only": simulate(samples, profile, hold_seconds=hold_seconds, use_rate=False),
+        "motion_only": simulate(
+            samples, profile, hold_seconds=hold_seconds, use_rate=False, events=events
+        ),
     }
     return result

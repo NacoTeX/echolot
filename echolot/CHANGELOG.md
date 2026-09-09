@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.13.7
+
+Ein Nachreview zu 0.13.6 mit vier verbliebenen Befunden. Alle vier ließen
+sich am gemergten Stand mit dem beiliegenden Skript bestätigen, alle vier
+sind jetzt Regressionstests — und jeder ist gegen den unkorrigierten Code
+gegengeprüft.
+
+**Ein Impuls erreichte bei geteilten Geräten nur eine Zone.** „Jedes Gerät
+einmal pro Runde" galt für die Rate und nicht für den Zustandsabruf:
+`compute_zone_state` fragte Home Assistant **pro Mitgliedschaft** ab und
+holte den Bewegungsimpuls **pro Mitgliedschaft** aus dem Zwischenspeicher.
+Ein Gerät in zwei Zonen kostete also zwei Abfragen — und nur die zuerst
+ausgewertete Zone sah einen kurzen Impuls. Die Reproduktion des Reviews
+lieferte `[True, False]` für dasselbe Gerät im selben Augenblick.
+
+Die Runde wird jetzt einmal gebaut, als unveränderliches Geräte-Snapshot,
+und jede Zone liest dieselben Werte. Zehn Zonen mit einem Gerät kosten
+eine Abfrage. Der Impuls trägt seinen Zeitpunkt mit: ohne ihn kann
+niemand einen Türdurchgang von gerade eben von einem unterscheiden, der
+seit dem Verbindungsabbruch im Zwischenspeicher liegt — und dann würde
+allein seine Existenz eine tote Quelle als gesund ausweisen.
+
+**Ein abgerissener Transport war keine Evidenz.** Die Rate ignorierte
+`stream.connected`, ein abgebrochenes Abonnement antwortete also weiter
+aus dem, was noch im Puffer lag. Eine offene Verbindung beweist nicht,
+dass der ESP misst — eine geschlossene beweist, dass er es nicht tut, und
+das ist ein tragfähiger Schluss in genau dieser einen Richtung. Die
+Evidenz wird unbekannt, mit Begründung, und das Hysterese-Gedächtnis
+bleibt: ein Aussetzer ist keine Neukalibrierung.
+
+**Das Fenster endet jetzt am Auswertungstakt** statt am neuesten
+Messwert. Es rutschte mit den Daten statt mit der Uhr, eine Quelle, die
+aufgehört hatte zu liefern, wurde also an ihrer eigenen letzten Minute
+gemessen, solange noch etwas im Puffer stand. Das Replay bekommt
+denselben Parameter — sonst wären die beiden genau an dieser Stelle
+auseinandergelaufen, und der Vergleichstest hat das auch prompt gezeigt.
+
+**Die produktive Rate liest jetzt denselben Kanal wie alle anderen.** Sie
+las den Puffer des Home-Assistant-Abonnements, während Kalibrierung,
+Fusion und Replay den kanonischen Bus lesen: zwei Quellen für dieselbe
+Frage. Ein Profil, das über einen Transport gelernt wurde, bewertet keine
+Serie eines anderen mehr — bisher stand darüber nur ein Hinweis in der
+Übersicht und die Bewertung lief trotzdem. Der langsame Pfad schweigt mit
+Begründung, bis neu kalibriert wird; der schnelle Bewegungspfad bleibt
+unangetastet. Der Bus nummeriert seine Messreihen je Gerät, und ein neu
+aufgebautes Abonnement oder ein Quellenwechsel beginnt den Puffer neu,
+statt ein Fenster über den Bruch hinweg laufen zu lassen.
+
+**Was zwischen zwei Messwerten passiert, wird jetzt aufgeschrieben.** Ein
+reines on→off der Bewegung zwischen zwei Score-Ereignissen sah der
+Live-Zwischenspeicher — und sonst nichts. In der Aufzeichnung stand
+davon nichts, das Replay konnte es nicht rekonstruieren, und dass beide
+dieselbe Entscheidungsfunktion aufrufen, hieß nur, dass sie sie über
+verschiedene Eingaben laufen ließen.
+
+Es gibt jetzt einen geordneten Ereignisstrom neben den Zahlen: Bewegung,
+Quellenwechsel, Pufferneubeginn. Er wird mit aufgezeichnet, das Replay
+liest ihn, und ein Bewegungsereignis plant im Replay einen eigenen
+Blickzeitpunkt — die Live-Schleife wacht dafür ja auch auf. Diese
+Ereignisse sind **nie Messwerte**: die Überschreitungsrate zählt
+Ereignisse pro beobachteter Sekunde, und eine Bewegungsflanke in dieser
+Summe würde genau die Zahl aufblähen, die sie erklären soll. Der
+Messwertzähler einer Aufnahme ändert sich dadurch um nichts.
+
+Ein Bericht sagt außerdem, **ob** Ereignisse aufgezeichnet wurden. Eine
+Aufnahme von vor 0.13.7 hat keine, und niemand soll daraus schließen
+müssen, dass nichts passiert ist.
+
 ## 0.13.6
 
 Ein zweites externes Review, diesmal mit einem Reproduktionsskript für

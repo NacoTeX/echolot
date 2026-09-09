@@ -25,6 +25,16 @@ LABELS = {"unlabelled", "empty", "moving", "still", "interference"}
 MAX_SAMPLES_PER_SESSION = 100_000
 PERSIST_EVERY_SAMPLES = 100
 
+#: Non-numerical events kept alongside the readings — motion flips,
+#: dropouts, source changes. Bounded separately and far lower: they are
+#: sparse, and they must never grow with the sample rate.
+#:
+#: They are stored apart from `samples` so nothing that counts readings
+#: can accidentally count them. The crossing rate is events per second of
+#: observed time; a motion flip in that total would inflate the very
+#: number these exist to explain.
+MAX_EVENTS_PER_SESSION = 5_000
+
 
 def _data_path() -> Path:
     root = Path(os.environ.get("ECHOLOT_DATA_DIR", "/data"))
@@ -326,6 +336,7 @@ class CalibrationStore:
                 "ended_at": None,
                 "segments": [{"label": "unlabelled", "started_at": now, "ended_at": None}],
                 "samples": [],
+                "events": [],
                 "recommendation": None,
             }
             self._sessions[session_id] = session
@@ -401,6 +412,11 @@ class CalibrationStore:
                 "ended_at": ended_at,
                 "segments": [{"label": label, "started_at": started_at, "ended_at": ended_at}],
                 "samples": rows,
+                # An import has no event stream: Home Assistant's recorder
+                # gives back the score series, not what happened between
+                # two of its points. Empty rather than absent, so a reader
+                # can tell "nothing happened" from "not recorded".
+                "events": [],
                 "recommendation": recommendation(rows),
                 #: So the UI can say where this came from, and so a later
                 #: reader does not mistake it for something somebody sat
@@ -457,6 +473,45 @@ class CalibrationStore:
         if save:
             self._schedule_save()
 
+    def ingest_event(self, device_id: str, event: dict) -> None:
+        """Record one non-numerical event against the running session.
+
+        Same shape as `ingest`, and deliberately separate from it: this
+        never touches the sample list, so the recorded crossing count is
+        exactly what it was before events existed.
+        """
+        save = False
+        with self._lock:
+            active = next(
+                (s for s in self._sessions.values()
+                 if s["device_id"] == device_id and s["status"] == "recording"),
+                None,
+            )
+            if active is None:
+                return
+            events = active.setdefault("events", [])
+            if len(events) >= MAX_EVENTS_PER_SESSION:
+                if not active.get("event_limit_reached"):
+                    active["event_limit_reached"] = True
+                    self._touch()
+                    logger.warning(
+                        "Kalibrierung %s hat das Ereignislimit von %d erreicht",
+                        active["id"], MAX_EVENTS_PER_SESSION,
+                    )
+                    save = True
+            else:
+                events.append({**event, "label": active["label"]})
+                self._touch()
+                save = True
+        if save:
+            self._schedule_save()
+
+    def events(self, session_id: str) -> "list[dict] | None":
+        """The non-numerical events of one session, oldest first."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+            return list(session.get("events") or []) if session else None
+
     def list(self, device_id: str | None = None) -> list[dict]:
         with self._lock:
             sessions = self._sessions.values()
@@ -481,12 +536,14 @@ class CalibrationStore:
         for row in session["samples"]:
             counts[row["label"]] = counts.get(row["label"], 0) + 1
         result = {
-            key: value for key, value in session.items() if key != "samples"
+            key: value for key, value in session.items()
+            if key not in ("samples", "events")
         }
         if session["status"] == "recording" or "recommendation" not in session:
             result["recommendation"] = recommendation(session["samples"])
         return result | {
             "sample_count": len(session["samples"]),
+            "event_count": len(session.get("events") or []),
             "label_counts": counts,
         }
 

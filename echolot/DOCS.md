@@ -1053,6 +1053,63 @@ append-orientierte Aufzeichnung oder SQLite wäre die eigentliche Antwort;
 das steht aus, samt Migration mit Sicherung. Und ein Absturz kostet jetzt
 die letzten zwei Sekunden statt der letzten hundert Messwerte.
 
+### Was zwischen zwei Messwerten passiert
+
+Zwei Ströme je Gerät, absichtlich getrennt.
+
+**Messwerte** beantworten „wie oft hat dieser Raum in der letzten Minute
+überschritten". **Ereignisse** beantworten „was ist passiert": eine
+Bewegungsflanke, ein Quellenwechsel, ein neu begonnener Puffer.
+
+Der Grund für die Trennung ist arithmetisch. Die Überschreitungsrate
+zählt Ereignisse pro *beobachteter Sekunde*. Eine Bewegungsflanke in
+diese Summe zu legen würde genau die Zahl aufblähen, die sie erklären
+soll — und der Messwertzähler einer Aufnahme, den man zwischen Aufnahmen
+vergleicht, würde sich verschieben, weil eine neue Zeilenart daneben
+eingeführt wurde.
+
+Der Grund für den Ereignisstrom ist eine Lücke: ein reines on→off der
+Bewegung zwischen zwei Score-Ereignissen sah bis 0.13.6 nur der
+Live-Zwischenspeicher. In der Aufzeichnung stand nichts davon, das
+Replay konnte den Impuls nicht rekonstruieren, und dass Live und Replay
+dieselbe Entscheidungsfunktion aufrufen, hieß dann nur, dass sie sie über
+verschiedene Eingaben laufen ließen.
+
+Im Replay plant ein Bewegungsereignis einen eigenen Blickzeitpunkt — die
+Live-Schleife wacht dafür ja auch auf. Ein Bericht nennt außerdem, **ob**
+Ereignisse aufgezeichnet wurden: eine Aufnahme von vor 0.13.7 hat keine,
+und daraus soll niemand schließen müssen, dass nichts passiert ist.
+
+### Eine Runde, ein Gerät
+
+Die Auswertungsschleife baut je Runde ein unveränderliches Snapshot pro
+Gerät: Zustand, Messwerte, seit der letzten Runde eingegangene Impulse,
+Rate-Evidenz, Verfügbarkeit und Quelle. Jede Zone liest daraus.
+
+Vorher las `compute_zone_state` Home Assistant **pro Mitgliedschaft** und
+holte den Bewegungsimpuls **pro Mitgliedschaft** aus dem
+Zwischenspeicher. Ein Gerät in zwei Zonen kostete zwei Abfragen, und weil
+der Impuls beim Lesen verbraucht wird, sah nur die zuerst ausgewertete
+Zone ihn. Zehn Zonen mit demselben Gerät kosten jetzt eine Abfrage.
+
+Das Snapshot ist eingefroren: eine Zone, die es ändern könnte, würde
+ändern, was die anderen sehen.
+
+**Die langsame Evidenz kann drei Gründe haben zu schweigen**, und sie
+stehen getrennt auf der Karte:
+
+| | |
+| --- | --- |
+| kein Profil | nicht kalibriert — verhält sich wie vor der Rate |
+| `disconnected` | das Abonnement ist abgerissen |
+| `source_mismatch` | das Profil wurde über einen anderen Transport gelernt |
+
+Beim letzten Fall wird nicht mehr nur gewarnt: was ein Raum leer tut, ist
+eine Eigenschaft dieses Raums über *einen* Messweg. Der langsame Pfad
+schweigt, bis neu kalibriert wird. Der schnelle Bewegungspfad läuft
+weiter — eine Zone soll ihre Bewegungserkennung nicht verlieren, weil ein
+Maßstab über den falschen Weg gelernt wurde.
+
 ### Wer den Zonenzustand besitzt
 
 Genau eine Komponente. `compute_zone_state` verändert den Zonen-Runtime —

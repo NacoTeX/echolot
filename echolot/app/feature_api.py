@@ -354,6 +354,7 @@ def replay_calibration(
             baseline_samples=baseline_samples,
             transfer=transfer,
             hold_seconds=max(0.0, hold_seconds),
+            events=calibration.store.events(session_id) or [],
         )
     except replay.BaselineRefused as err:
         raise HTTPException(status_code=409, detail=str(err)) from err

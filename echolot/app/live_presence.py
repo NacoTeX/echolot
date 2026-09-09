@@ -164,6 +164,23 @@ class DeviceStream:
             # out until the idle timer came round, up to ten seconds
             # after the device had already decided. Reported as R3.
             if previous is None or previous.get("state") != state.get("state"):
+                # Written down as an event, not as a sample. A motion
+                # flip between two score readings was seen by the live
+                # latch and by nothing else, so a recording could not
+                # reproduce it and replay could not either — the two ran
+                # the same decision function over different inputs.
+                #
+                # Deliberately not a measurement: the crossing rate is
+                # events per second of observed time, and letting a
+                # motion flip into that count would inflate the very
+                # number these events exist to explain.
+                if entity_id == self._entities["motion"]:
+                    sample_bus.bus.publish_event(
+                        self.device_id,
+                        sample_bus.EVENT_MOTION,
+                        state.get("state") == "on",
+                        at=_stamp(state) or time.time(),
+                    )
                 self._notify_change()
             return
 
