@@ -83,13 +83,13 @@ def test_a_rejected_discovery_is_retried_next_cycle(bridge):
     """Recording a dropped message as sent would mean never retrying it."""
     bridge._client.rc = mqtt.MQTT_ERR_QUEUE_SIZE
     bridge.publish_zone("z1", "Küche", occupied=True, available=True)
-    assert bridge._announced == set()
+    assert bridge._announced == {}
     # No state published either: announcing it is the precondition.
     assert mqtt_bridge.zone_state_topic("z1") not in bridge._client.topics()
 
     bridge._client.rc = mqtt.MQTT_ERR_SUCCESS
     bridge.publish_zone("z1", "Küche", occupied=True, available=True)
-    assert bridge._announced == {"z1"}
+    assert bridge._announced == {"z1": "Küche"}
     assert mqtt_bridge.zone_state_topic("z1") in bridge._client.topics()
 
 
@@ -156,7 +156,7 @@ def test_forgetting_a_zone_clears_every_retained_topic(bridge):
         (mqtt_bridge.zone_state_topic("z1"), "", True),
         (mqtt_bridge.zone_availability_topic("z1"), "", True),
     ]
-    assert bridge._announced == set()
+    assert bridge._announced == {}
 
 
 def test_nothing_is_published_while_disconnected(bridge):
@@ -171,3 +171,44 @@ def test_umlauts_become_a_predictable_object_id():
     assert mqtt_bridge.slugify("Küche") == "kueche"
     assert mqtt_bridge.slugify("Büro/Süd") == "buero_sued"
     assert mqtt_bridge.slugify("") == "zone"
+
+
+# --- the two halves of P1 #7 that were missed the first time -----------
+
+
+def test_renaming_a_zone_republishes_its_discovery(bridge):
+    """The name and object_id live in the discovery payload, and it was
+    only ever sent once — so Home Assistant kept the old name forever."""
+    bridge.publish_zone("z1", "Küche", occupied=False, available=True)
+    assert discovery_count(bridge._client, "z1") == 1
+
+    bridge.publish_zone("z1", "Küche neu", occupied=False, available=True)
+    assert discovery_count(bridge._client, "z1") == 2
+
+    last = [p for p in bridge._client.published
+            if p[0] == mqtt_bridge.zone_discovery_topic("z1")][-1]
+    assert '"name": "K\\u00fcche neu"' in last[1] or "Küche neu" in last[1]
+
+
+def test_an_unchanged_name_is_still_announced_only_once(bridge):
+    for _ in range(5):
+        bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    assert discovery_count(bridge._client, "z1") == 1
+
+
+def test_announced_zones_survive_a_restart(tmp_path, monkeypatch, bridge):
+    """A zone deleted while the add-on was stopped was never
+    un-announced: its retained discovery message stayed on the broker and
+    the entity haunted Home Assistant. Nothing in memory remembered it had
+    ever been announced."""
+    monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path))
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    assert mqtt_bridge.load_announced() == {"z1"}
+
+    bridge.forget_zone("z1")
+    assert mqtt_bridge.load_announced() == set()
+
+
+def test_a_missing_store_is_not_a_broken_export(tmp_path, monkeypatch):
+    monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path / "gibtsnicht"))
+    assert mqtt_bridge.load_announced() == set()

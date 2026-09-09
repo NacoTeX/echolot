@@ -135,3 +135,22 @@ def test_a_failing_write_does_not_kill_the_writer(store):
         if calls["n"] >= 2:
             break
     assert calls["n"] >= 2, "der Writer ist am ersten Fehler gestorben"
+
+
+def test_hitting_the_sample_limit_is_visible(store, monkeypatch):
+    """Readings were dropped in silence: the session kept its live
+    indicator on, the counter stopped moving, and nothing said the
+    recording had stopped recording."""
+    monkeypatch.setattr(calibration, "MAX_SAMPLES_PER_SESSION", 10)
+    session = store.create("probe")
+    feed(store, "probe", 25)
+
+    public = store.get(session["id"])
+    assert public["sample_count"] == 10
+    assert public["sample_limit_reached"] is True
+
+
+def test_a_session_under_the_limit_says_nothing(store):
+    session = store.create("probe")
+    feed(store, "probe", 20)
+    assert store.get(session["id"]).get("sample_limit_reached") is None

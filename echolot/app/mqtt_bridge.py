@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import unicodedata
+from pathlib import Path
 
 import httpx
 import paho.mqtt.client as mqtt
@@ -36,6 +37,37 @@ DEVICE_INFO = {
     "manufacturer": "Echolot",
     "model": "Wi-Fi CSI presence",
 }
+
+
+#: What Home Assistant has been told about, kept across restarts.
+#:
+#: The publisher used to hold this in memory only, so a zone deleted while
+#: the add-on was stopped was never un-announced: its retained discovery
+#: message stayed on the broker and the entity haunted Home Assistant
+#: until someone cleared the topic by hand. On the next start the zone is
+#: simply not in the list any more, and nothing in memory remembered that
+#: it ever had been.
+def _announced_path() -> Path:
+    return Path(os.environ.get("ECHOLOT_DATA_DIR", "/data")) / "mqtt_announced.json"
+
+
+def load_announced() -> set[str]:
+    try:
+        return set(json.loads(_announced_path().read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def remember_announced(zone_ids: set[str]) -> None:
+    try:
+        path = _announced_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(sorted(zone_ids)), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        # Losing this costs a ghost entity, not a broken export.
+        logger.warning("Angekündigte Zonen konnten nicht gespeichert werden")
 
 
 class MqttUnavailable(Exception):
@@ -150,7 +182,10 @@ class ZoneBridge:
     def __init__(self) -> None:
         self._client: mqtt.Client | None = None
         self._lock = threading.Lock()
-        self._announced: set[str] = set()
+        #: zone id -> the name last announced under it. A set was not
+        #: enough: renaming a zone changes the discovery payload, and
+        #: without noticing, Home Assistant kept the old name forever.
+        self._announced: dict[str, str] = {}
         self.connected = False
         self.error: str | None = None
 
@@ -227,9 +262,12 @@ class ZoneBridge:
             return
 
         with self._lock:
-            first_time = zone_id not in self._announced
+            # Renaming counts as new: the name and object_id live in the
+            # discovery payload, so an unchanged one leaves Home Assistant
+            # showing the old name for the rest of time.
+            needs_discovery = self._announced.get(zone_id) != zone_name
 
-        if first_time:
+        if needs_discovery:
             # Only remember the announcement once the broker has taken it;
             # a rejected discovery message that we recorded as sent would
             # never be retried.
@@ -239,7 +277,8 @@ class ZoneBridge:
             ):
                 return
             with self._lock:
-                self._announced.add(zone_id)
+                self._announced[zone_id] = zone_name
+            remember_announced(set(self._announced))
 
         # Say whether this zone has a measurement at all, then — only if
         # it does — what that measurement is. An unavailable zone stops
@@ -258,7 +297,8 @@ class ZoneBridge:
         self._publish(zone_state_topic(zone_id), "")
         self._publish(zone_availability_topic(zone_id), "")
         with self._lock:
-            self._announced.discard(zone_id)
+            self._announced.pop(zone_id, None)
+        remember_announced(set(self._announced))
 
     def status(self) -> dict:
         if self.connected:
@@ -292,7 +332,9 @@ async def publish_loop(
     for hold times expiring, for zones added or removed, and as the
     fallback whenever nothing is listening.
     """
-    known: set[str] = set()
+    # Seeded from disk, so a zone deleted while the add-on was stopped is
+    # un-announced on the next start instead of haunting Home Assistant.
+    known: set[str] = load_announced()
     while True:
         try:
             zones = list_zones()

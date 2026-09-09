@@ -106,6 +106,9 @@ function renderActiveCalibration() {
   panel.querySelector("[data-session-name]").textContent = activeCalibration.name;
   panel.querySelector("[data-sample-count]").textContent = activeCalibration.sample_count;
   panel.querySelector("[data-current-label]").textContent = LABEL_NAMES[activeCalibration.label] || activeCalibration.label;
+  const full = panel.querySelector("[data-limit-reached]");
+  if (full) full.hidden = !activeCalibration.sample_limit_reached;
+
   for (const button of panel.querySelectorAll("[data-label]")) {
     button.classList.toggle("active", button.dataset.label === activeCalibration.label);
   }
@@ -184,6 +187,10 @@ function renderCalibrationSessions(sessions, devices) {
     return `<article class="card calibration-session" data-calibration-id="${session.id}">
       <div class="device-card-header"><h3>${escapeHtml(session.name)}</h3><span class="status">${status}</span></div>
       <p class="device-meta">${escapeHtml(deviceName)} · ${session.sample_count} Samples · ${new Date(session.started_at * 1000).toLocaleString("de-DE")}</p>
+      ${session.sample_limit_reached
+        ? '<p class="status status-warn">Das Aufnahmelimit war erreicht — spätere Messwerte fehlen. ' +
+          'Die Messung wurde abgeschnitten, nicht beendet.</p>'
+        : ""}
       ${recommendationBlock(session)}
       <div class="device-actions">
         <a class="btn-secondary" href="api/calibrations/${session.id}/export.csv" download>CSV exportieren</a>

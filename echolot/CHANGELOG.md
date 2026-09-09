@@ -301,6 +301,32 @@ Sitzungsliste alle zwei Sekunden neu, wodurch sich aufgeklappte Bereiche
 unter der lesenden Person wieder schlossen — und das gerade geholte
 Ergebnis wegwarfen. Derselbe Fix wie bei den Gerätekarten.
 
+### Nachgetragen: drei Punkte, die ich beim ersten Durchgang übersehen hatte
+
+Beim erneuten Abgleich mit dem Auftrag fielen drei Teilaufgaben auf, die
+ich als erledigt geführt hatte, ohne sie umzusetzen.
+
+**Eine umbenannte Zone behielt in Home Assistant ihren alten Namen.** Name
+und `object_id` stehen in der Discovery-Nachricht, und die wurde nur beim
+allerersten Mal gesendet. Gemerkt wird jetzt der angekündigte *Name*, nicht
+bloß, dass angekündigt wurde — ändert er sich, geht die Discovery erneut
+raus.
+
+**Eine gelöschte Zone spukte weiter, wenn sie im ausgeschalteten Zustand
+gelöscht wurde.** Die Menge der angekündigten Zonen lag nur im
+Arbeitsspeicher: nach dem Start war sie leer, die Zone stand in keiner
+Liste mehr, also wurde ihre retained Discovery nie gelöscht und die
+Entität blieb in Home Assistant stehen. Die Menge liegt jetzt auf der
+Platte und wird beim Start eingelesen.
+
+**Das Aufnahmelimit wurde stillschweigend erreicht.** Bei 100.000
+Messwerten je Sitzung verwarf `ingest` alles Weitere ohne ein Wort: die
+Anzeige blieb auf „läuft", der Zähler stand still, und niemand erfuhr,
+dass die Aufzeichnung aufgehört hatte aufzuzeichnen. Die Sitzung wird
+jetzt einmal markiert, die Oberfläche sagt es während der Aufnahme und
+danach, und wer die Daten später liest, sieht, dass sie abgeschnitten
+und nicht beendet wurden.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

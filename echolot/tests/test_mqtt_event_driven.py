@@ -207,3 +207,35 @@ def test_a_failed_start_is_visible_while_it_retries(monkeypatch):
 
     asyncio.run(scenario())
     assert "kein Broker" in (mqtt_bridge.bridge.error or "")
+
+
+def test_a_zone_deleted_while_the_add_on_was_stopped_is_un_announced(tmp_path, monkeypatch):
+    """The publish loop seeds its "known" set from disk, so the retained
+    discovery message of a zone that no longer exists is cleared on the
+    next start instead of haunting Home Assistant."""
+    monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path))
+    mqtt_bridge.remember_announced({"weg", "bleibt"})
+
+    forgotten = []
+    monkeypatch.setattr(mqtt_bridge.bridge, "forget_zone", forgotten.append)
+    monkeypatch.setattr(mqtt_bridge.bridge, "publish_zone", lambda *a, **k: None)
+
+    async def compute(zones):
+        return [(zone, {"occupied": False, "available": True}) for zone in zones]
+
+    async def scenario():
+        task = asyncio.create_task(
+            mqtt_bridge.publish_loop(compute, lambda: [Zone("bleibt")], interval=300.0)
+        )
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if forgotten:
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+    assert forgotten == ["weg"]

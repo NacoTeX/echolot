@@ -277,7 +277,21 @@ class CalibrationStore:
                 (s for s in self._sessions.values() if s["device_id"] == device_id and s["status"] == "recording"),
                 None,
             )
-            if active is None or len(active["samples"]) >= MAX_SAMPLES_PER_SESSION:
+            if active is None:
+                return
+            if len(active["samples"]) >= MAX_SAMPLES_PER_SESSION:
+                # Readings were dropped here in silence: the session kept
+                # its live indicator on, the counter stopped moving, and
+                # nothing said the recording had stopped recording. Now it
+                # is marked once, so the UI can say so and a later reader
+                # of the data knows it was cut off rather than ended.
+                if not active.get("sample_limit_reached"):
+                    active["sample_limit_reached"] = True
+                    logger.warning(
+                        "Kalibrierung %s hat das Limit von %d Messwerten erreicht",
+                        active["id"], MAX_SAMPLES_PER_SESSION,
+                    )
+                    self._schedule_save()
                 return
             active["samples"].append({**sample.as_dict(), "label": active["label"]})
         # Outside the lock: the writer thread needs it to do the work.
