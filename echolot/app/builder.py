@@ -14,7 +14,14 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.board_registry import get_board
-from app.devices import BuildStatus, Device, config_path, device_dir, update_device
+from app.devices import (
+    BuildStatus,
+    Device,
+    config_path,
+    device_dir,
+    effective_band,
+    update_device,
+)
 
 logger = logging.getLogger("echolot.builder")
 
@@ -255,6 +262,11 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "esphome_pin": esphome_pin(),
         "framework": framework_base(),
         "board": device.config.board,
+        # Which radio this image measures on. Only the C5 has a choice,
+        # and an image built before 0.13.8 made none — so "which band was
+        # this baseline learned under" had no answer at all until the
+        # manifest carried one.
+        "wifi_band": effective_band(device.config),
         # Where the compile ran, not what it produced.
         "built_on_arch": os.environ.get("ECHOLOT_BUILD_ARCH") or None,
         "config_hash": config_fingerprint(device),
@@ -284,6 +296,7 @@ def render_yaml(device: Device) -> str:
         wifi_ssid=device.config.wifi_ssid,
         wifi_password=device.config.wifi_password,
         wifi_bssid=device.config.wifi_bssid,
+        wifi_band=effective_band(device.config),
         detection_algorithm=device.config.detection_algorithm,
         csi_target_pps=device.config.csi_target_pps,
         csi_traffic_mode=device.config.csi_traffic_mode,

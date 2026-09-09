@@ -29,7 +29,9 @@ Phase 5 polish (traffic estimation, presets, zone export).
 1. Open the add-on's web UI and switch to the **Devices** tab.
 2. Fill in the form: a device name, board, Wi-Fi network, and (optionally)
    the ESPectre detection algorithm/threshold. Wi-Fi credentials are baked
-   into that device's compiled firmware.
+   into that device's compiled firmware. On an ESP32-C5 the form also asks
+   which **Wi-Fi band** to use; 2.4 GHz is the default and the only one
+   ESPectre has characterised — see „Auf welchem Funkband gemessen wird".
 3. Click **Build firmware**. This renders an ESPHome YAML for the device
    and runs `esphome compile` in the container — the first build per board
    downloads the ESP-IDF toolchain, so it can take several minutes;
@@ -1103,12 +1105,75 @@ stehen getrennt auf der Karte:
 | kein Profil | nicht kalibriert — verhält sich wie vor der Rate |
 | `disconnected` | das Abonnement ist abgerissen |
 | `source_mismatch` | das Profil wurde über einen anderen Transport gelernt |
+| `band_mismatch` | das Profil wurde auf einem anderen Funkband gelernt |
 
-Beim letzten Fall wird nicht mehr nur gewarnt: was ein Raum leer tut, ist
+Bei den letzten beiden wird nicht mehr nur gewarnt: was ein Raum leer tut, ist
 eine Eigenschaft dieses Raums über *einen* Messweg. Der langsame Pfad
 schweigt, bis neu kalibriert wird. Der schnelle Bewegungspfad läuft
 weiter — eine Zone soll ihre Bewegungserkennung nicht verlieren, weil ein
 Maßstab über den falschen Weg gelernt wurde.
+
+### Auf welchem Funkband gemessen wird
+
+Nur der ESP32-C5 hat zwei Funkbänder. Alle anderen hier unterstützten
+Chips funken auf 2,4 GHz, und ESPectres ESPHome-Komponente gibt für jede
+andere Variante ein festes `2g` zurück.
+
+Beim C5 leitet sie ihre `wifi_band_policy` aus ESPHomes eigenem
+`wifi.band_mode` ab:
+
+```python
+def _runtime_wifi_band_policy():
+    if get_esp32_variant() != esp32_const.VARIANT_ESP32C5:
+        return "2g"
+    band_mode = str(CORE.config[CONF_WIFI].get(CONF_BAND_MODE, "AUTO"))
+    return _WIFI_BAND_POLICY_BY_MODE[band_mode]
+```
+
+Bis 0.13.7 setzte Echolots Template diesen Schlüssel nicht. Das ist kein
+„keine Meinung": ESPHomes Vorgabe für den C5 ist `AUTO`, ein von Echolot
+gebauter C5 assoziierte also dort, wo der Router ihn hinschickte — und
+konnte auf einem Band messen, über das ESPectres SETUP.md selbst sagt:
+*„Detection quality on 5 GHz is not characterized yet."*
+
+Jetzt ist das Band eine Wahl mit 2,4 GHz als Vorgabe. Ein Feld, das nur
+beim C5 erscheint: ESPHome nimmt `band_mode` ausschließlich für diese
+Variante an (`only_on_variant(supported=[VARIANT_ESP32C5])`), überall
+sonst wäre die Zeile kein wirkungsloser Schalter, sondern ein
+Konfigurationsfehler. `esphome config` prüft in CI alle drei Werte.
+
+**Das Band gehört zur Messdefinition.** 2,4 GHz und 5 GHz sind zwei
+Messungen desselben Raums; was der leere Raum auf dem einen tut, sagt
+nichts über das andere. Ein Profil trägt deshalb das Band, auf dem es
+gelernt wurde, und ein Profil vom anderen Band macht die langsame Evidenz
+stumm — dieselbe Mechanik wie beim Transportwechsel, eine Ebene tiefer.
+
+Die Angabe ist schwächer als die Quellenangabe daneben, und das ist
+absichtlich so notiert: ein Messwert trägt sein Funkband nicht mit sich,
+das Band wird beim Übernehmen vom Gerät gestempelt. Genau deshalb zählt
+`auto` als eigene Antwort und nicht als Platzhalter — unter `auto` weiß
+auch die Aufnahme nicht, auf welchem Band sie entstanden ist, und ist
+damit für keines der beiden ein Maßstab.
+
+Profile ohne Bandangabe — alles vor 0.13.8 — zählen weiter wie bisher.
+Sie sind eine richtige Antwort auf die Frage, unter der sie gelernt
+wurden; `PROFILE_VERSION` zu erhöhen hieße, jedes von ihnen für ein
+Merkmal wegzuwerfen, das keines je gemessen hat.
+
+**Was das Band nicht ist: nachträglich änderbar.** Es wird in ein Image
+gebacken, gehört also zu derselben Klasse wie Board und SSID, und Echolot
+kennt keinen Zustand „die Konfiguration ist der geflashten Firmware
+davongelaufen". `DeviceUpdate` trägt deshalb überhaupt keine
+Firmware-Felder, und dieses auch nicht. Praktisch heißt das: die
+Band-Prüfung oben greift heute bei wiederhergestellten oder von Hand
+bearbeiteten Daten, und das Band am Profil wird notiert, damit eine
+*spätere* Bandänderung keinen alten Maßstab stillschweigend weiterbenutzt.
+
+**Was schon geflasht ist, bleibt.** Ein vor 0.13.8 angelegter C5 läuft
+auf `AUTO`, und die Migration schreibt genau das in seine Konfiguration,
+statt die neue Vorgabe anzuwenden. Ihn auf 2,4 GHz zu setzen ist ein
+Neubau samt Flashen — eine Entscheidung, die niemand einer Migration
+überlassen sollte.
 
 ### Wer den Zonenzustand besitzt
 

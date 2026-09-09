@@ -18,15 +18,24 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.board_registry import get_board
+from app.board_registry import Board, get_board
 
 DATA_DIR = Path(os.environ.get("ECHOLOT_DATA_DIR", "/data"))
 DEVICES_DIR = DATA_DIR / "devices"
 INDEX_PATH = DATA_DIR / "devices.json"
 
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
+
+#: The three answers to "which radio". Written the way ESPHome spells
+#: them, bar case: `wifi.band_mode` takes 2.4GHZ, 5GHZ or AUTO, and the
+#: template upper-cases on the way out, so there is one vocabulary here
+#: rather than a translation table nobody remembers to update.
+BAND_24 = "2.4GHz"
+BAND_5 = "5GHz"
+BAND_AUTO = "auto"
+
 
 _lock = threading.Lock()
 
@@ -46,6 +55,20 @@ class DeviceCreate(BaseModel):
     wifi_ssid: str = Field(..., min_length=1, max_length=32)
     wifi_password: str = Field(default="", max_length=64)
     wifi_bssid: str | None = None
+    #: Which radio the device associates on — and therefore which one it
+    #: measures on. Only the ESP32-C5 has the choice; see
+    #: `board_registry.Board.dual_band`.
+    #:
+    #: 2.4 GHz by default, and not merely because it is the common
+    #: denominator: ESPectre's own SETUP.md says of the other one
+    #: "Detection quality on 5 GHz is not characterized yet". A default
+    #: nobody chose should be the band somebody has measured.
+    #:
+    #: `auto` leaves the band to the router. It is offered because it is
+    #: what a C5 built before 0.13.8 is running, not because it is a good
+    #: idea: under `auto` a recording cannot say which radio it was made
+    #: on, so it is a poor thing to learn a baseline from.
+    wifi_band: Literal["2.4GHz", "5GHz", "auto"] = "2.4GHz"
     # Field names and ranges follow ESPectre's own schema
     # (src/cpp/runtime/runtime_sensing_schema.h), so a value that
     # validates here validates there.
@@ -96,6 +119,50 @@ class DeviceCreate(BaseModel):
         if v and len(v) < 8:
             raise ValueError("wifi_password must be empty (open network) or at least 8 characters")
         return v
+
+    @model_validator(mode="after")
+    def _validate_band(self) -> "DeviceCreate":
+        """A band the chip has no radio for is a mistake, not a preference.
+
+        Caught here rather than at render time because ESPHome would
+        reject the generated YAML anyway — `wifi.band_mode` is declared
+        `only_on_variant(supported=[VARIANT_ESP32C5])` — and a build that
+        fails after the toolchain has started is a much worse way to
+        learn it.
+        """
+        if self.wifi_band != BAND_24 and not get_board(self.board).dual_band:
+            raise ValueError(
+                f"wifi_band '{self.wifi_band}' braucht zwei Funkbänder — "
+                "davon hat nur der ESP32-C5 welche. Jedes andere Board misst "
+                "auf 2,4 GHz."
+            )
+        return self
+
+
+def get_board_safely(key) -> Board:
+    """The board, or a stand-in — for code that must not raise.
+
+    The migration runs before validation, on whatever is in the file. A
+    record naming a board this version no longer knows must still load;
+    it fails later, at validation, with a message about the board rather
+    than a KeyError out of a migration step.
+    """
+    try:
+        return get_board(str(key))
+    except ValueError:
+        return Board(key=str(key), label=str(key), variant=None, chip_family="")
+
+
+def effective_band(config: DeviceCreate) -> str:
+    """Which band firmware built from this config actually measures on.
+
+    Not the same question as `config.wifi_band`: on a single-band chip the
+    stored value is inert, because ESPectre's `_runtime_wifi_band_policy`
+    returns a flat "2g" for every variant but the C5 and no `band_mode:`
+    is rendered at all. Asking the config directly would let a stray
+    stored value claim a radio the board does not have.
+    """
+    return config.wifi_band if get_board(config.board).dual_band else BAND_24
 
 
 def _entity_slug(text: str) -> str:
@@ -310,6 +377,17 @@ def _migrate_config(config: dict) -> bool:
     if config.pop("segmentation_threshold", None) is not None:
         changed = True
 
+    # A dual-band device stored before 0.13.8 was built without a
+    # `band_mode:`, and ESPHome's default for the C5 is AUTO — so that is
+    # what is on the chip. Letting the new field's default apply would
+    # write "2.4GHz" into a config describing an image that is running on
+    # whatever the router handed it, and would silently reinterpret the
+    # baseline learned under it. Record what was flashed; changing it is
+    # a decision with a rebuild attached, which is the user's to make.
+    if "wifi_band" not in config and get_board_safely(config.get("board")).dual_band:
+        config["wifi_band"] = BAND_AUTO
+        changed = True
+
     # The old field allowed 0-1000; ESPectre's range is 1-500. Clamp rather
     # than reject, so an out-of-range device still loads.
     pps = config.get("csi_target_pps")
@@ -414,6 +492,16 @@ def update_device(device_id: str, **fields) -> Device | None:
         if stored is None:
             return None
         record = dict(stored)
+        # The same migration the read paths run, before the model gets to
+        # apply its defaults. Without it this path *undid* migrations: an
+        # old record has no `wifi_band`, so validation filled in the
+        # current default and wrote it back — repinning a flashed C5 that
+        # is running on AUTO, on any update at all, including the address
+        # the entity resolver writes on its own. What a record means is
+        # decided in one place; this is a writer, not a second opinion.
+        if isinstance(record.get("config"), dict):
+            record["config"] = dict(record["config"])
+            _migrate_config(record["config"])
         record.update(fields)
         record["updated_at"] = time.time()
         # Round-trip through the model so a bad field fails here, next to

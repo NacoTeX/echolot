@@ -27,6 +27,15 @@ class Board:
     # per-board examples; None means "leave it to ESPHome".
     cpu_frequency: str | None = None
     experimental: bool = False
+    #: Two radios to choose between, so the band is a decision somebody
+    #: has to make. Only the C5 has them, and ESPHome enforces that: its
+    #: `wifi.band_mode` is declared
+    #: `only_on_variant(supported=[VARIANT_ESP32C5])`, so rendering the
+    #: key for any other chip is a config error rather than an ignored
+    #: line. ESPectre reads the same key — `_runtime_wifi_band_policy()`
+    #: returns a flat "2g" for every other variant — so this one flag
+    #: governs both halves.
+    dual_band: bool = False
 
     @property
     def toolchain_package(self) -> str:
@@ -66,7 +75,8 @@ BOARDS: dict[str, Board] = {
         Board("esp32", "ESP32 (classic)", None, "ESP32",
               esphome_board="esp32dev", cpu_frequency="240MHz"),
         Board("esp32c3", "ESP32-C3", "ESP32C3", "ESP32-C3"),
-        Board("esp32c5", "ESP32-C5", "ESP32C5", "ESP32-C5", cpu_frequency="240MHz"),
+        Board("esp32c5", "ESP32-C5", "ESP32C5", "ESP32-C5", cpu_frequency="240MHz",
+              dual_band=True),
         Board("esp32c6", "ESP32-C6", "ESP32C6", "ESP32-C6"),
         # ESPectre still ships an S2 example, but flags less testing on it
         # than the chips it maintains as canonical.

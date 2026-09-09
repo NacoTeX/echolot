@@ -262,6 +262,20 @@
           <label>WLAN-Passwort
             <input name="wifi_password" type="password" maxlength="64" placeholder="leer lassen bei offenem Netz">
           </label>
+          <label id="wifi-band-field" hidden>WLAN-Band
+            <select name="wifi_band" disabled>
+              <option value="2.4GHz" selected>2,4 GHz — vermessen</option>
+              <option value="5GHz">5 GHz — Erkennungsqualität unbekannt</option>
+              <option value="auto">Automatisch — Router entscheidet</option>
+            </select>
+            <span class="field-note">
+              Nur der ESP32-C5 hat zwei Funkbänder. Gemessen ist bisher nur
+              2,4 GHz: ESPectre selbst schreibt, die Erkennungsqualität auf
+              5 GHz sei noch nicht charakterisiert. „Automatisch“ überlässt
+              die Wahl dem Router — dann weiß auch eine Aufnahme nicht, auf
+              welchem Band sie entstanden ist.
+            </span>
+          </label>
           <label>Erkennungsprofil
             <select name="detection_algorithm">
               <option value="lightweight" selected>Lightweight — gewichtetes Modell, lernt beim Start ein</option>

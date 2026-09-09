@@ -6,6 +6,7 @@ device/zone application module.
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -386,6 +387,14 @@ def apply_presence_rate(session_id: str) -> dict:
     device = devices.get_device(session["device_id"])
     if device is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    # Which radio this was measured on. It comes from the device rather
+    # than from the readings, because a reading does not carry its band —
+    # a weaker claim than `source`, and the reason `auto` is recorded as
+    # its own answer instead of being resolved to a band. Without it a
+    # baseline learned on 2.4 GHz would keep judging a device somebody
+    # later moved to 5 GHz, which is the transport mismatch of 0.13.7 one
+    # layer down.
+    profile = replace(profile, band=devices.effective_band(device.config))
     device.presence_profile = profile.as_dict()
     devices.save_device(device)
     return {"status": "ok", "profile": device.presence_profile}

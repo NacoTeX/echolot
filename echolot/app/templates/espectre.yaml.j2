@@ -51,6 +51,19 @@ wifi:
 {% if wifi_bssid %}
   bssid: {{ wifi_bssid | tojson }}
 {% endif %}
+{% if board.dual_band %}
+  # The band this device associates on, and therefore the one it measures
+  # on. ESPectre reads exactly this key — _runtime_wifi_band_policy() in
+  # its ESPHome component maps AUTO/2.4GHZ/5GHZ onto its own
+  # auto/2g/5g — so leaving it out does not mean "no opinion": ESPHome's
+  # default for the C5 is AUTO, and upstream SETUP.md says of the other
+  # band "Detection quality on 5 GHz is not characterized yet".
+  #
+  # Only rendered for the C5. ESPHome declares band_mode
+  # only_on_variant(supported=[VARIANT_ESP32C5]), so on any other chip
+  # this line is a config error rather than a no-op.
+  band_mode: {{ wifi_band | upper }}
+{% endif %}
   # Reachable for reconfiguration if the credentials above stop working.
   ap:
     # The portal behind this AP takes Wi-Fi credentials, and it comes up

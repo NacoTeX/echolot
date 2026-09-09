@@ -579,6 +579,7 @@ _rate_state: dict[str, dict] = {}
 #: calibrated yet".
 RATE_DISCONNECTED = "disconnected"
 RATE_SOURCE_MISMATCH = "source_mismatch"
+RATE_BAND_MISMATCH = "band_mismatch"
 
 
 def _device_rate_evidence(
@@ -636,6 +637,19 @@ def _device_rate_evidence(
         _rate_state.pop(device.id, None)
         cached[device.id] = (None, RATE_SOURCE_MISMATCH)
         return None, RATE_SOURCE_MISMATCH
+
+    # The same argument one layer down, on the radio instead of the
+    # transport. 2.4 GHz and 5 GHz are two measurements of one room, and
+    # ESPectre says of the second that its detection quality is not
+    # characterised — so a baseline learned on one is not a baseline for
+    # the other. `auto` counts as its own answer rather than as a
+    # wildcard: a recording made under it cannot say which radio it was
+    # on, so it matches neither pinned band.
+    band = profile.band
+    if band and band != devices.effective_band(device.config):
+        _rate_state.pop(device.id, None)
+        cached[device.id] = (None, RATE_BAND_MISMATCH)
+        return None, RATE_BAND_MISMATCH
 
     if not connected:
         cached[device.id] = (None, RATE_DISCONNECTED)
@@ -1027,6 +1041,10 @@ def list_boards() -> list[dict]:
             "label": b.label,
             "chip_family": b.chip_family,
             "experimental": b.experimental,
+            # Lets the form offer the band only where there is one to
+            # choose. Everywhere else the field would be a control with
+            # no radio behind it.
+            "dual_band": b.dual_band,
         }
         for b in BOARDS.values()
     ]

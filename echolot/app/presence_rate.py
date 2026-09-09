@@ -154,6 +154,21 @@ class RateProfile:
     #: buys is the mismatch check — the same room measured over a
     #: different transport is a different measurement.
     source: str | None = None
+    #: Which radio the room was measured on — 2.4 GHz, 5 GHz or `auto`.
+    #: None on a profile learned before 0.13.8, and on anything built for
+    #: a single-band chip, where there was never a choice.
+    #:
+    #: Stamped from the device rather than read out of the readings,
+    #: because a reading does not carry its band. That is a weaker claim
+    #: than `source` makes, and it is precisely why `auto` is worth
+    #: recording as its own answer: under `auto` not even the device
+    #: knows which radio a given minute was on.
+    #:
+    #: Recorded, not versioned, for the same reason as `source`: an
+    #: existing profile is still a correct answer to the question it was
+    #: learned under, and bumping PROFILE_VERSION would throw every one
+    #: of them away to record something none of them ever measured.
+    band: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -169,6 +184,7 @@ class RateProfile:
             "suspect_windows": self.suspect_windows,
             "window_count": self.window_count,
             "source": self.source,
+            "band": self.band,
             "warning": self.warning,
         }
 
@@ -273,6 +289,7 @@ def _parse_profile(data: dict) -> RateProfile | None:
             suspect_windows=max(0, int(data.get("suspect_windows") or 0)),
             window_count=max(0, int(data.get("window_count") or 0)),
             source=(str(data["source"]) if data.get("source") else None),
+            band=(str(data["band"]) if data.get("band") else None),
         )
     except (TypeError, ValueError):
         return None

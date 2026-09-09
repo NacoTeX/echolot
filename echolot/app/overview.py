@@ -13,7 +13,20 @@ way.
 
 from dataclasses import dataclass
 
+from app import devices as devices_module
 from app import health, presence_rate, samples
+
+
+#: How the three band values read to somebody who is not reading YAML.
+_BAND_LABELS = {
+    devices_module.BAND_24: "2,4 GHz",
+    devices_module.BAND_5: "5 GHz",
+    devices_module.BAND_AUTO: "automatisch gewähltem Band",
+}
+
+
+def _band_label(band: str) -> str:
+    return _BAND_LABELS.get(band, band)
 
 
 @dataclass(frozen=True)
@@ -169,6 +182,28 @@ def collect_problems(
                             f"„{canonical}“. Die beiden Wege lösen unterschiedlich "
                             "fein auf — eine Leer-Aufnahme über die aktuelle Quelle "
                             "neu übernehmen."
+                        ),
+                        tab="calibration",
+                        device_id=device.id,
+                    )
+                )
+
+            # The same argument on the radio. Only the C5 can move
+            # between bands at all, and ESPectre's own SETUP.md says
+            # detection quality on 5 GHz is not characterised — so a
+            # baseline carried across is not a baseline.
+            learned_band = (device.presence_profile or {}).get("band")
+            band_now = devices_module.effective_band(device.config)
+            if learned_band and learned_band != band_now:
+                problems.append(
+                    Problem(
+                        kind="profile_band_mismatch",
+                        message=(
+                            f"Das Präsenzprofil von „{label}“ wurde auf "
+                            f"{_band_label(learned_band)} gelernt, das Gerät misst "
+                            f"jetzt auf {_band_label(band_now)}. Die beiden Bänder "
+                            "sind zwei Messungen desselben Raums — eine "
+                            "Leer-Aufnahme auf dem aktuellen Band neu übernehmen."
                         ),
                         tab="calibration",
                         device_id=device.id,

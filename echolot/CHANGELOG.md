@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.13.8
+
+**Der ESP32-C5 misst jetzt auf dem Band, das jemand gewählt hat.** Das
+Firmware-Template setzte kein `band_mode:`. Bei jedem anderen Chip ist
+das folgenlos — ESPectre liefert für jede andere Variante ein festes
+`2g` —, beim C5 nicht: ESPHomes Vorgabe für diese Variante ist `AUTO`,
+also assoziierte ein von Echolot gebauter C5 dort, wo der Router ihn
+hinschickte. Über die Erkennungsqualität auf dem zweiten Band schreibt
+ESPectre in seiner eigenen SETUP.md: *„Detection quality on 5 GHz is not
+characterized yet."*
+
+Neu ist eine Feldwahl **WLAN-Band** mit 2,4 GHz als Vorgabe, angeboten
+nur beim C5 — ESPHome nimmt `band_mode` ausschließlich für diese Variante
+an (`only_on_variant(supported=[VARIANT_ESP32C5])`), überall sonst wäre
+es kein wirkungsloser Schalter, sondern ein Konfigurationsfehler. Der
+Wert steht im Build-Manifest, geht in den Konfigurations-Fingerabdruck
+ein und wird von `esphome config` für alle drei Bänder geprüft.
+
+**Ein Profil weiß jetzt, auf welchem Funkband es gelernt wurde.** 2,4 GHz
+und 5 GHz sind zwei Messungen desselben Raums; was der leere Raum auf dem
+einen tut, sagt nichts über das andere. Ein Profil vom anderen Band macht
+die langsame Evidenz stumm — mit Begründung, wie beim Transportwechsel in
+0.13.7 —, und die Übersicht nennt beide Bänder beim Namen. `auto` gilt
+dabei als eigene Antwort und nicht als Platzhalter: unter `auto` weiß
+auch die Aufnahme nicht, auf welchem Funkband sie entstanden ist.
+
+Dabei kam ein zweiter Fehler mit heraus: `update_device` prüfte den
+gespeicherten Datensatz *ohne* Migration gegen das Modell und schrieb das
+Ergebnis zurück — die Migration hielt also nur, bis irgendetwas anderes
+den Datensatz anfasste, etwa die Adresse, die die Entity-Auflösung von
+sich aus schreibt. Der Schreibpfad läuft jetzt durch dieselbe Migration
+wie die Lesepfade.
+
+Was schon geflasht ist, bleibt, wie es ist: ein vor 0.13.8 angelegter C5
+läuft auf `AUTO`, und genau das wird in seine Konfiguration
+geschrieben. Ihn auf 2,4 GHz zu setzen wäre ein Neubau, und diese
+Entscheidung gehört nicht in eine Migration. Profile ohne Bandangabe
+zählen weiter wie bisher — sie sind eine richtige Antwort auf die Frage,
+unter der sie gelernt wurden.
+
 ## 0.13.7
 
 Ein Nachreview zu 0.13.6 mit vier verbliebenen Befunden. Alle vier ließen
