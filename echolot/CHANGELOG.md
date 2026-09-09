@@ -112,6 +112,17 @@ retained Topics wirklich genommen hat — über Neustarts hinweg, und ohne
 die gleichzeitig laufenden Ankündigungen zu überschreiben. Eine Zone, die
 vor dem Löschen wieder auftaucht, wird nicht gelöscht.
 
+„Wirklich genommen" heißt dabei das Wort des Brokers, nicht das des
+Clients: `publish().rc == SUCCESS` bedeutet nur, dass die Bibliothek die
+Nachricht angenommen hat, und bei QoS 0 bestätigt nie jemand, dass sie
+das Gerät verlassen hat. Eine Ankündigung heilt sich selbst — nach einem
+Reconnect wird neu angekündigt —, eine Löschung nicht. Die drei
+Löschungen gehen deshalb mit QoS 1 raus, und der Grabstein bleibt, bis
+alle drei quittiert sind. Gewartet wird darauf nie: die Prüfung läuft in
+der Auswertungsschleife, und dort zu blockieren hieße, jede Zone
+anzuhalten. Eine Löschung braucht damit in der Regel zwei Runden — wofür
+der Grabstein da ist.
+
 **Der Kalibrierungs-Writer blockierte den Lesepfad weiter.** 0.13.5 hat
 das Schreiben in einen Thread verlegt und dort aufgehört. Der Thread hielt
 denselben RLock über die ganze Serialisierung und Dateioperation, und

@@ -205,6 +205,9 @@ class ZoneBridge:
         #: enough: renaming a zone changes the discovery payload, and
         #: without noticing, Home Assistant kept the old name forever.
         self._announced: dict[str, str] = {}
+        #: zone id -> the three delete publishes still awaiting a PUBACK.
+        #: See `forget_zone`.
+        self._pending_deletes: dict[str, list] = {}
         self.connected = False
         self.error: str | None = None
 
@@ -233,6 +236,10 @@ class ZoneBridge:
                 # zone on reconnect and makes the bridge self-healing.
                 with self._lock:
                     self._announced.clear()
+                    # Anything that was in flight when the connection went
+                    # is not in flight any more. The tombstone outlives
+                    # this, so the delete is sent again.
+                    self._pending_deletes.clear()
                 logger.info("MQTT connected to %s", config["host"])
             else:
                 self.error = f"Verbindung abgelehnt (Code {rc})"
@@ -262,19 +269,28 @@ class ZoneBridge:
         self._client = None
         self.connected = False
 
-    def _publish(self, topic: str, payload: str, *, retain: bool = True) -> bool:
-        """Publish and say whether the broker accepted it.
+    def _send(self, topic: str, payload: str, *, retain: bool = True, qos: int = 0):
+        """Hand one message to the client, or None when it refused it.
 
         paho returns an MQTTMessageInfo whose rc tells you the message was
         dropped — queue full, or not connected after all. Discarding that
         turns a silent failure into a zone that quietly stops updating in
         Home Assistant, with nothing anywhere saying why.
+
+        The info is handed back rather than reduced to a bool, because
+        `rc == SUCCESS` means the *client* took it, not that the broker
+        did. For a deletion that difference decides whether a tombstone
+        may be dropped — see `forget_zone`.
         """
-        info = self._client.publish(topic, payload, retain=retain)
+        info = self._client.publish(topic, payload, retain=retain, qos=qos)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             logger.warning("MQTT publish to %s rejected (rc=%s)", topic, info.rc)
-            return False
-        return True
+            return None
+        return info
+
+    def _publish(self, topic: str, payload: str, *, retain: bool = True) -> bool:
+        """Fire and forget. True when the client took the message."""
+        return self._send(topic, payload, retain=retain) is not None
 
     def announced_ids(self) -> set[str]:
         with self._lock:
@@ -312,26 +328,46 @@ class ZoneBridge:
             self._publish(zone_state_topic(zone_id), "ON" if occupied else "OFF")
 
     def forget_zone(self, zone_id: str) -> bool:
-        """Clear every retained topic. True only when all of them took.
+        """Clear every retained topic. True only once the broker said so.
 
-        The caller keeps a tombstone until this says True: a disconnected
-        broker, a full queue or a single rejected publish all leave the
-        entity in Home Assistant, and reporting success would forget the
-        zone before it was gone.
+        The caller keeps a tombstone until this says True, and what counts
+        as True is the point. `publish().rc == SUCCESS` means the *client*
+        accepted the message; at QoS 0 nothing ever confirms it left the
+        machine. A deletion does not self-heal the way an announcement
+        does — `on_connect` re-announces, but nothing re-deletes — so the
+        three deletions go out at QoS 1 and the tombstone survives until
+        all three are acknowledged.
+
+        The acknowledgement is *checked*, never waited for: this runs on
+        the evaluator's loop, and blocking it would stop every zone.
+        A delete therefore normally takes two rounds, which is what the
+        tombstone is for.
         """
         if not self._client or not self.connected:
+            # Whatever was in flight is not any more.
+            self._pending_deletes.pop(zone_id, None)
             return False
-        taken = all(
-            [
-                self._publish(zone_discovery_topic(zone_id), ""),
-                self._publish(zone_state_topic(zone_id), ""),
-                self._publish(zone_availability_topic(zone_id), ""),
-            ]
-        )
-        if taken:
+
+        pending = self._pending_deletes.get(zone_id)
+        if pending is not None:
+            if not all(info.is_published() for info in pending):
+                return False            # still in flight; do not resend
+            self._pending_deletes.pop(zone_id, None)
             with self._lock:
                 self._announced.pop(zone_id, None)
-        return taken
+            return True
+
+        sent = [
+            self._send(zone_discovery_topic(zone_id), "", qos=1),
+            self._send(zone_state_topic(zone_id), "", qos=1),
+            self._send(zone_availability_topic(zone_id), "", qos=1),
+        ]
+        if any(info is None for info in sent):
+            return False
+        self._pending_deletes[zone_id] = sent
+        # Already acknowledged (a fast local broker, or a test double)?
+        # Then this round is allowed to finish the job.
+        return self.forget_zone(zone_id)
 
     def status(self) -> dict:
         if self.connected:
