@@ -214,3 +214,36 @@ def test_the_new_fields_carry_no_secrets_either(tmp_path, monkeypatch):
     for secret in (device.config.wifi_password, device.api_encryption_key,
                    device.ota_password, device.fallback_password):
         assert secret not in encoded
+
+
+# --- the environment a build actually runs in ---------------------------
+
+
+def test_a_build_names_the_espectre_version_for_cmake(monkeypatch):
+    """ESPHome checks out an external component shallow at the pinned
+    commit, with no tags, so ESPectre's `git describe` finds nothing and
+    its CMake stops before a compiler ever runs. The add-on passes the
+    version in; anything that builds firmware has to do the same."""
+    seen = {}
+
+    def fake_run(argv, cwd=None, capture_output=None, text=None, timeout=None, env=None):
+        seen.update(env or {})
+
+        class Result:
+            returncode = 0
+            stdout = stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+    builder._run_esphome(["esphome", "compile", "x.yaml"], Path("."), 10)
+    assert seen.get("ESPECTRE_GIT_VERSION") == builder.ESPECTRE_FALLBACK_VERSION
+
+
+def test_the_compile_smoke_uses_the_same_runner():
+    """It shelled out on its own at first, and CI failed in CMake before
+    compiling a single file. A smoke test that builds in a different
+    environment from the add-on is testing something else."""
+    source = (Path(__file__).resolve().parents[1] / "tools" / "compile_firmware.py").read_text()
+    assert "_run_esphome" in source
+    assert "subprocess.run" not in source, "der Smoke-Test baut wieder an der Umgebung vorbei"

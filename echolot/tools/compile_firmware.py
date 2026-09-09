@@ -23,7 +23,6 @@ instruction set — and that is the price of knowing.
 """
 
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -65,14 +64,16 @@ def compile_board(board: str, workdir: Path) -> tuple[bool, str]:
     path = workdir / f"{name}.yaml"
     path.write_text(render_yaml(device), encoding="utf-8")
 
+    # Through the add-on's own runner, not a bare subprocess. It sets
+    # ESPECTRE_GIT_VERSION, and without it CMake stops before compiling
+    # anything: ESPHome checks out an external component shallow at the
+    # pinned commit with no tags, so ESPectre's `git describe` finds
+    # nothing to describe. A smoke test that builds in a different
+    # environment from the add-on is testing something else.
+    from app.builder import _run_esphome
+
     started = time.monotonic()
-    result = subprocess.run(
-        ["esphome", "compile", str(path)],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=TIMEOUT_SECONDS,
-    )
+    result = _run_esphome(["esphome", "compile", str(path)], workdir, TIMEOUT_SECONDS)
     took = time.monotonic() - started
     log = (result.stdout or "") + (result.stderr or "")
     if result.returncode != 0:
