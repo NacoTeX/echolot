@@ -116,6 +116,15 @@ MIN_SAMPLES_PER_WINDOW = 5
 #: recalibrated, which is the honest outcome.
 PROFILE_VERSION = 2
 
+#: How long a device's rate hysteresis remembers across a data outage.
+#:
+#: Somebody sitting still through a short dropout should not have to move
+#: again to be seen; somebody who left an hour ago should not still be
+#: holding the room on evidence nobody has confirmed since. Two window
+#: lengths is the compromise, and it is a decision rather than a side
+#: effect of a cache key.
+RATE_MEMORY_SECONDS = 120.0
+
 
 @dataclass(frozen=True)
 class RateProfile:
@@ -630,6 +639,51 @@ def evaluate(
             f"Faktor {ratio:.1f}"
         ),
     }
+
+
+def advance(
+    profile: RateProfile,
+    rows: list[dict],
+    memory: dict | None,
+    *,
+    now: float,
+    source=None,
+    window: "Window | None" = None,
+    memory_seconds: float = RATE_MEMORY_SECONDS,
+) -> tuple[bool | None, dict | None]:
+    """One device's verdict, carrying its own hysteresis between calls.
+
+    Returns `(verdict, memory)`. The verdict is True, False, or None when
+    the rate cannot say; `memory` is opaque and belongs to the caller —
+    hand back what came out last time and nothing else.
+
+    This is the step both the live path and the replay runner take, and
+    it is one function on purpose. `evaluate` alone is not the whole
+    answer: which of the two levels applies depends on what this device
+    said last time, and that memory has rules of its own. It is dropped
+    when the profile moves (recalibrating asks a different question), when
+    the source is replaced (a rebuilt subscription is different data), and
+    when it goes stale (`memory_seconds`). An outage keeps it: a person
+    sitting still through a dropout should not have to move again to be
+    seen.
+
+    A replay that reimplemented any of that would be measuring something
+    the add-on does not do.
+    """
+    key = (profile.crossing_threshold, profile.baseline_rate, profile.window_seconds)
+    if memory is not None and (
+        memory.get("key") != key
+        or memory.get("source") != source
+        or now - memory.get("at", now) > memory_seconds
+    ):
+        memory = None
+
+    previous = bool(memory["remembered"]) if memory else False
+    result = evaluate(profile, rows, occupied_now=previous, window=window)
+    verdict = bool(result["occupied"]) if result["available"] else None
+    if verdict is None:
+        return None, memory
+    return verdict, {"key": key, "source": source, "remembered": verdict, "at": now}
 
 
 def _percentile(values: list[float], fraction: float) -> float:

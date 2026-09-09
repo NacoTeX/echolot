@@ -33,6 +33,7 @@ from app import (
     health,
     mqtt_bridge,
     overview,
+    presence_rate,
     presets,
     reachability,
     timeline,
@@ -316,13 +317,9 @@ IDLE_INTERVAL = 10.0
 HOLDING_INTERVAL = 1.0
 
 #: How long a device's rate hysteresis remembers across a data outage.
-#:
-#: Somebody sitting still through a short dropout should not have to move
-#: again to be seen; somebody who left an hour ago should not still be
-#: holding the room on evidence nobody has confirmed since. Two window
-#: lengths is the compromise, and it is a decision rather than a
-#: side effect of a cache key.
-RATE_MEMORY_SECONDS = 120.0
+#: Defined next to the step that uses it, so the replay runner and the
+#: live path cannot drift apart on it.
+RATE_MEMORY_SECONDS = presence_rate.RATE_MEMORY_SECONDS
 
 
 def _initial_zone_state() -> dict:
@@ -564,15 +561,6 @@ async def _missing_device_state() -> dict:
 _rate_state: dict[str, dict] = {}
 
 
-def _profile_key(profile) -> tuple:
-    """What a verdict's history is only valid for.
-
-    Recalibrating moves the levels, so the state from the old profile
-    describes a different question and is dropped rather than carried.
-    """
-    return (profile.crossing_threshold, profile.baseline_rate, profile.window_seconds)
-
-
 def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
     """One device's rate verdict for this round, or None when it cannot say.
 
@@ -580,6 +568,10 @@ def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
     per-tick cache at the start of each round, so two zones holding the
     same device get one evaluation and the same answer, and the member
     order cannot change it.
+
+    The step itself is `presence_rate.advance`, which the replay runner
+    also takes — the hysteresis memory and its expiry rules live there so
+    that a replay measures what the add-on actually does.
 
     Imported lazily because app.feature_api imports app.main.
     """
@@ -597,40 +589,23 @@ def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
         cached[device.id] = None
         return None
 
-    key = _profile_key(profile)
-    state = _rate_state.get(device.id)
     # A rebuilt stream is a different source: its buffer starts empty and
     # its entities may be different ones entirely, so the memory from the
     # old one is about a different question. The stream numbers itself —
     # `id()` would not do, because CPython hands the freed address of the
     # old stream straight to its replacement.
-    generation = getattr(stream, "generation", None)
-    if state is not None and (
-        state["key"] != key
-        or state["generation"] != generation
-        or now - state["at"] > RATE_MEMORY_SECONDS
-    ):
-        state = None
-
-    previous = bool(state["remembered"]) if state else False
-    result = presence_rate.evaluate(
-        profile, stream.window(profile.window_seconds), occupied_now=previous
+    verdict, memory = presence_rate.advance(
+        profile,
+        stream.window(profile.window_seconds),
+        _rate_state.get(device.id),
+        now=now,
+        source=getattr(stream, "generation", None),
+        memory_seconds=RATE_MEMORY_SECONDS,
     )
-    verdict = bool(result["occupied"]) if result["available"] else None
-
-    if verdict is None:
-        # An outage reports unknown and keeps the memory for a while: a
-        # person sitting still through a dropout should not have to move
-        # again to be seen. It does expire — see RATE_MEMORY_SECONDS.
-        if state is not None:
-            _rate_state[device.id] = state
+    if memory is None:
+        _rate_state.pop(device.id, None)
     else:
-        _rate_state[device.id] = {
-            "key": key,
-            "generation": generation,
-            "remembered": verdict,
-            "at": now,
-        }
+        _rate_state[device.id] = memory
     cached[device.id] = verdict
     return verdict
 

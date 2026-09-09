@@ -295,31 +295,55 @@ def calibration_presence_rate(session_id: str) -> dict:
 
 
 @router.get("/api/calibrations/{session_id}/replay")
-def replay_calibration(session_id: str, baseline: str | None = None) -> dict:
-    """Replay a session through several detectors and compare them.
+def replay_calibration(
+    session_id: str,
+    baseline: str | None = None,
+    hold_seconds: float = 0.0,
+    transfer: bool = False,
+) -> dict:
+    """Replay a session and report what the add-on would have decided.
 
     Read-only: it touches no zone runtime, no device profile and not the
     live evaluator, so asking cannot change what the lights do. That is
     the point — the review asks for new algorithms to be measured before
     they are wired to anything.
 
+    Two runs over the same material. `window_comparison` groups by label
+    and scores each label's windows on their own; `simulation` runs the
+    recording forward through the same functions the live path takes,
+    with hysteresis and hold time in place.
+
     `baseline` names another session to learn the empty-room rate from.
     Without it the rate is learned from the material being judged, which
-    measures itself; the response says so rather than leaving the reader
-    to notice.
+    measures itself; so does a baseline that is this session, or one whose
+    recording overlaps it in time. The response says which. A baseline
+    from another device is refused unless `transfer=true` says the
+    comparison is meant to be a transfer test.
     """
+    session = calibration.store.get(session_id)
     samples = calibration.store.samples(session_id)
-    if samples is None:
+    if samples is None or session is None:
         raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
 
-    baseline_samples = None
+    baseline_session = baseline_samples = None
     if baseline:
+        baseline_session = calibration.store.get(baseline)
         baseline_samples = calibration.store.samples(baseline)
-        if baseline_samples is None:
+        if baseline_samples is None or baseline_session is None:
             raise HTTPException(
                 status_code=404, detail="Die Maßstab-Sitzung gibt es nicht"
             )
-    return replay.compare(samples, baseline_samples=baseline_samples)
+    try:
+        return replay.report(
+            session,
+            samples,
+            baseline=baseline_session,
+            baseline_samples=baseline_samples,
+            transfer=transfer,
+            hold_seconds=max(0.0, hold_seconds),
+        )
+    except replay.BaselineRefused as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
 
 @router.post("/api/calibrations/{session_id}/apply")

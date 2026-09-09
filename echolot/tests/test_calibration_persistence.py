@@ -49,21 +49,29 @@ def feed(store, device_id, count, start=0):
 
 def test_ingesting_does_not_write_inline(store, tmp_path):
     """The regression: the hot path used to serialise the whole history
-    every hundred samples, on the event loop."""
+    every hundred samples, on the event loop.
+
+    Asserted by which thread wrote, not by how many writes there were:
+    the coalescing writer is allowed to fire while the feed is still
+    running, and counting cannot tell that from writing inline.
+    """
+    import threading
+
     session = store.create("probe")
-    writes = {"n": 0}
+    threads = []
     original = store._write
 
-    def counting(revision, sessions):
-        writes["n"] += 1
+    def noting(revision, sessions):
+        threads.append(threading.current_thread())
         original(revision, sessions)
 
-    store._write = counting
+    store._write = noting
+    caller = threading.current_thread()
     feed(store, "probe", 1000)
-    assert writes["n"] == 0, "ingest hat synchron geschrieben"
+    assert caller not in threads, "ingest hat auf dem aufrufenden Thread geschrieben"
 
     store.flush()
-    assert writes["n"] == 1
+    assert threads[-1] is caller, "flush muss auf dem aufrufenden Thread schreiben"
     assert len(store.samples(session["id"])) == 1000
 
 

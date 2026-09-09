@@ -4,7 +4,7 @@
 
 Ein zweites externes Review, diesmal mit einem Reproduktionsskript für
 sieben Logikbefunde. Alle sieben ließen sich am Ausgangsstand bestätigen.
-Hier R1 bis R5 und R7; der Rest folgt in derselben Version.
+Hier R1 bis R7; R8 folgt in derselben Version.
 
 **Ein beschädigtes Profil konnte die Auswertung aller Zonen abbrechen.**
 `profile_from_dict({"version": "broken"})` warf ValueError, weil die
@@ -140,6 +140,52 @@ eine Aufzeichnung ist jemandes Nachmittag, und sie wegzuwerfen, um Platz
 für die nächste zu schaffen, ist keine Entscheidung, die dieses Add-on
 treffen darf. Stattdessen wird eine neue Aufzeichnung abgelehnt, mit der
 Bitte, eine alte zu löschen oder zu exportieren.
+
+**Replay simuliert jetzt den Detektor, statt ihn nachzubauen.** Der
+bisherige Bericht gruppierte erst nach Label und bewertete dann jedes
+Label für sich. Als Überblick brauchbar, als Simulation nicht: die
+Gruppierung zerstört die Reihenfolge der Sitzung, jedes Fenster wurde aus
+dem Stand bewertet (`occupied_now=False`, also kam die Ausschaltschwelle
+nie zum Einsatz), und die Referenz „nur Bewegung" war `any(motion)` pro
+Minute statt des tatsächlichen Zusammenspiels aus Bewegung, Rate und
+Haltezeit.
+
+Es gibt jetzt zusätzlich einen chronologischen Durchlauf. Er schickt die
+Aufnahme vorwärts durch genau die Funktionen, die auch der Livebetrieb
+nimmt — `presence_rate.advance` für den Gerätebefund samt Gedächtnis,
+`zone_logic.evaluate` für die Zone —, mit injizierter Uhr. Damit das
+keine zwei Kopien werden, liegt der Schritt inklusive seiner
+Gedächtnisregeln jetzt an einer Stelle, die sich beide teilen. Ein Test
+fährt dieselbe Ereignisfolge einmal durch den echten Evaluator und einmal
+durch das Replay und vergleicht jeden Zustandswechsel; mit der alten
+Bewertung aus dem Stand schlägt er fehl.
+
+Der Fenstervergleich bleibt und heißt jetzt so (`window_comparison`).
+
+**Jede Sekunde der Aufnahme steht im Bericht.** `split_windows` wirft ein
+angefangenes Restfenster weg, bevor irgendetwas es zählt — eine
+zehnsekündige Aufnahme meldete deshalb null bewertete *und* null
+unbrauchbare Fenster, die Zeit fehlte einfach. Die neue Zeitbilanz nennt
+belegt, leer, Aufwärmen, Lücke, unbekannt und Rest, und die Teile
+summieren sich auf die Gesamtdauer. Zehn Sekunden Material erscheinen als
+zehn Sekunden „Aufwärmen".
+
+Dazu die Kennzahlen, die das Review verlangt: Fehlbelegungsdauer,
+Falsch-leer-Dauer sowie Eintritts- und Freigabeverzögerung als Median und
+schlechtester Fall. An der echten Zwanzig-Minuten-Aufnahme des leeren
+Raums (in-sample, also der günstigste Fall): 58 s fälschlich belegt mit
+Rate gegen 2 s nur mit Bewegung. Die Rate sieht jemanden, der still
+sitzt — und sie sieht auch öfter jemanden, der nicht da ist.
+
+**Herkunft und Einstellungen stehen im Bericht.** Sitzung und Maßstab mit
+ID, Gerät, Quelle und Zeitraum; dazu Fensterlänge, Schwelle, Haltezeit,
+Takt, Mindestabdeckung und Gedächtnisdauer. `in_sample` heißt nicht mehr
+„es wurde kein Maßstab angegeben": eine Sitzung, die als ihr eigener
+Maßstab genannt wird, ist in-sample, egal wie sie übergeben wurde — und
+eine, die sich zeitlich mit dem Bewerteten überschneidet, auch. Ein
+Maßstab von einem *anderen Gerät* wird abgelehnt, außer man nennt es
+ausdrücklich einen Übertragungsvergleich: was ein Raum leer tut, ist eine
+Eigenschaft dieses Raums und dieser Antenne.
 
 **Der Live-Pfad nennt sein Fenster jetzt, statt es abzuleiten.** Ohne
 ausdrückliches Fenster nahm `evaluate` die Spanne zwischen erstem und

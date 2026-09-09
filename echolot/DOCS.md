@@ -1009,11 +1009,42 @@ Die vorhandenen Zahlen kommen aus einem Raum und wenigen Sitzungen. Eine
 Änderung, die eine davon verbessert, kann eine andere ruinieren — also
 wird sie zuerst gemessen und nicht verdrahtet.
 
-`GET /api/calibrations/{id}/replay` spielt eine vorhandene Aufnahme durch
-fünf Verfahren gleichzeitig: die Ereignisrate bei 15, 30, 60 und 120
-Sekunden, dazu den Bewegungs-Boolean des Geräts als Referenz — der fährt
-heute das Licht und ist der Maßstab, den ein neues Verfahren schlagen
-muss.
+`GET /api/calibrations/{id}/replay` liefert **zwei Durchläufe** über
+dasselbe Material, weil sie Verschiedenes beantworten.
+
+**Chronologischer Durchlauf** (`simulation`) schickt die Aufnahme
+vorwärts durch genau die Funktionen, die auch der Livebetrieb nimmt:
+`presence_rate.advance` für den Gerätebefund samt seinem
+Hysterese-Gedächtnis und `zone_logic.evaluate` für die Zone. Die Uhr wird
+injiziert — es sind die Zeitstempel der Aufnahme selbst — und Labels
+werden erst hinterher gelesen, um zu bewerten, nie um die Eingabe
+umzusortieren. Daneben läuft dieselbe Maschine mit abgeschalteter Rate:
+Bewegung, Hysterese und Haltezeit, also das, was das Add-on vor der Rate
+getan hat und was sie schlagen muss.
+
+Je Durchlauf:
+
+| | |
+| --- | --- |
+| **belegt** | wie lange die Zone belegt war |
+| **fälschlich belegt** | belegt, während das Label „Raum leer" sagt |
+| **fälschlich leer** | leer, während das Label „belegt" sagt |
+| **Eintritt / Freigabe** | wie lange es dauerte, bis der Wechsel kam (Median und schlechtester Fall) |
+
+Dazu eine **vollständige Zeitbilanz**: belegt, leer, Aufwärmen, Lücke,
+unbekannt und Rest. Die Teile summieren sich auf die Gesamtdauer. Vorher
+verschwand Zeit lautlos aus dem Bericht — `split_windows` wirft ein
+angefangenes Restfenster weg, bevor irgendetwas es zählt, also meldete
+eine zehnsekündige Aufnahme *null* bewertete und *null* unbrauchbare
+Fenster. Jetzt steht sie als zehn Sekunden „Aufwärmen" da.
+
+**Fenstervergleich** (`window_comparison`) ist der ältere Bericht und
+bleibt: er gruppiert nach Label und bewertet jedes Label für sich, über
+die Ereignisrate bei 15, 30, 60 und 120 Sekunden plus den
+Bewegungs-Boolean. Als Überblick nützlich, als Simulation nicht — die
+Gruppierung zerstört die Reihenfolge der Sitzung, und jedes Fenster wird
+aus dem Stand bewertet, sodass die Ausschaltschwelle dort nie zum Einsatz
+kommt.
 
 Je Verfahren:
 
@@ -1029,14 +1060,30 @@ versteckt, ist keine.
 **Schreibfrei.** Kein Zonen-Runtime, kein Geräteprofil, nicht der
 Live-Evaluator. Messen darf nicht das Licht bewegen.
 
-**Es sagt, wenn die Zahlen sich selbst messen.** Wird der Maßstab aus
-derselben Aufnahme gelernt, die dann bewertet wird, steht das als Warnung
-über der Tabelle. `?baseline=<andere Sitzung>` lernt den Leerwert aus
-einer anderen Sitzung und macht daraus einen echten Vergleich — was das
-Review für belastbare Aussagen ohnehin verlangt: nach ganzen Sitzungen
-trennen, und Schwellen nicht auf den Testdaten optimieren.
+**Herkunft steht im Bericht** (`identity`), nicht in der Ansicht. Sitzung
+und Maßstab mit ID, Gerät, Quelle und Zeitraum; dazu `parameters` mit
+Fensterlänge, Schwelle, Haltezeit, Takt, Mindestabdeckung und
+Gedächtnisdauer. Eine Zahl ohne die Einstellungen, aus denen sie stammt,
+ist keine Messung.
 
-Im Calibration Lab unter „Vergleich" an jeder Messung.
+**Es sagt, wenn die Zahlen sich selbst messen.** `in_sample` ist nicht
+„wurde ein Maßstab angegeben". Eine Sitzung, die als ihr eigener Maßstab
+genannt wird, ist in-sample, egal wie sie übergeben wurde — und eine, die
+sich zeitlich mit dem Bewerteten überschneidet, auch: dieselben Minuten
+können nicht zugleich Maßstab und Gemessenes sein. `?baseline=<andere
+Sitzung>` lernt den Leerwert aus einer anderen Sitzung und macht daraus
+einen echten Vergleich.
+
+**Ein fremdes Gerät wird abgelehnt.** Was ein Raum leer tut, ist eine
+Eigenschaft dieses Raums und dieser Antenne. Ein Maßstab von einem
+anderen Gerät ist ein Übertragungsexperiment und muss so genannt werden:
+`?transfer=true`, sonst antwortet die Route mit 409.
+
+`?hold_seconds=<n>` simuliert eine Nachlaufzeit, die es in der Aufnahme
+nicht gab — nützlich, um zu sehen, was eine Zoneneinstellung geändert
+hätte, bevor man sie setzt.
+
+Im Calibration Lab unter „Replay" an jeder Messung.
 
 ### Confidence fusion
 
