@@ -31,6 +31,7 @@ import os
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 
 logger = logging.getLogger("echolot.samples")
 
@@ -96,6 +97,7 @@ class SampleBus:
     """The readings every consumer reads, tagged with where they came from."""
 
     def __init__(self, max_points: int = MAX_POINTS) -> None:
+        self._max_points = max_points
         self._lock = threading.RLock()
         self._samples: dict[str, deque] = {}
         self._accepted: dict[str, int] = {}
@@ -138,7 +140,9 @@ class SampleBus:
 
         stamped = sample if getattr(sample, "source", None) == source else _tag(sample, source)
         with self._lock:
-            self._samples.setdefault(device_id, deque(maxlen=MAX_POINTS)).append(stamped)
+            self._samples.setdefault(
+                device_id, deque(maxlen=self._max_points)
+            ).append(stamped)
             self._accepted[device_id] = self._accepted.get(device_id, 0) + 1
             listeners = tuple(self._listeners)
             queues = tuple(self._subscribers.get(device_id, ()))
@@ -253,8 +257,6 @@ class SampleBus:
 
 def _tag(sample, source: str):
     """The same reading, saying where it came from."""
-    from dataclasses import replace
-
     return replace(sample, source=source)
 
 

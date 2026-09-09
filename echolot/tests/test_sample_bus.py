@@ -135,6 +135,15 @@ def test_the_window_is_by_wall_clock(bus):
     assert len(bus.window("d", 3.0, now=9.0)) == 4       # t = 6, 7, 8, 9
 
 
+def test_the_buffer_is_bounded(bus):
+    """The bound was a module constant while the constructor took a
+    parameter, so a smaller bus kept an hour of readings anyway."""
+    small = samples.SampleBus(max_points=3)
+    for index in range(10):
+        small.publish("d", reading(float(index)), source=samples.SOURCE_HOME_ASSISTANT)
+    assert [row["t"] for row in small.window("d", 1000.0, now=9.0)] == [7.0, 8.0, 9.0]
+
+
 def test_forgetting_a_device_leaves_nothing_behind(bus):
     bus.publish("d", reading(1.0), source=samples.SOURCE_HOME_ASSISTANT)
     bus.forget("d")
