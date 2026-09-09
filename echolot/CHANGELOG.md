@@ -64,6 +64,22 @@ liest den Zwischenstand. Eine Zone, die noch keine Runde hinter sich hat,
 meldet das als „wird ausgewertet…" statt als „nicht verfügbar" — gemessen
 und nichts gefunden ist etwas anderes als noch nicht hingesehen.
 
+**Ein kurzer Bewegungsimpuls geht nicht mehr verloren.** Die Auswertung
+läuft auf ihrer eigenen Schleife und liest dabei den *aktuellen* Zustand.
+Wer durch eine Tür geht, ist wieder aus, bevor die Runde kommt — die
+Runde sah also nichts, und im Entscheidungsverlauf stand nichts davon.
+Der Live-Strom sieht den Übergang; er merkt ihn sich jetzt, und die
+Auswertung ist die eine Stelle, die ihn abholt.
+
+**NaN und Unendlich sind keine Messwerte.** Beide überleben `float()`.
+Ein NaN-Wert vergleicht sich gegen jede Schwelle als „kleiner" und ist
+damit stillschweigend nie eine Überschreitung; eine Unendlichkeit ist
+immer eine. Beide werden jetzt auf dem Live- wie auf dem Direktpfad
+verworfen. Ebenso ein Zeitstempel aus der Zukunft: der Live-Puffer wird
+relativ zum *neuesten* Messwert begrenzt, ein einziger Wert mit einem
+Stempel von morgen hätte also jeden echten Wert verdrängt und das Fenster
+leer gehalten, bis er selbst herausaltert — was er nie täte.
+
 **Reine Bewegungsmeldungen wecken die Auswertung wieder.** Seit 0.13.5
 erzeugt eine Motion-Meldung bewusst keinen Messpunkt mehr — sie wurde
 sonst als zweite Messung im selben Augenblick gezählt und blähte eine pro

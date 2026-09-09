@@ -66,6 +66,9 @@ class DeviceStream:
         #: Told that *something* changed, without a measurement attached.
         #: See `_notify_change`.
         self._change_listeners: set = set()
+        #: Motion went on at least once since somebody last asked.
+        #: See `motion_pulsed`.
+        self._motion_pulse = False
         self._reader = reader
         self._loop = loop
         factory = subscription_factory or ha_stream.StateSubscription
@@ -126,6 +129,14 @@ class DeviceStream:
         # recorder import disagree — the import reads the score series
         # alone — so a profile learned from history judged data that had
         # been counted differently.
+        if entity_id == self._entities["motion"] and state.get("state") == "on":
+            # Latched, because the evaluation runs on its own loop and
+            # re-reads the *current* state when it does. A pulse shorter
+            # than the floor — someone crossing a doorway — was on and off
+            # again before the round, so the round saw nothing and the
+            # decision history had no trace of it at all.
+            self._motion_pulse = True
+
         if entity_id != self._entities["score"]:
             # Not a measurement — but still news. Until 0.13.5 this
             # return was the end of it, so motion flipping on notified
@@ -218,6 +229,16 @@ class DeviceStream:
     def listeners(self) -> tuple:
         """Whoever is attached, so a rebuilt stream can take them over."""
         return tuple(self._listeners)
+
+    def motion_pulsed(self) -> bool:
+        """Did motion go on since this was last asked? Clears the flag.
+
+        Exactly one caller may consume it — the zone evaluation — or the
+        pulse would be reported to whoever asked first and lost for the
+        one that decides.
+        """
+        pulsed, self._motion_pulse = self._motion_pulse, False
+        return pulsed
 
     @property
     def change_listeners(self) -> tuple:

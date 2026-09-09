@@ -23,11 +23,22 @@ sample keeps Home Assistant's own `last_updated` as its timestamp.
 """
 
 import logging
+import math
+import time
 from datetime import datetime
 
 from app.telemetry import Sample
 
 logger = logging.getLogger("echolot.ha_sampler")
+
+#: How far ahead of this machine's clock a reading may be stamped.
+#:
+#: `_trim` and `window` bound the buffer relative to the *newest* reading,
+#: so one reading stamped a year from now would drop every real one and
+#: keep the window empty until it aged out — which it never would. Home
+#: Assistant and the add-on can disagree by a few seconds without either
+#: being wrong; a minute is generous for that and useless as a bomb.
+MAX_CLOCK_SKEW_SECONDS = 60.0
 
 
 def _float(state) -> float | None:
@@ -37,9 +48,13 @@ def _float(state) -> float | None:
     if raw in (None, "", "unknown", "unavailable"):
         return None
     try:
-        return float(raw)
+        number = float(raw)
     except (TypeError, ValueError):
         return None
+    # "nan" and "inf" survive float(). A NaN score compares False against
+    # every threshold, so it is silently never a crossing; an infinity is
+    # always one.
+    return number if math.isfinite(number) else None
 
 
 def _stamp(state) -> float | None:
@@ -50,9 +65,13 @@ def _stamp(state) -> float | None:
     if not isinstance(raw, str):
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-    except ValueError:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError, OSError):
         return None
+    if not math.isfinite(stamp) or stamp > time.time() + MAX_CLOCK_SKEW_SECONDS:
+        logger.warning("Zeitstempel %r liegt in der Zukunft — verworfen", raw)
+        return None
+    return stamp
 
 
 def build_sample(score_state, motion_state, threshold: float | None) -> Sample | None:

@@ -10,6 +10,7 @@ the browser or crossing the Home Assistant Ingress origin.
 import asyncio
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -58,9 +59,13 @@ def _number(value) -> float | None:
     if isinstance(value, bool):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    # "nan" and "inf" survive float(). A NaN score compares False against
+    # every threshold, so it is silently never a crossing; an infinity is
+    # always one. Neither is a measurement.
+    return number if math.isfinite(number) else None
 
 
 def _boolean(value) -> bool | None:

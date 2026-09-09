@@ -640,6 +640,8 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
     means the zone sees movement — but hysteresis and hold time now sit
     between that and the published `occupied` flag (see zone_logic).
     """
+    from app import feature_api
+
     members = []
     raw_motion = False
     any_available = False
@@ -648,6 +650,14 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
         if device is None:
             members.append({"device_id": device_id, "name": None, **state})
             continue
+        # A pulse shorter than the evaluation floor — somebody crossing a
+        # doorway — was on and off again before this round read the
+        # current state, so the round saw nothing and the decision
+        # history had no trace of it. The stream saw it; it latches the
+        # transition and this is the one place that consumes it.
+        stream = feature_api.live.stream(device_id)
+        if stream is not None and stream.motion_pulsed():
+            state = {**state, "motion": True, "motion_pulse": True, "available": True}
         if state.get("available"):
             any_available = True
             if state.get("motion"):

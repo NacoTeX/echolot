@@ -320,3 +320,83 @@ def test_a_failed_start_is_visible_while_it_retries(monkeypatch):
 
     asyncio.run(scenario())
     assert "kein Broker" in (mqtt_bridge.bridge.error or "")
+
+
+# --- a pulse shorter than the floor (R3) -------------------------------
+
+
+def test_a_short_motion_pulse_is_latched_until_the_round_reads_it():
+    """The evaluation runs on its own loop and reads the *current* state
+    when it does. Somebody crossing a doorway is on and off again before
+    the round, so the round saw nothing and the decision history had no
+    trace of it at all."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    stream._subscription.on_state(
+        device.entity_motion, {"state": "on", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    stream._subscription.on_state(
+        device.entity_motion, {"state": "off", "last_updated": "2026-09-08T12:00:00.2+00:00"}
+    )
+    assert stream.motion_pulsed() is True
+    # And exactly once: two consumers would mean the one that decides
+    # loses the pulse to the one that only looks.
+    assert stream.motion_pulsed() is False
+    live.stop_all()
+
+
+def test_no_pulse_is_reported_when_nothing_moved():
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+    stream._subscription.on_state(
+        device.entity_motion, {"state": "off", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    assert stream.motion_pulsed() is False
+    live.stop_all()
+
+
+def test_the_zone_evaluation_sees_the_pulse(monkeypatch):
+    """End to end: the pulse the round would otherwise have missed puts
+    the zone into `detected`, which is what the timeline records."""
+    from app import feature_api, main, zone_logic
+    from app.zones import Zone
+
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    monkeypatch.setattr(feature_api, "live", live)
+    monkeypatch.setattr(main.devices, "get_device", lambda i: device if i == device.id else None)
+
+    async def read(device_ids):
+        # What Home Assistant answers *now*: nothing is moving any more.
+        return [(device.id, device, {"available": True, "motion": False,
+                                     "movement_score": 0.0, "threshold": 0.5})]
+
+    monkeypatch.setattr(main, "_read_devices", read)
+    monkeypatch.setattr(main, "_zone_rate_verdict", lambda _zone: None)
+    main._zone_runtimes.pop("z", None)
+    zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
+
+    # Without a pulse the zone is clear.
+    state = asyncio.run(main.compute_zone_state(zone))
+    assert state["state"] == zone_logic.CLEAR
+
+    live.stream(device.id)._subscription.on_state(
+        device.entity_motion, {"state": "on", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    live.stream(device.id)._subscription.on_state(
+        device.entity_motion, {"state": "off", "last_updated": "2026-09-08T12:00:00.2+00:00"}
+    )
+    state = asyncio.run(main.compute_zone_state(zone))
+    assert state["state"] == zone_logic.DETECTED
+    assert state["members"][0]["motion_pulse"] is True
+
+    # And it is consumed: the next round is clear again.
+    assert asyncio.run(main.compute_zone_state(zone))["state"] == zone_logic.CLEAR
+    main._zone_runtimes.pop("z", None)
+    live.stop_all()

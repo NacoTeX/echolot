@@ -271,3 +271,14 @@ def test_the_chain_walk_terminates_on_a_cycle():
     a.__cause__ = b
     b.__cause__ = a
     assert telemetry.failure_kind(a) == "other"
+
+
+def test_nan_and_infinity_are_not_measurements():
+    """A NaN score compares False against every threshold, so it is
+    silently never a crossing; an infinity is always one."""
+    import json
+
+    for raw in (float("nan"), float("inf"), "nan", "inf"):
+        payload = json.dumps({"timestamp": 1.0, "movement_score": raw, "threshold": 0.5})
+        sample = parse_payload(payload)
+        assert sample is None or sample.movement_score is None

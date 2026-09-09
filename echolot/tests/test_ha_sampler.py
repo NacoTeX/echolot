@@ -167,3 +167,40 @@ def test_stop_all_ends_every_recording():
         sampler.start(device)
     sampler.stop_all()
     assert not sampler.running_for("a") and not sampler.running_for("b")
+
+
+# --- values that are not measurements (R2) -----------------------------
+
+
+def test_nan_and_infinity_are_not_measurements():
+    """They survive `float()`. A NaN score compares False against every
+    threshold, so it is silently never a crossing; an infinity is always
+    one. Neither belongs in a rate measured per second."""
+    for raw in ("nan", "NaN", "inf", "-inf", "Infinity"):
+        assert ha_sampler._float(state(raw)) is None
+    assert ha_sampler.build_sample(state("nan"), None, None) is None
+
+
+def test_a_timestamp_from_the_future_is_refused():
+    """The live buffer is bounded relative to its *newest* reading, so one
+    reading stamped a year ahead drops every real one and keeps the window
+    empty until it ages out — which it never would."""
+    import time
+    from datetime import datetime, timezone
+
+    ahead = datetime.fromtimestamp(time.time() + 86_400, tz=timezone.utc).isoformat()
+    sample = ha_sampler.build_sample(state("0.42", ahead), None, None)
+    # The reading is kept — it is a real measurement — but not its stamp.
+    assert sample is not None and sample.movement_score == 0.42
+    assert sample.t == 0.0
+
+
+def test_a_small_clock_difference_is_tolerated():
+    """Home Assistant and the add-on can disagree by a few seconds without
+    either being wrong."""
+    import time
+    from datetime import datetime, timezone
+
+    soon = datetime.fromtimestamp(time.time() + 5, tz=timezone.utc).isoformat()
+    sample = ha_sampler.build_sample(state("0.42", soon), None, None)
+    assert sample.t > 0.0
