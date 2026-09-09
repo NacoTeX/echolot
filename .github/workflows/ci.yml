@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `labeled` as well as the defaults, or the `firmware` label below
+    # would be a mechanism that never fires: a label change does not
+    # produce opened/synchronize/reopened, so the compile job could only
+    # ever run after a merge. The label is the documented way to ask for
+    # it on a pull request, so it has to start a run.
+    types: [opened, synchronize, reopened, labeled]
 
 # A second push to the same branch makes the first run pointless.
 concurrency:

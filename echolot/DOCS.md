@@ -487,7 +487,9 @@ sich untereinander auf eine Weise, die `esphome config` bereits abdeckt.
 
 Der Job läuft bei Pushes auf `main` und bei Pull Requests mit dem Label
 `firmware`, nicht bei jedem Commit: ein kalter Build lädt rund 2 GB je
-Befehlssatz. Der PlatformIO-Cache wird auf beide Pins verschlüsselt —
+Befehlssatz. Das Label anzuhängen startet einen Lauf — dafür horcht der
+Workflow neben den Standardereignissen auch auf `labeled`, sonst wäre das
+Label ein Mechanismus, der nie auslöst. Der PlatformIO-Cache wird auf beide Pins verschlüsselt —
 ESPHome-Anforderung und ESPectre-Commit —, sodass ein Bump von einem der
 beiden von vorn baut statt gegen ein altes Framework zu linken.
 
