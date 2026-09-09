@@ -100,15 +100,22 @@ def test_the_direct_port_is_reported_when_it_answers(monkeypatch, listener):
     monkeypatch.setattr(reachability, "DIRECT_PORT", listener.port)
     result = asyncio.run(reachability.check("127.0.0.1", timeout=2.0))
     assert result["direct"] is True
-    assert "62587" in reachability.explain_direct(result)
-    assert "Calibration Lab" in reachability.explain_direct(result)
+    message = reachability.explain_direct(result)
+    assert "62587" in message
+    # And it says what Echolot does with it, which since 0.13.6 is
+    # nothing: the device only accepts espectre.dev as an origin.
+    assert "Home Assistant" in message
 
 
-def test_a_device_answering_without_the_direct_port_is_told_what_that_costs():
+def test_a_silent_direct_port_is_not_reported_as_a_loss():
+    """It used to say the Calibration Lab would be left without data.
+    That was never true through Home Assistant, and since 0.13.6 the
+    canonical readings come from there by design."""
     result = {"verdict": "ok", "direct": False, "host": "h", "resolved": "h"}
     message = reachability.explain_direct(result)
     assert "direct_api" in message
-    assert "Neubau" in message
+    assert "keinen Unterschied" in message
+    assert "ohne Daten" not in message
 
 
 def test_the_direct_port_stays_quiet_when_nothing_answered_at_all():

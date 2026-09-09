@@ -27,6 +27,7 @@ from app import (  # noqa: E402
     feature_api,
     ha_sampler,
     live_presence,
+    samples,
     server,
 )
 from app.devices import BuildStatus, Device, DeviceCreate  # noqa: E402
@@ -76,8 +77,11 @@ def api(tmp_path, monkeypatch):
     # The live service owns the subscription; a recording attaches to it.
     live = live_presence.LivePresence(subscription_factory=FakeSubscription)
     monkeypatch.setattr(feature_api, "live", live)
-    sampler = ha_sampler.HomeAssistantSampler(store.ingest, live)
+    # The sampler is the liveness check; the readings themselves reach the
+    # store through the canonical bus, once (app/samples.py).
+    sampler = ha_sampler.HomeAssistantSampler(live)
     monkeypatch.setattr(feature_api, "sampler", sampler)
+    samples.bus.forget("probe")
 
     device = make_device()
     monkeypatch.setattr(dev_mod, "get_device", lambda did: device if did == "probe" else None)

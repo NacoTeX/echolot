@@ -105,7 +105,7 @@ def test_a_recording_against_the_real_endpoint_is_not_empty(device_server, store
 
     csv = store.csv(session["id"])
     rows = [line for line in csv.strip().splitlines() if line]
-    assert rows[0] == "t,movement_score,threshold,motion,label"
+    assert rows[0] == "t,movement_score,threshold,motion,source,label"
     assert len(rows) > 1, "das war der Fehler: nur die Kopfzeile"
 
 
@@ -153,7 +153,7 @@ def test_the_wrong_endpoint_produces_exactly_what_the_user_saw(device_server, st
 
     store.stop(session["id"])
     assert store.csv(session["id"]).strip().splitlines() == [
-        "t,movement_score,threshold,motion,label"
+        "t,movement_score,threshold,motion,source,label"
     ]
     snapshot = hub.snapshot("probe")
     assert snapshot["available"] is False

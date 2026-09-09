@@ -73,50 +73,45 @@ def build_sample(score_state, motion_state, threshold: float | None) -> Sample |
 
 
 class HomeAssistantSampler:
-    """Feeds a recording from the live stream that is already listening.
+    """Says whether a device has a live subscription behind it.
 
-    It used to open its own subscription per recording. The live service
-    (app/live_presence.py) now holds one per device permanently, because
-    the crossing rate needs a window that exists before anybody presses
-    record. A second subscription to the same three entities would buy
-    nothing, so this attaches to the first.
+    It used to be the thing that fed recordings, by attaching a listener
+    per recording to the live stream. That is now the sample bus's job:
+    one canonical stream, one registration, one reading per measurement.
+    Attaching here as well meant a device with the Direct HTTP API
+    enabled recorded the same movement twice.
+
+    What remains is the check that made `create_calibration` refuse a
+    session with nothing behind it. Three sessions were once recorded and
+    exported before anyone noticed there had never been any data in them,
+    so a start that did not start is a refusal rather than a green light.
+    Keeping it here keeps that question in one place.
     """
 
-    def __init__(self, sink, live) -> None:
-        #: sink(device_id, Sample) — CalibrationStore.ingest in production.
-        self._sink = sink
+    def __init__(self, live) -> None:
         self._live = live
-        self._attached: dict[str, object] = {}
+        self._recording: set[str] = set()
 
     def running_for(self, device_id: str) -> bool:
-        return device_id in self._attached
+        return device_id in self._recording
 
     def status(self, device_id: str) -> dict:
         stream = self._live.stream(device_id)
-        if stream is None or device_id not in self._attached:
+        if stream is None or device_id not in self._recording:
             return {"connected": False, "error": None}
         return {"connected": stream.connected, "error": stream.error}
 
     def start(self, device) -> bool:
+        """True when there is a live subscription to record from."""
         if self.running_for(device.id):
             return False
-        stream = self._live.stream(device.id)
-        if stream is None:
+        if self._live.stream(device.id) is None:
             return False
-
-        def listener(device_id, sample):
-            self._sink(device_id, sample)
-
-        stream.add_listener(listener)
-        self._attached[device.id] = listener
+        self._recording.add(device.id)
         return True
 
     def stop(self, device_id: str) -> None:
-        listener = self._attached.pop(device_id, None)
-        stream = self._live.stream(device_id)
-        if listener is not None and stream is not None:
-            stream.remove_listener(listener)
+        self._recording.discard(device_id)
 
     def stop_all(self) -> None:
-        for device_id in list(self._attached):
-            self.stop(device_id)
+        self._recording.clear()

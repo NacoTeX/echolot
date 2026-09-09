@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from app import calibration, devices, feature_api, telemetry
+from app import calibration, devices, feature_api, samples, telemetry
 from app.feature_api import router as feature_router
 from app.main import app
 
@@ -38,9 +38,21 @@ async def lifespan(application):
         logger.info("Unterbrochene Jobs zurückgesetzt: %s", ", ".join(interrupted))
 
     feature_api.live.bind(asyncio.get_running_loop())
+    samples.bus.bind(asyncio.get_running_loop())
     await feature_api.live.run(devices.list_devices)
-    telemetry.hub.add_listener(calibration.store.ingest)
-    await telemetry.hub.start(devices.list_devices)
+
+    # One registration, on the canonical stream. Calibration used to be
+    # attached to both collectors at once, so a device with the Direct
+    # HTTP API enabled recorded the same movement twice — and the
+    # crossing rate is events per second, so counting it twice does not
+    # add detail, it doubles the number.
+    samples.bus.add_listener(calibration.store.ingest)
+    if samples.direct_collector_enabled():
+        await telemetry.hub.start(devices.list_devices)
+    else:
+        logger.info(
+            "Direkter ESPectre-Kollektor aus: %s", samples.DIRECT_COLLECTOR_REASON
+        )
     _resume_recordings()
     try:
         async with _core_lifespan(application):
@@ -53,7 +65,7 @@ async def lifespan(application):
         # point rather than a race with a background thread.
         calibration.store.close()
         feature_api.live.stop_all()
-        telemetry.hub.remove_listener(calibration.store.ingest)
+        samples.bus.remove_listener(calibration.store.ingest)
         await telemetry.hub.stop()
 
 

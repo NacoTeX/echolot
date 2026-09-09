@@ -13,7 +13,7 @@ way.
 
 from dataclasses import dataclass
 
-from app import health, presence_rate
+from app import health, presence_rate, samples
 
 
 @dataclass(frozen=True)
@@ -152,6 +152,28 @@ def collect_problems(
                     device_id=device.id,
                 )
             )
+        elif status == presence_rate.USABLE:
+            # What a room does empty is measured through one transport.
+            # Judging live readings from another one against it compares
+            # two different measurements — which is not a crash, and not
+            # something anybody would notice either.
+            learned_under = (device.presence_profile or {}).get("source")
+            canonical = samples.bus.source
+            if learned_under and learned_under != canonical:
+                problems.append(
+                    Problem(
+                        kind="profile_source_mismatch",
+                        message=(
+                            f"Das Präsenzprofil von „{label}“ wurde über "
+                            f"„{learned_under}“ gelernt, gemessen wird jetzt über "
+                            f"„{canonical}“. Die beiden Wege lösen unterschiedlich "
+                            "fein auf — eine Leer-Aufnahme über die aktuelle Quelle "
+                            "neu übernehmen."
+                        ),
+                        tab="calibration",
+                        device_id=device.id,
+                    )
+                )
 
         # Costs nothing extra: the threshold is already in the state that
         # was read for the live view. It is worth saying here rather than

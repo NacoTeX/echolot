@@ -21,6 +21,7 @@ from app import (
     live_presence,
     presence_rate,
     replay,
+    samples,
     telemetry,
     zones,
 )
@@ -32,7 +33,7 @@ router = APIRouter()
 def fused_zones() -> list[dict]:
     profiles = calibration.store.latest_profiles()
     return [
-        fusion.evaluate_zone(zone, devices.get_device, telemetry.hub, profiles)
+        fusion.evaluate_zone(zone, devices.get_device, samples.bus, profiles)
         for zone in zones.list_zones()
     ]
 
@@ -43,15 +44,26 @@ def fused_zone(zone_id: str) -> dict:
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
     return fusion.evaluate_zone(
-        zone, devices.get_device, telemetry.hub, calibration.store.latest_profiles()
+        zone, devices.get_device, samples.bus, calibration.store.latest_profiles()
     )
 
 
 @router.get("/api/devices/{device_id}/telemetry")
 def device_telemetry(device_id: str, seconds: int = 1800) -> dict:
+    """The canonical readings, whichever transport produced them.
+
+    It used to be the direct collector's own buffer, so a device without
+    ESPectre's Direct HTTP API showed an empty trace and an error — while
+    Home Assistant was delivering its readings the whole time.
+    """
     if devices.get_device(device_id) is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
-    return telemetry.hub.snapshot(device_id, seconds=seconds)
+    return {
+        **samples.bus.snapshot(device_id, seconds=seconds),
+        # The direct collector's connection state, whether or not it is
+        # the source: "why is there no direct data" is a real question.
+        "direct": telemetry.hub.status(device_id),
+    }
 
 
 @router.get("/api/devices/{device_id}/telemetry/stream")
@@ -60,7 +72,7 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
 
     async def events():
-        queue = telemetry.hub.subscribe(device_id)
+        queue = samples.bus.subscribe(device_id)
         try:
             yield ": connected\n\n"
             while True:
@@ -71,7 +83,7 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
                     continue
                 yield f"data: {json.dumps(sample.as_dict(), separators=(',', ':'))}\n\n"
         finally:
-            telemetry.hub.unsubscribe(device_id, queue)
+            samples.bus.unsubscribe(device_id, queue)
 
     return StreamingResponse(
         events(),
@@ -85,10 +97,11 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
 #: there is no last minute unless something has been listening.
 live = live_presence.LivePresence()
 
-#: A recording attaches to that stream rather than opening its own. Samples
-#: come from Home Assistant, not from the device's Direct API — see
-#: app/ha_sampler.py for why that API is out of reach.
-sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest, live)
+#: Recordings are fed from the canonical sample bus (app/samples.py), not
+#: from here. This is what answers "is there anything to record from" —
+#: see app/ha_sampler.py, and for why the device's own Direct API is out
+#: of reach, the module docstring there.
+sampler = ha_sampler.HomeAssistantSampler(live)
 
 
 @router.get("/api/calibrations")

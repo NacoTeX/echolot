@@ -107,12 +107,21 @@ def fuse(members: list[dict]) -> dict:
     }
 
 
-def evaluate_zone(zone, device_getter, telemetry_hub, profiles, *, now=None) -> dict:
+def evaluate_zone(zone, device_getter, source, profiles, *, now=None) -> dict:
+    """Fuse a zone from the canonical sample stream.
+
+    `source` used to be the direct telemetry hub specifically, so a
+    device without ESPectre's Direct HTTP API contributed nothing at all
+    — and that API is closed to this add-on at the pinned upstream (see
+    app/ha_sampler.py). It is now the sample bus, which carries whichever
+    transport is canonical; anything with a `snapshot(device_id,
+    seconds=...)` works.
+    """
     now = time.time() if now is None else now
     members = []
     for device_id in zone.device_ids:
         device = device_getter(device_id)
-        snapshot = telemetry_hub.snapshot(device_id, seconds=STALE_SECONDS)
+        snapshot = source.snapshot(device_id, seconds=STALE_SECONDS)
         points = snapshot.get("points") or []
         name = (
             device.config.friendly_name or device.config.name
@@ -141,4 +150,12 @@ def evaluate_zone(zone, device_getter, telemetry_hub, profiles, *, now=None) -> 
                 **device_evidence(points[-1], profiles.get(device_id), now=now),
             }
         )
-    return {"zone_id": zone.id, "name": zone.name, **fuse(members)}
+    return {
+        "zone_id": zone.id,
+        "name": zone.name,
+        # Which transport these numbers came from. Two rooms fused from
+        # different transports are not comparable, and a reader should
+        # not have to guess.
+        "source": getattr(source, "source", None),
+        **fuse(members),
+    }

@@ -523,8 +523,16 @@ class CalibrationStore:
         with self._lock:
             session = self._require(session_id)
             output = io.StringIO()
+            # `source` is part of the export, not an accident of it: a
+            # reading means something different depending on which
+            # transport measured it, and a CSV that does not say is a CSV
+            # somebody will merge with another one. Rows recorded before
+            # 0.13.6 have no source and export as blank.
             writer = csv.DictWriter(
-                output, fieldnames=("t", "movement_score", "threshold", "motion", "label")
+                output,
+                fieldnames=("t", "movement_score", "threshold", "motion", "source", "label"),
+                restval="",
+                extrasaction="ignore",
             )
             writer.writeheader()
             writer.writerows(session["samples"])

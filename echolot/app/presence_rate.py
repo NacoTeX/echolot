@@ -144,6 +144,16 @@ class RateProfile:
     #: Windows that look occupied inside an "empty" recording.
     suspect_windows: int = 0
     window_count: int = 0
+    #: Which transport measured the material this was learned from — see
+    #: app/samples.py. None on a profile learned before 0.13.6, and on
+    #: material that carries no source; those are all Home Assistant
+    #: readings, because that is the only path the live evaluation has
+    #: ever taken. Recorded rather than versioned: an existing profile is
+    #: still a correct answer to the question it was learned under, and
+    #: bumping the version would throw every one of them away. What it
+    #: buys is the mismatch check — the same room measured over a
+    #: different transport is a different measurement.
+    source: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -158,6 +168,7 @@ class RateProfile:
             "exit_rate": round(self.exit_rate, 5),
             "suspect_windows": self.suspect_windows,
             "window_count": self.window_count,
+            "source": self.source,
             "warning": self.warning,
         }
 
@@ -261,6 +272,7 @@ def _parse_profile(data: dict) -> RateProfile | None:
             observed_seconds=max(0.0, _finite(data.get("observed_seconds") or 0.0)),
             suspect_windows=max(0, int(data.get("suspect_windows") or 0)),
             window_count=max(0, int(data.get("window_count") or 0)),
+            source=(str(data["source"]) if data.get("source") else None),
         )
     except (TypeError, ValueError):
         return None
@@ -531,7 +543,17 @@ def learn_baseline(
             1 for rate in rates if rate > max(centre * 3.0, centre + 0.05)
         ),
         window_count=len(rates),
+        # Only when the material agrees with itself. Mixed sources mean
+        # this baseline describes no single measurement, and saying so is
+        # more useful than picking one.
+        source=_single_source(empty),
     )
+
+
+def _single_source(rows: list[dict]) -> str | None:
+    """The one transport these readings came from, or None."""
+    seen = {row.get("source") for row in rows if row.get("source")}
+    return seen.pop() if len(seen) == 1 else None
 
 
 def evaluate(

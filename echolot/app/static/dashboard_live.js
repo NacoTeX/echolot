@@ -1,6 +1,13 @@
-// Direct-telemetry enhancement layered over the stable HA-backed dashboard.
-// Keeping this separate avoids making the dashboard unusable when direct data
-// is absent and keeps feature development out of the core dashboard module.
+// Live-Messwerte über der stabilen, HA-gestützten Dashboard-Ansicht.
+//
+// Die Messwerte kommen seit 0.13.6 aus dem kanonischen Strom (app/samples.py)
+// statt ausschließlich aus ESPectres Direct-HTTP-Stream. Das Gerät musste
+// dafür vorher die Direct-API anbieten — und die weist dieses Add-on am
+// gepinnten Upstream ab —, sodass die Kurve leer blieb, obwohl Home Assistant
+// die Werte die ganze Zeit lieferte.
+//
+// Getrennt gehalten, damit ein fehlender Messwertstrom das Dashboard nicht
+// unbrauchbar macht.
 
 const liveSources = new Map();
 let liveGeneration = 0;
@@ -38,7 +45,7 @@ async function waitForDashboardTile(id) {
   return false;
 }
 
-async function seedDirectHistory(id) {
+async function seedHistory(id) {
   try {
     const response = await fetch(`api/devices/${id}/telemetry?seconds=${HISTORY_MINUTES * 60}`);
     const snapshot = await response.json();
@@ -66,10 +73,14 @@ async function startLiveDashboard() {
   } catch (err) {
     return; // The core dashboard continues with Home Assistant polling.
   }
-  for (const device of devices.filter((item) => item.status === "success" && item.config.direct_api)) {
+  // Nicht mehr nach direct_api gefiltert: der Strom kommt aus der
+  // kanonischen Quelle, und die ist standardmäßig Home Assistant. Ein Gerät
+  // mit abgeschalteter Direct-API hatte sonst nie eine Live-Kurve, obwohl
+  // seine Messwerte durchgehend ankamen.
+  for (const device of devices.filter((item) => item.status === "success")) {
     if (!await waitForDashboardTile(device.id)) continue;
     if (generation !== liveGeneration) return;
-    await seedDirectHistory(device.id);
+    await seedHistory(device.id);
     if (generation !== liveGeneration) return;
     const source = new EventSource(`api/devices/${device.id}/telemetry/stream`);
     source.onmessage = (event) => {
@@ -89,8 +100,8 @@ async function startLiveDashboard() {
 
 // --- Confidence fusion ------------------------------------------------------
 //
-// A second opinion on each zone, computed from direct telemetry and the
-// Calibration Lab profiles rather than from Home Assistant.
+// A second opinion on each zone, computed from the canonical readings and
+// the Calibration Lab profiles rather than from the zone state machine.
 //
 // It gets its own line and deliberately does NOT write [data-zone-state],
 // [data-dot] or the member chips. dashboard.js writes those every POLL_MS
@@ -114,7 +125,7 @@ function fusionDetail(result) {
       member.reliability > 0
         ? `${member.name}: ${Math.round(member.probability * 100)} % Präsenz, ` +
           `${Math.round(member.reliability * 100)} % Verlässlichkeit (${member.basis})`
-        : `${member.name}: keine aktuellen Direktdaten`,
+        : `${member.name}: keine aktuellen Messwerte`,
     )
     .join("\n");
 }
@@ -143,13 +154,16 @@ async function refreshFusion() {
     if (!tile) continue;
     const note = fusionNote(tile);
     if (!result.available) {
-      note.textContent = "Direkt-Fusion wartet auf aktuelle Samples";
+      note.textContent = "Konfidenz-Fusion wartet auf aktuelle Messwerte";
       note.title = fusionDetail(result);
       note.hidden = false;
       continue;
     }
+    // Die Quelle steht dabei: zwei Räume, aus verschiedenen Transporten
+    // gemessen, sind nicht vergleichbar.
+    const source = result.source === "direct" ? "direkt" : "Home Assistant";
     note.textContent =
-      `Direkt-Fusion: ${fusionStateLabel(result)} · ` +
+      `Konfidenz-Fusion (${source}): ${fusionStateLabel(result)} · ` +
       `Übereinstimmung ${Math.round(result.agreement * 100)} %`;
     note.title = fusionDetail(result);
     note.hidden = false;

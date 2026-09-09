@@ -467,10 +467,11 @@ drawn across it** — that is the view that tells you whether the threshold
 sits in a sensible place and whether the signal is steady or flickering,
 which a bare on/off indicator cannot.
 
-The chart opens pre-filled from Echolot's bounded direct-data buffer. If no
-direct samples are available yet, it falls back to Home Assistant's recorded
-history (the last 30 minutes, if the recorder keeps that entity), so it is
-useful immediately rather than starting blank. Below it sit the current score
+The chart opens pre-filled from Echolot's bounded buffer of canonical
+readings (see „Eine kanonische Datenquelle" below). If none have arrived
+yet, it falls back to Home Assistant's recorded history (the last 30
+minutes, if the recorder keeps that entity), so it is useful immediately
+rather than starting blank. Below it sit the current score
 and threshold; zone tiles highlight *which* member device is currently
 tripping.
 
@@ -480,17 +481,69 @@ that GATT service when it restructured in September 2026, so the button is
 gone rather than left to fail against firmware that no longer answers.
 
 Its successor is ESPectre's Direct HTTP/SSE surface on port 62587, enabled
-by the `direct_api` option (on by default). Echolot now keeps one connection
-to that local stream per built device, retains a bounded in-memory history,
-and fans it out through its own same-origin SSE endpoint. The browser never
-connects to a device directly, so this also works through Home Assistant
-Ingress. Device tiles mark the stream as **Direkt verbunden**; Home Assistant
-history and polling remain the automatic fallback while a device is offline.
+by the `direct_api` option (on by default). Echolot can keep one connection
+to that local stream per built device and fan it out through its own
+same-origin SSE endpoint, so the browser never connects to a device directly
+and this also works through Home Assistant Ingress.
+
+**Der Kollektor läuft aber nicht von selbst** — siehe „Eine kanonische
+Datenquelle" gleich unten. Am gepinnten ESPectre-Commit weist ein
+ESPHome-gebautes Gerät jede Anfrage dieses Add-ons mit 403 ab, und die
+einzige Umgehung wäre eine vorgetäuschte Herkunft.
 
 ESPectre has used more than one route shape during development. Echolot probes
 the known event routes automatically. For an upstream build with a different
 route, set `ESPECTRE_DIRECT_PATHS` in the container environment to a
 comma-separated list such as `/events,/api/events`.
+
+### Eine kanonische Datenquelle
+
+Echolot kann ein Gerät auf zwei Wegen hören: über die
+Home-Assistant-Entities, die es per ESPHome-API veröffentlicht, und über
+ESPectres eigenen Direct-HTTP-Stream auf dem Gerät. Bis 0.13.5 liefen
+beide, **beide** speisten den Kalibrierungsspeicher, und die
+Konfidenz-Fusion las ausschließlich den direkten. Also:
+
+- ein Gerät ohne Direct-API steuerte zur Fusion **nichts** bei, während
+  Home Assistant seine Werte die ganze Zeit lieferte;
+- ein Gerät mit Direct-API konnte dieselbe Bewegung **doppelt**
+  aufzeichnen — und die Ereignisrate zählt pro Sekunde, doppelt zählen
+  fügt also keine Auflösung hinzu, es verdoppelt die Zahl;
+- an keinem Messwert stand, welcher Transport ihn gemessen hatte.
+
+Seit 0.13.6 gibt es genau **eine kanonische Quelle je Gerät**
+(`app/samples.py`). Jeder Messwert trägt sie, ein Messwert aus einer
+anderen Quelle wird abgelehnt statt untergemischt, und die Ablehnungen
+werden gezählt — ein Kollektor, der läuft und nichts beiträgt, soll
+sichtbar sein und nicht rätselhaft. Kalibrierung, Fusion, Live-Kurve und
+CSV-Export lesen diesen einen Strom.
+
+Welche Quelle kanonisch ist, ist eine **Einstellung** und kein Rennen
+zwischen den Transporten: ein Ratenprofil wird unter einer Quelle
+gelernt, und still darunter zu wechseln würde die Messung ändern, ohne
+ihre Definition zu ändern. `ECHOLOT_SAMPLE_SOURCE` wählt
+(`home_assistant`, Voreinstellung, oder `direct`).
+
+**Warum Home Assistant die Voreinstellung ist.** Nicht aus Bequemlichkeit,
+sondern weil der andere Weg am gepinnten Upstream nicht offensteht. Am
+Commit `ce23b0b6` konfiguriert ein ESPHome-gebautes Gerät seinen
+Direct-HTTP-Dienst mit `DirectHttpServiceConfig::for_first_party_portals()`
+— erlaubt sind genau `https://espectre.dev` und zwei Geschwister-Domains
+—, und das ESPHome-Frontend übergibt `allow_missing_origin = false`
+(`espectre.cpp`, das `RuntimeDirectHttpBridgeConfig`-Literal).
+Loopback-Origins sind wegkompiliert, solange
+`CONFIG_ESPECTRE_DIRECT_DEV_ORIGINS_ENABLED` nicht gesetzt ist, und die
+Kconfig, die der ESPHome-Build erreicht (`src/cpp/Kconfig.projbuild` samt
+der von dort eingebundenen `espectre_config`), **deklariert dieses Symbol
+gar nicht** — nur das Native-Frontend und die Micro-Firmware tun das.
+
+Jede Anfrage dieses Add-ons bekommt also **403 „Origin rejected"**, außer
+sie behauptet, espectre.dev zu sein. Das tut Echolot nicht. Der direkte
+Kollektor bleibt für Firmware verfügbar, die ihn zulässt, läuft aber nur
+auf ausdrückliche Anforderung (`ECHOLOT_DIRECT_COLLECTOR=true`) und nennt
+im Log den Grund, wenn er ausbleibt. Sein Verbindungszustand steht
+weiterhin unter `/api/devices/{id}/telemetry` neben den kanonischen
+Messwerten — „warum kommen keine Direktdaten" ist eine echte Frage.
 
 ### Was auf der Direkt-Telemetrie liegt
 

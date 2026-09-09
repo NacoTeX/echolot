@@ -87,8 +87,9 @@ def test_csv_export_contains_labels_and_measurements(store):
     store.ingest("probe", sample(4.2))
     exported = store.csv(session["id"])
 
-    assert exported.startswith("t,movement_score,threshold,motion,label")
-    assert "100,4.2,2.0,True,moving" in exported
+    assert exported.startswith("t,movement_score,threshold,motion,source,label")
+    # The source column is empty for a row that never went through the bus.
+    assert "100,4.2,2.0,True,,moving" in exported
 
 
 def test_delete_removes_a_session(store):

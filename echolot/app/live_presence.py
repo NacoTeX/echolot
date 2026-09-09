@@ -22,7 +22,7 @@ import logging
 import time
 from collections import deque
 
-from app import ha_client, ha_stream
+from app import ha_client, ha_stream, samples as sample_bus
 from app.ha_sampler import build_sample, _float
 
 logger = logging.getLogger("echolot.live_presence")
@@ -159,6 +159,12 @@ class DeviceStream:
 
         self._samples.append(sample)
         self._trim()
+        # The canonical stream, which is what the calibration store, the
+        # confidence fusion and the live trace read. Refused when Home
+        # Assistant is not the configured source — see app/samples.py.
+        sample_bus.bus.publish(
+            self.device_id, sample, source=sample_bus.SOURCE_HOME_ASSISTANT
+        )
         for listener in tuple(self._listeners):
             try:
                 listener(self.device_id, sample)

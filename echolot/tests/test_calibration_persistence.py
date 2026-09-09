@@ -70,8 +70,10 @@ def test_ingesting_does_not_write_inline(store, tmp_path):
     feed(store, "probe", 1000)
     assert caller not in threads, "ingest hat auf dem aufrufenden Thread geschrieben"
 
+    before = len(threads)
     store.flush()
-    assert threads[-1] is caller, "flush muss auf dem aufrufenden Thread schreiben"
+    # Not threads[-1]: the coalescing writer may append after flush did.
+    assert caller in threads[before:], "flush muss auf dem aufrufenden Thread schreiben"
     assert len(store.samples(session["id"])) == 1000
 
 

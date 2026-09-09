@@ -4,7 +4,7 @@
 
 Ein zweites externes Review, diesmal mit einem Reproduktionsskript für
 sieben Logikbefunde. Alle sieben ließen sich am Ausgangsstand bestätigen.
-Hier R1 bis R7; R8 folgt in derselben Version.
+Alle acht Befunde R1 bis R8.
 
 **Ein beschädigtes Profil konnte die Auswertung aller Zonen abbrechen.**
 `profile_from_dict({"version": "broken"})` warf ValueError, weil die
@@ -186,6 +186,69 @@ eine, die sich zeitlich mit dem Bewerteten überschneidet, auch. Ein
 Maßstab von einem *anderen Gerät* wird abgelehnt, außer man nennt es
 ausdrücklich einen Übertragungsvergleich: was ein Raum leer tut, ist eine
 Eigenschaft dieses Raums und dieser Antenne.
+
+**Eine kanonische Datenquelle statt zweier, die sich überlagerten.**
+Echolot kann ein Gerät auf zwei Wegen hören: über die
+Home-Assistant-Entities und über ESPectres Direct-HTTP-Stream auf dem
+Gerät. Bisher liefen beide, **beide** speisten den
+Kalibrierungsspeicher, und die Konfidenz-Fusion las ausschließlich den
+direkten. Ein Gerät ohne Direct-API steuerte zur Fusion also nichts bei,
+während Home Assistant seine Werte die ganze Zeit lieferte — und ein
+Gerät mit Direct-API konnte dieselbe Bewegung doppelt aufzeichnen. Die
+Ereignisrate zählt pro Sekunde: doppelt zählen fügt keine Auflösung
+hinzu, es verdoppelt die Zahl.
+
+Jetzt gibt es genau eine kanonische Quelle je Gerät. Jeder Messwert
+trägt sie — auch in der CSV —, ein Messwert aus einer anderen Quelle
+wird abgelehnt statt untergemischt, und die Ablehnungen werden gezählt.
+Kalibrierung, Fusion, Live-Kurve und Export lesen diesen einen Strom.
+Welche Quelle es ist, ist eine Einstellung (`ECHOLOT_SAMPLE_SOURCE`) und
+kein Rennen zwischen den Transporten: ein Ratenprofil wird unter einer
+Quelle gelernt, und still darunter zu wechseln würde die Messung ändern,
+ohne ihre Definition zu ändern. Ein Profil merkt sich deshalb, unter
+welcher Quelle es entstand; vorhandene Profile bleiben gültig und werden
+als „Home Assistant" gelesen, weil der Live-Pfad nie etwas anderes war.
+Passt die Quelle nicht mehr, sagt es die Übersicht.
+
+**Der direkte Kollektor läuft nicht mehr von selbst — nachgesehen statt
+angenommen.** Am gepinnten ESPectre-Commit `ce23b0b6` konfiguriert ein
+ESPHome-gebautes Gerät seinen Direct-HTTP-Dienst mit
+`for_first_party_portals()`: erlaubt sind genau `https://espectre.dev`
+und zwei Geschwister-Domains, und das ESPHome-Frontend übergibt
+`allow_missing_origin = false`. Loopback-Origins sind wegkompiliert,
+solange `CONFIG_ESPECTRE_DIRECT_DEV_ORIGINS_ENABLED` nicht gesetzt ist —
+und die Kconfig, die der ESPHome-Build erreicht, deklariert dieses Symbol
+gar nicht; nur das Native-Frontend und die Micro-Firmware tun das. Jede
+Anfrage dieses Add-ons bekommt also 403, außer sie behauptet,
+espectre.dev zu sein. Das tut Echolot nicht. Der Kollektor bleibt für
+Firmware verfügbar, die ihn zulässt (`ECHOLOT_DIRECT_COLLECTOR=true`),
+nennt sonst im Log den Grund, und sein Verbindungszustand steht
+weiterhin neben den Messwerten.
+
+**Das Build-Manifest sagt jetzt, welcher Build es gemacht hat.** Bisher
+nannte es die Quellen — ESPectre-Commit, installierte ESPHome-Version,
+Board, Konfigurationshash — aber nicht, welche Echolot-Revision daraus
+ein Image gemacht hat, nicht welche Version von ESPHome überhaupt erlaubt
+gewesen wäre, und nicht, welches ESP-IDF tatsächlich hineingelinkt wurde
+(`type: esp-idf` ohne Version ist, was ESPHome diese Woche empfiehlt).
+Dazu kommen jetzt: eine eindeutige Build-ID, Echolot-Version und
+-Commit (im Image über `BUILD_REF` eingestempelt, weil ein Container
+kein Git-Checkout hat), die Anforderung wie sie in `requirements.txt`
+steht, die installierten Framework- und Toolchain-Pakete mit Version,
+und die Architektur, auf der kompiliert wurde. Zugangsdaten bleiben
+draußen wie zuvor.
+
+**CI baut jetzt echte Firmware.** `esphome config` findet einen
+YAML-Fehler in Sekunden und findet sonst nichts: es holt ESPectre nicht,
+startet keinen Compiler und kann nicht sagen, dass der gepinnte
+ESPHome-Stand und der gepinnte ESPectre-Commit sich über einen Header
+uneinig sind — genau der Fehler, der bei einem Nutzer als
+Zwanzig-Minuten-Build mit einem C++-Fehler ankommt, den er nicht
+geschrieben hat. Ein neuer Job linkt deshalb je ein Board pro
+Befehlssatz (Xtensa `esp32`, RISC-V `esp32c6`) mit allen Optionen an.
+Zwei statt sechs, weil die beiden Befehlssätze das sind, was sich
+wirklich unterscheidet — getrennte Toolchains, getrennte Compiler,
+getrennte Chip-Header.
 
 **Der Live-Pfad nennt sein Fenster jetzt, statt es abzuleiten.** Ohne
 ausdrückliches Fenster nahm `evaluate` die Spanne zwischen erstem und
