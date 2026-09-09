@@ -1,6 +1,17 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
-esphome>=2024.9
+# Pinned to a minor series rather than left open: ESPHome ships breaking
+# changes in feature releases, and an unbounded requirement means the same
+# Echolot release builds a different firmware next month. Patch releases
+# inside the series are still picked up.
+#
+# 2026.6 and not the newest: from 2026.7 onwards ESPHome requires Python
+# >= 3.12, and this add-on runs on the Home Assistant Debian bookworm
+# base image, which ships 3.11 — as does the CI that mirrors it. Pinning
+# past that ceiling produced a requirement pip could not satisfy in
+# either place. Moving to a newer series means moving the base image
+# first, deliberately, and rebuilding a device to check it still senses.
+esphome>=2026.6.5,<2026.7
 jinja2>=3.1,<4.0
 pydantic>=2.9,<3.0
 httpx>=0.27,<1.0

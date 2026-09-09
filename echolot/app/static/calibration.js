@@ -106,6 +106,9 @@ function renderActiveCalibration() {
   panel.querySelector("[data-session-name]").textContent = activeCalibration.name;
   panel.querySelector("[data-sample-count]").textContent = activeCalibration.sample_count;
   panel.querySelector("[data-current-label]").textContent = LABEL_NAMES[activeCalibration.label] || activeCalibration.label;
+  const full = panel.querySelector("[data-limit-reached]");
+  if (full) full.hidden = !activeCalibration.sample_limit_reached;
+
   for (const button of panel.querySelectorAll("[data-label]")) {
     button.classList.toggle("active", button.dataset.label === activeCalibration.label);
   }
@@ -126,6 +129,55 @@ function recommendationBlock(session) {
   </div>`;
 }
 
+//: Which comparisons are open. The list re-renders every two seconds
+//: while this tab is on screen, and without this the section closed
+//: itself under the person reading it — and threw away the result it had
+//: just fetched. Same fix as the device cards.
+const openReplays = new Set();
+
+//: Replays one session through every strategy and lays the results side
+//: by side. The caveat comes from the backend, because whether the
+//: numbers measured themselves is a property of the run, not of the view.
+async function loadReplay(id, target) {
+  if (target.dataset.loaded) return;
+  target.innerHTML = '<p class="hint">wird ausgewertet…</p>';
+  try {
+    const body = await calibrationJson(`api/calibrations/${id}/replay`);
+    const rows = body.strategies
+      .map((strategy) => {
+        if (!strategy.available) {
+          return `<tr class="replay-unavailable">
+              <td>${escapeHtml(strategy.name)}</td>
+              <td colspan="3">${escapeHtml(strategy.reason)}</td>
+            </tr>`;
+        }
+        const score = strategy.score;
+        const share = (value) => (value === null ? "—" : `${Math.round(value * 100)} %`);
+        return `<tr${strategy.reference ? ' class="replay-reference"' : ""}>
+            <td>${escapeHtml(strategy.name)}${strategy.reference ? " (aktuell)" : ""}</td>
+            <td>${score.false_alarms}/${score.empty_windows} · ${share(score.false_alarm_rate)}</td>
+            <td>${score.misses}/${score.occupied_windows} · ${share(score.miss_rate)}</td>
+            <td>${score.unusable_windows}</td>
+          </tr>`;
+      })
+      .join("");
+    target.innerHTML = `
+      <p class="status ${body.in_sample ? "status-warn" : "status-ok"}">${escapeHtml(body.caveat)}</p>
+      <div class="table-scroll">
+        <table class="replay-table">
+          <thead><tr>
+            <th>Verfahren</th><th>Fehlalarm (leer)</th>
+            <th>Verpasst (belegt)</th><th>Nicht beurteilbar</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    target.dataset.loaded = "1";
+  } catch (err) {
+    target.innerHTML = `<p class="status status-err">${escapeHtml(err.message)}</p>`;
+  }
+}
+
 function renderCalibrationSessions(sessions, devices) {
   const list = document.getElementById("calibration-list");
   list.innerHTML = sessions.length ? sessions.map((session) => {
@@ -135,13 +187,34 @@ function renderCalibrationSessions(sessions, devices) {
     return `<article class="card calibration-session" data-calibration-id="${session.id}">
       <div class="device-card-header"><h3>${escapeHtml(session.name)}</h3><span class="status">${status}</span></div>
       <p class="device-meta">${escapeHtml(deviceName)} · ${session.sample_count} Samples · ${new Date(session.started_at * 1000).toLocaleString("de-DE")}</p>
+      ${session.sample_limit_reached
+        ? '<p class="status status-warn">Das Aufnahmelimit war erreicht — spätere Messwerte fehlen. ' +
+          'Die Messung wurde abgeschnitten, nicht beendet.</p>'
+        : ""}
       ${recommendationBlock(session)}
       <div class="device-actions">
         <a class="btn-secondary" href="api/calibrations/${session.id}/export.csv" download>CSV exportieren</a>
         <button type="button" class="delete-calibration btn-secondary">Löschen</button>
       </div>
+      <details class="device-section session-replay"${openReplays.has(session.id) ? " open" : ""}>
+        <summary>Vergleich — was andere Fensterlängen entschieden hätten</summary>
+        <div class="device-section-body"><div class="replay-body"></div></div>
+      </details>
     </article>`;
   }).join("") : '<p class="status status-pending">Noch keine Messung aufgezeichnet.</p>';
+
+  for (const section of list.querySelectorAll(".session-replay")) {
+    // On demand: the comparison replays the whole session through five
+    // detectors, and most visits never ask for it.
+    const id = section.closest("[data-calibration-id]").dataset.calibrationId;
+    section.addEventListener("toggle", () => {
+      if (section.open) openReplays.add(id);
+      else openReplays.delete(id);
+      if (section.open) loadReplay(id, section.querySelector(".replay-body"));
+    });
+    // Re-rendered while open: fetch again, because the body it had is gone.
+    if (section.open) loadReplay(id, section.querySelector(".replay-body"));
+  }
 
   for (const button of list.querySelectorAll(".delete-calibration")) {
     button.addEventListener("click", async () => {

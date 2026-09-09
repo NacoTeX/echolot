@@ -22,13 +22,22 @@ ESPHOME_OK = {"available": True, "version": "ESPHome 2026.6.5"}
 MQTT_OK = {"connected": True}
 
 
-def device(name="flur", status=BuildStatus.SUCCESS, ota_error=None):
+def device(name="flur", status=BuildStatus.SUCCESS, ota_error=None, manifest=...):
+    """A device as it looks after a build on the current release.
+
+    `manifest` defaults to one, because "built recently" is the normal
+    case; pass None for a device flashed before 0.13.5, when the fallback
+    access point still had no password.
+    """
     return Device(
         id=name,
         created_at=0,
         updated_at=0,
         status=status,
         ota_error=ota_error,
+        build_manifest=(
+            {"fallback_ap_secured": True} if manifest is ... else manifest
+        ),
         config=DeviceCreate(
             name=name, friendly_name=f"Gerät {name}", board="esp32c6",
             wifi_ssid="netz", wifi_password="passwort123",
@@ -176,3 +185,75 @@ def test_a_deliberately_chosen_threshold_is_not_second_guessed():
 
 def test_a_device_that_never_reported_a_threshold_is_not_judged():
     assert "threshold_profile_mismatch" not in kinds(collect(_high_accuracy(None)))
+
+
+def test_an_outdated_profile_is_reported_rather_than_ignored():
+    """From the external review (P1 #4).
+
+    A profile written under the old rate definition is refused, so the
+    device silently stops contributing to rate-based presence. Saying
+    nothing would leave its card showing a profile that no longer counts.
+    """
+    from app import presence_rate
+
+    subject = device()
+    subject.presence_profile = {
+        "crossing_threshold": 1e-3,
+        "baseline_rate": 0.084,
+        "window_seconds": 60.0,
+        # no "version": written before the definition changed
+    }
+    assert presence_rate.profile_outdated(subject.presence_profile) is True
+
+    problems = collect(
+        device_states=[(subject, {"available": True, "motion": False})]
+    )
+    assert "profile_outdated" in kinds(problems)
+
+
+def test_a_current_profile_is_not_reported():
+    from app import presence_rate
+
+    subject = device()
+    subject.presence_profile = {
+        "crossing_threshold": 1e-3,
+        "baseline_rate": 0.084,
+        "window_seconds": 60.0,
+        "version": presence_rate.PROFILE_VERSION,
+    }
+    problems = collect(
+        device_states=[(subject, {"available": True, "motion": False})]
+    )
+    assert "profile_outdated" not in kinds(problems)
+
+
+def test_a_device_without_a_profile_is_not_reported():
+    """Most devices have none, and "you have not calibrated" is not a
+    fault — it would train people to ignore the list."""
+    problems = collect(
+        device_states=[(device(), {"available": True, "motion": False})]
+    )
+    assert "profile_outdated" not in kinds(problems)
+
+
+def test_a_device_flashed_before_the_fallback_had_a_password_is_reported():
+    """From the external review (P2). Generating a password changes
+    nothing on hardware that is already flashed, so the migration has to
+    be asked for rather than assumed."""
+    problems = collect(
+        device_states=[(device(manifest=None), {"available": True, "motion": False})]
+    )
+    assert "fallback_ap_open" in kinds(problems)
+
+
+def test_a_freshly_built_device_is_not_reported():
+    problems = collect(
+        device_states=[(device(), {"available": True, "motion": False})]
+    )
+    assert "fallback_ap_open" not in kinds(problems)
+
+
+def test_an_unbuilt_device_is_not_asked_to_rebuild_for_the_access_point():
+    """There is no firmware on it to be open."""
+    problems = collect(device_states=[(device(status=BuildStatus.IDLE), None)])
+    assert "fallback_ap_open" not in kinds(problems)

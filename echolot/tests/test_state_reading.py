@@ -174,3 +174,63 @@ def test_a_wrong_entity_id_is_still_relearned(monkeypatch, no_persistence):
 
     assert device.entity_motion == "binary_sensor.flur_motion_detected"
     assert result["occupied"] is True
+
+
+# --- Regressions from the external review (P1 #1) ----------------------
+#
+# Reading a state and having a reading are different things. Until 0.13.5
+# `_read_device_state` wrote `motion["state"] == "on"`, so every value
+# that is not "on" — including the two Home Assistant uses for "I have no
+# value" — became "no motion" on an entity marked available. A device that
+# had fallen off the network therefore published a confidently empty room
+# as soon as the zone's hold time expired.
+
+
+@pytest.mark.parametrize("reported", ["unavailable", "unknown", "", "None"])
+def test_a_sensor_without_a_reading_is_not_available(monkeypatch, no_persistence, reported):
+    device = make_device()
+
+    async def fake_get(entity_id):
+        return {"entity_id": entity_id, "state": reported}
+
+    monkeypatch.setattr(ha_client, "get_state", fake_get)
+    state = asyncio.run(main._read_device_state(device, allow_detect=False))
+
+    assert state["available"] is False
+    assert "motion" not in state or state["motion"] is None
+    assert device.entity_motion in state["error"]
+
+
+def test_a_real_off_is_still_a_real_answer(monkeypatch, no_persistence):
+    """The fix must not turn every quiet room into an outage."""
+    device = make_device()
+
+    async def fake_get(entity_id):
+        if entity_id == device.entity_motion:
+            return {"entity_id": entity_id, "state": "off"}
+        return {"entity_id": entity_id, "state": "0.4"}
+
+    monkeypatch.setattr(ha_client, "get_state", fake_get)
+    state = asyncio.run(main._read_device_state(device, allow_detect=False))
+
+    assert state["available"] is True
+    assert state["motion"] is False
+    assert state["movement_score"] == 0.4
+
+
+@pytest.mark.parametrize("broken", ["nan", "inf", "-inf"])
+def test_a_non_finite_score_is_no_score(monkeypatch, no_persistence, broken):
+    """float() accepts these and every later comparison then says False,
+    so a broken number would read as a quiet room rather than as noise."""
+    device = make_device()
+
+    async def fake_get(entity_id):
+        if entity_id == device.entity_motion:
+            return {"entity_id": entity_id, "state": "off"}
+        return {"entity_id": entity_id, "state": broken}
+
+    monkeypatch.setattr(ha_client, "get_state", fake_get)
+    state = asyncio.run(main._read_device_state(device, allow_detect=False))
+
+    assert state["available"] is True
+    assert state["movement_score"] is None

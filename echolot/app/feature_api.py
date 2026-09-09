@@ -20,6 +20,7 @@ from app import (
     history_import,
     live_presence,
     presence_rate,
+    replay,
     telemetry,
     zones,
 )
@@ -118,7 +119,22 @@ def create_calibration(payload: dict) -> dict:
         session = calibration.store.create(device_id, name)
     except ValueError as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
-    sampler.start(device)
+
+    # A session with no sampler behind it looks live and collects nothing,
+    # which is the exact failure a ground-truth recording exists to rule
+    # out. Three sessions were once recorded and exported before anyone
+    # noticed there had never been any data in them, so a start that did
+    # not start is now a refusal rather than a green light.
+    if not sampler.start(device):
+        calibration.store.delete(session["id"])
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Für dieses Gerät läuft gerade kein Live-Abonnement, die "
+                "Aufzeichnung würde nichts aufnehmen. Ist das Gerät in Home "
+                "Assistant verfügbar?"
+            ),
+        )
     return session
 
 
@@ -262,16 +278,48 @@ def calibration_presence_rate(session_id: str) -> dict:
 
     labels = {}
     for label, rows in by_label.items():
-        windows = presence_rate._split_windows(rows, profile.window_seconds)
-        verdicts = [presence_rate.evaluate(profile, window) for window in windows]
+        windows = presence_rate.split_windows(rows, profile.window_seconds)
+        verdicts = [presence_rate.evaluate(profile, w.samples, window=w) for w in windows]
         judged = [v for v in verdicts if v["available"]]
         labels[label] = {
             "windows": len(judged),
+            # Windows that elapsed but had no source behind them, or never
+            # elapsed at all. Reported rather than dropped: a label whose
+            # windows are mostly unusable is a fact about the recording.
+            "unusable_windows": len(verdicts) - len(judged),
             "occupied_windows": sum(1 for v in judged if v["occupied"]),
             "detail": judged,
         }
 
     return {"profile": profile.as_dict(), "labels": labels}
+
+
+@router.get("/api/calibrations/{session_id}/replay")
+def replay_calibration(session_id: str, baseline: str | None = None) -> dict:
+    """Replay a session through several detectors and compare them.
+
+    Read-only: it touches no zone runtime, no device profile and not the
+    live evaluator, so asking cannot change what the lights do. That is
+    the point — the review asks for new algorithms to be measured before
+    they are wired to anything.
+
+    `baseline` names another session to learn the empty-room rate from.
+    Without it the rate is learned from the material being judged, which
+    measures itself; the response says so rather than leaving the reader
+    to notice.
+    """
+    samples = calibration.store.samples(session_id)
+    if samples is None:
+        raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
+
+    baseline_samples = None
+    if baseline:
+        baseline_samples = calibration.store.samples(baseline)
+        if baseline_samples is None:
+            raise HTTPException(
+                status_code=404, detail="Die Maßstab-Sitzung gibt es nicht"
+            )
+    return replay.compare(samples, baseline_samples=baseline_samples)
 
 
 @router.post("/api/calibrations/{session_id}/apply")

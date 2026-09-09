@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import unicodedata
+from pathlib import Path
 
 import httpx
 import paho.mqtt.client as mqtt
@@ -36,6 +37,37 @@ DEVICE_INFO = {
     "manufacturer": "Echolot",
     "model": "Wi-Fi CSI presence",
 }
+
+
+#: What Home Assistant has been told about, kept across restarts.
+#:
+#: The publisher used to hold this in memory only, so a zone deleted while
+#: the add-on was stopped was never un-announced: its retained discovery
+#: message stayed on the broker and the entity haunted Home Assistant
+#: until someone cleared the topic by hand. On the next start the zone is
+#: simply not in the list any more, and nothing in memory remembered that
+#: it ever had been.
+def _announced_path() -> Path:
+    return Path(os.environ.get("ECHOLOT_DATA_DIR", "/data")) / "mqtt_announced.json"
+
+
+def load_announced() -> set[str]:
+    try:
+        return set(json.loads(_announced_path().read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def remember_announced(zone_ids: set[str]) -> None:
+    try:
+        path = _announced_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(sorted(zone_ids)), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        # Losing this costs a ghost entity, not a broken export.
+        logger.warning("Angekündigte Zonen konnten nicht gespeichert werden")
 
 
 class MqttUnavailable(Exception):
@@ -60,6 +92,16 @@ def zone_state_topic(zone_id: str) -> str:
 
 def zone_discovery_topic(zone_id: str) -> str:
     return f"{DISCOVERY_PREFIX}/binary_sensor/{BASE_TOPIC}/zone_{zone_id}/config"
+
+
+def zone_availability_topic(zone_id: str) -> str:
+    """Whether *this zone* currently has a measurement behind it.
+
+    Separate from the add-on's own LWT, because the two failures are
+    different: the add-on being gone, and the add-on running fine while
+    one room's sensor has dropped off the network.
+    """
+    return f"{BASE_TOPIC}/zone/{zone_id}/availability"
 
 
 def slugify(name: str) -> str:
@@ -88,9 +130,26 @@ def zone_discovery_payload(zone_id: str, zone_name: str) -> dict:
         "device_class": "occupancy",
         "payload_on": "ON",
         "payload_off": "OFF",
-        "availability_topic": AVAILABILITY_TOPIC,
-        "payload_available": "online",
-        "payload_not_available": "offline",
+        # Two availability sources, both of which must say online.
+        #
+        # With only the add-on's LWT, a zone whose devices had fallen off
+        # the network published nothing at all — so Home Assistant kept
+        # the last ON/OFF it had seen, indefinitely, while the add-on
+        # itself stayed cheerfully "online". A stale "clear" is worse than
+        # no answer: an automation cannot tell it from a real one.
+        "availability": [
+            {
+                "topic": AVAILABILITY_TOPIC,
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+            {
+                "topic": zone_availability_topic(zone_id),
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+        ],
+        "availability_mode": "all",
         "device": DEVICE_INFO,
     }
 
@@ -123,7 +182,10 @@ class ZoneBridge:
     def __init__(self) -> None:
         self._client: mqtt.Client | None = None
         self._lock = threading.Lock()
-        self._announced: set[str] = set()
+        #: zone id -> the name last announced under it. A set was not
+        #: enough: renaming a zone changes the discovery payload, and
+        #: without noticing, Home Assistant kept the old name forever.
+        self._announced: dict[str, str] = {}
         self.connected = False
         self.error: str | None = None
 
@@ -200,9 +262,12 @@ class ZoneBridge:
             return
 
         with self._lock:
-            first_time = zone_id not in self._announced
+            # Renaming counts as new: the name and object_id live in the
+            # discovery payload, so an unchanged one leaves Home Assistant
+            # showing the old name for the rest of time.
+            needs_discovery = self._announced.get(zone_id) != zone_name
 
-        if first_time:
+        if needs_discovery:
             # Only remember the announcement once the broker has taken it;
             # a rejected discovery message that we recorded as sent would
             # never be retried.
@@ -212,10 +277,15 @@ class ZoneBridge:
             ):
                 return
             with self._lock:
-                self._announced.add(zone_id)
+                self._announced[zone_id] = zone_name
+            remember_announced(set(self._announced))
 
-        # An unreachable zone publishes nothing, so Home Assistant keeps the
-        # last value rather than reporting a confident "clear".
+        # Say whether this zone has a measurement at all, then — only if
+        # it does — what that measurement is. An unavailable zone stops
+        # publishing state on purpose: Home Assistant marks the entity
+        # unavailable from the topic above rather than holding the last
+        # value as though it were current.
+        self._publish(zone_availability_topic(zone_id), "online" if available else "offline")
         if available:
             self._publish(zone_state_topic(zone_id), "ON" if occupied else "OFF")
 
@@ -225,8 +295,10 @@ class ZoneBridge:
             return
         self._publish(zone_discovery_topic(zone_id), "")
         self._publish(zone_state_topic(zone_id), "")
+        self._publish(zone_availability_topic(zone_id), "")
         with self._lock:
-            self._announced.discard(zone_id)
+            self._announced.pop(zone_id, None)
+        remember_announced(set(self._announced))
 
     def status(self) -> dict:
         if self.connected:
@@ -237,14 +309,32 @@ class ZoneBridge:
 bridge = ZoneBridge()
 
 
-async def publish_loop(compute_all_zone_states, list_zones, on_zone_gone=None, interval: float = 10.0) -> None:
-    """Mirror zone state to MQTT on a timer, independent of the UI.
+async def publish_loop(
+    compute_all_zone_states,
+    list_zones,
+    on_zone_gone=None,
+    interval: float = 10.0,
+    wakeup: "asyncio.Event | None" = None,
+) -> None:
+    """Mirror zone state to MQTT, independent of the UI.
 
     A zone can also disappear because someone edited zones.json by hand,
     which never goes through the delete route — hence `on_zone_gone`, so
     the caller can drop the zone's hold-time state alongside the entity.
+
+    `wakeup` makes this event-driven with the timer as a floor rather than
+    as the only clock. On a pure timer a movement that arrives just after
+    a tick waits most of `interval` before Home Assistant hears about it,
+    and a short pulse between two ticks can be missed entirely — the
+    device reacts in a second and the export then adds ten. The live
+    subscriptions already receive Home Assistant's state changes as they
+    happen, so setting the event publishes immediately. The timer stays
+    for hold times expiring, for zones added or removed, and as the
+    fallback whenever nothing is listening.
     """
-    known: set[str] = set()
+    # Seeded from disk, so a zone deleted while the add-on was stopped is
+    # un-announced on the next start instead of haunting Home Assistant.
+    known: set[str] = load_announced()
     while True:
         try:
             zones = list_zones()
@@ -265,4 +355,14 @@ async def publish_loop(compute_all_zone_states, list_zones, on_zone_gone=None, i
             raise
         except Exception:  # noqa: BLE001 - a bad cycle must not kill the loop
             logger.exception("MQTT publish cycle failed")
-        await asyncio.sleep(interval)
+
+        if wakeup is None:
+            await asyncio.sleep(interval)
+            continue
+        try:
+            await asyncio.wait_for(wakeup.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+        # Cleared after the wait rather than before the next cycle, so a
+        # change arriving while a cycle is still running is not lost.
+        wakeup.clear()

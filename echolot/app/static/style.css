@@ -905,6 +905,77 @@ button:disabled {
 .device-section > summary:hover { color: var(--text); }
 .device-section-body { padding: 0 0 1rem; }
 
+/* ---------- Replay comparison ---------- */
+
+/* Wide content scrolls inside its own box; the page never does. */
+.table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.replay-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.replay-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0.4rem 0.8rem 0.4rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.replay-table td {
+  padding: 0.4rem 0.8rem 0.4rem 0;
+  border-bottom: 1px solid var(--hairline);
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-table tr:last-child td { border-bottom: none; }
+.replay-reference td { font-weight: 600; }
+.replay-unavailable td { color: var(--muted); white-space: normal; }
+
+/* ---------- Zone timeline ---------- */
+
+.timeline-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.87rem;
+}
+
+.timeline-list li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.timeline-list li:last-child { border-bottom: none; }
+
+.timeline-when {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.timeline-what { flex: 1 1 auto; min-width: 0; }
+
+.timeline-who {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 620px) {
+  .timeline-list li { flex-wrap: wrap; gap: 0.3rem 0.6rem; }
+  .timeline-what { flex: 1 1 100%; }
+}
+
 .device-card-header {
   display: flex;
   justify-content: space-between;
@@ -1433,7 +1504,9 @@ esp-web-install-button { display: inline-flex; }
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
-  margin-top: 0.55rem;
+  /* Bottom margin as well as top: the actions row follows directly, and
+     with only a top margin the chips sat on the buttons. */
+  margin: 0.55rem 0 0.9rem;
 }
 
 .chip-quiet {

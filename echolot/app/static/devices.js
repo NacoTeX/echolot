@@ -230,6 +230,11 @@ function renderDevice(device, deviceCount) {
              <code class="api-key">— aufklappen zum Anzeigen —</code>
              <button type="button" class="copy-key-btn btn-secondary">Kopieren</button>
            </div>
+           <p class="hint">
+             Notfall-WLAN <code>${escapeHtml(device.config.name)} Fallback</code> —
+             das Gerät öffnet es, wenn es dein WLAN nicht erreicht.
+             Passwort: <code class="fallback-password">— aufklappen zum Anzeigen —</code>
+           </p>
          </div>`)
       + section("HA-Entity-IDs", `
          <div class="entity-editor">
@@ -371,6 +376,11 @@ async function revealKey(id, card) {
     }
     target.textContent = body.api_encryption_key;
     target.dataset.loaded = "1";
+    // The fallback access point's password lives in the same section:
+    // it is needed at exactly the moment the device is unreachable, so
+    // it has to be readable before that happens.
+    const fallback = card.querySelector(".fallback-password");
+    if (fallback) fallback.textContent = body.fallback_password || "—";
   } catch (err) {
     target.textContent = "Backend nicht erreichbar";
   }

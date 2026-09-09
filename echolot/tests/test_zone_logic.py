@@ -137,7 +137,7 @@ def test_the_result_is_a_typed_value_not_a_bag_of_keys():
     # The JSON shape the API publishes has to stay the same.
     assert set(result.as_dict()) == {
         "state", "occupied", "hold_remaining", "raw_motion", "score",
-        "rate_occupied",
+        "rate_occupied", "trigger",
     }
 
 
@@ -198,3 +198,72 @@ def test_a_rate_that_falls_away_starts_the_hold_like_motion_would():
     )
     assert result.state == HOLDING
     assert result.occupied is True
+
+
+# --- Regressions from the external review (P1 #3) ----------------------
+
+
+def test_the_rate_does_not_latch_the_motion_hysteresis():
+    """0.13.2 wrote the combined motion-or-rate result into `runtime.raw`.
+
+    `runtime.raw` is the *motion* hysteresis memory: with a score between
+    the exit and enter thresholds, `_raw_decision` returns whatever it
+    said last time. So one minute of elevated rate latched the motion
+    path on, and the zone stayed occupied for as long as the score sat in
+    the band — long after the rate had dropped.
+    """
+    runtime = ZoneRuntime()
+    common = dict(
+        motion=False, score=0.5, enter_threshold=0.8, exit_threshold=0.2,
+        hold_seconds=0.0,
+    )
+    first = evaluate(runtime, now=100.0, rate_occupied=True, **common)
+    assert first.occupied is True
+
+    second = evaluate(runtime, now=101.0, rate_occupied=False, **common)
+    assert second.occupied is False, "die Rate hat die Bewegungs-Hysterese eingerastet"
+
+
+def test_raw_motion_means_motion_and_not_the_rate():
+    """Otherwise the state reports movement that never happened."""
+    runtime = ZoneRuntime()
+    result = evaluate(
+        runtime, motion=False, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0.0, now=1.0, rate_occupied=True,
+    )
+    assert result.occupied is True
+    assert result.raw_motion is False
+    assert result.trigger == "rate"
+
+
+def test_the_trigger_names_motion_when_motion_is_what_fired():
+    runtime = ZoneRuntime()
+    result = evaluate(
+        runtime, motion=True, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0.0, now=1.0, rate_occupied=True,
+    )
+    assert result.trigger == "motion"
+
+
+def test_nothing_holding_the_zone_has_no_trigger():
+    runtime = ZoneRuntime()
+    result = evaluate(
+        runtime, motion=False, score=None, enter_threshold=None,
+        exit_threshold=None, hold_seconds=0.0, now=1.0, rate_occupied=False,
+    )
+    assert result.trigger is None
+
+
+def test_the_motion_hysteresis_still_works_on_its_own():
+    """The band behaviour the memory exists for must survive the fix."""
+    runtime = ZoneRuntime()
+    common = dict(
+        motion=False, enter_threshold=0.8, exit_threshold=0.2, hold_seconds=0.0,
+    )
+    assert evaluate(runtime, score=0.9, now=1.0, **common).occupied is True
+    # In the band: unchanged, so still occupied.
+    assert evaluate(runtime, score=0.5, now=2.0, **common).occupied is True
+    # Below the exit threshold: off.
+    assert evaluate(runtime, score=0.1, now=3.0, **common).occupied is False
+    # Back into the band from below: stays off.
+    assert evaluate(runtime, score=0.5, now=4.0, **common).occupied is False

@@ -49,11 +49,18 @@ class ZoneEvaluation:
     state: str
     occupied: bool
     hold_remaining: float
+    #: The motion path's own verdict, before hold time and *without* the
+    #: crossing rate folded in — otherwise a rate-only detection would
+    #: report movement that never happened.
     raw_motion: bool
     score: float | None
     #: True when the crossing rate said so, False when it said otherwise,
     #: None when no device in the zone has a baseline to judge against.
     rate_occupied: bool | None = None
+    #: Which source is holding the zone occupied right now, so a person
+    #: reading the state can tell "somebody moved" from "somebody is
+    #: probably still sitting there". None when nothing is.
+    trigger: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -116,17 +123,27 @@ def evaluate(
     # feature rather than fail.
     hold_seconds = max(0.0, hold_seconds)
 
-    raw = _raw_decision(runtime, motion, score, enter_threshold, exit_threshold)
-    # A second, slower opinion: how often this room crossed in the last
-    # minute compared with what it does empty (see app/presence_rate.py).
-    # Measured on real hardware, someone sitting still crosses on the order
-    # of ten times as often as an empty room does — but only over a window,
-    # never in a single reading, which is why it cannot replace `motion`
-    # and only ever adds to it. Motion switches on in a second; the rate
-    # keeps the zone on while somebody sits there not moving.
-    if rate_occupied:
-        raw = True
-    runtime.raw = raw
+    # Two decisions, kept apart on purpose.
+    #
+    # `runtime.raw` is the *motion* hysteresis memory: between the enter
+    # and exit thresholds `_raw_decision` returns whatever it said last
+    # time. 0.13.2 wrote the combined motion-or-rate result back into that
+    # memory, so a single minute of elevated rate latched the motion path
+    # on: with a score sitting in the band, every later tick read True out
+    # of the memory and stayed occupied even after the rate had dropped.
+    # Only motion may write the motion memory.
+    motion_active = _raw_decision(runtime, motion, score, enter_threshold, exit_threshold)
+    runtime.raw = motion_active
+
+    # The rate is the second, slower opinion: how often this room crossed
+    # in the last minute compared with what it does empty (see
+    # app/presence_rate.py). Measured on real hardware, someone sitting
+    # still crosses on the order of ten times as often as an empty room
+    # does — but only over a window, never in a single reading, which is
+    # why it cannot replace `motion` and only ever adds to it. Motion
+    # switches on in a second; the rate keeps the zone on while somebody
+    # sits there not moving.
+    raw = motion_active or bool(rate_occupied)
 
     if raw:
         runtime.state = DETECTED
@@ -146,7 +163,8 @@ def evaluate(
         state=runtime.state,
         occupied=runtime.state in (DETECTED, HOLDING),
         hold_remaining=round(remaining, 1),
-        raw_motion=raw,
+        raw_motion=motion_active,
         score=score,
         rate_occupied=rate_occupied,
+        trigger=("motion" if motion_active else "rate" if raw else None),
     )

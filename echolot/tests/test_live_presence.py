@@ -217,3 +217,212 @@ def test_stopping_everything_closes_every_stream():
     live.stop_all()
     assert live.statuses() == {}
     assert all(instance.stopped for instance in FakeSubscription.instances)
+
+
+# --- Regressions from the external review (P1 #5) ----------------------
+
+
+def test_a_corrected_entity_id_rebuilds_the_subscription():
+    """Until 0.13.5 `reconcile` matched on the device id alone.
+
+    Correcting an entity id — by hand or through the automatic lookup —
+    therefore repaired the stored value while the running subscription
+    stayed on the old entity: the device page said it was fixed and no
+    readings ever arrived. The automatic lookup made it worse, because it
+    fires exactly when the ids are wrong.
+    """
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    first = live.stream(device.id)
+    assert "sensor.probe_movement_score" in first._subscription.entity_ids
+
+    device.entity_movement_score = "sensor.wohnzimmer_movement_score"
+    live.reconcile([device])
+    second = live.stream(device.id)
+
+    assert second is not first, "das Abonnement blieb auf der alten Entity"
+    assert "sensor.wohnzimmer_movement_score" in second._subscription.entity_ids
+    assert first.connected is False, "das alte Abonnement läuft weiter"
+    live.stop_all()
+
+
+def test_an_unchanged_device_keeps_its_stream_and_its_history():
+    """Rebuilding on every pass would throw the rolling window away every
+    thirty seconds, and the rate has nothing left to measure."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    first = live.stream(device.id)
+    live.reconcile([device])
+    assert live.stream(device.id) is first
+    live.stop_all()
+
+
+def test_a_recording_survives_the_entity_correction():
+    """Its listener moves to the new stream. Detaching it silently would
+    leave a session that looks live and collects nothing."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+
+    got = []
+    live.stream(device.id).add_listener(lambda device_id, sample: got.append(sample))
+
+    device.entity_movement_score = "sensor.wohnzimmer_movement_score"
+    live.reconcile([device])
+
+    live.stream(device.id)._subscription.on_state(
+        "sensor.wohnzimmer_movement_score",
+        {"state": "0.5", "last_updated": "2026-09-08T12:00:00+00:00"},
+    )
+    assert len(got) == 1, "die laufende Aufzeichnung hat ihren Zuhörer verloren"
+    live.stop_all()
+
+
+# --- Regressions from the external review (P1 #6) ----------------------
+
+
+def score_event(value, when):
+    return {"state": str(value), "last_updated": when}
+
+
+def epoch(when: str) -> float:
+    """The stamp as the stream stores it — computed, not written out, so
+    the test does not depend on a hand-copied epoch number."""
+    from datetime import datetime
+
+    return datetime.fromisoformat(when).timestamp()
+
+
+def test_a_motion_flip_does_not_re_count_the_score():
+    """One score reading plus a motion change is one measurement.
+
+    Until 0.13.5 the motion event built a sample from the cached score,
+    carrying that score's own older timestamp — so the same number landed
+    in the window twice at the same instant. The crossing count went up
+    while the observed span did not, which inflates a rate measured per
+    second of wall time.
+    """
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    stream._subscription.on_state(
+        device.entity_movement_score, score_event(0.42, "2026-09-08T12:00:00+00:00")
+    )
+    stream._subscription.on_state(
+        device.entity_motion,
+        {"state": "on", "last_updated": "2026-09-08T12:00:00.500000+00:00"},
+    )
+
+    window = stream.window(60.0, now=epoch("2026-09-08T12:00:00+00:00") + 30)
+    assert len(window) == 1, "die Bewegungsmeldung hat den Messwert doppelt gezählt"
+    live.stop_all()
+
+
+def test_motion_still_reaches_the_reading_that_follows_it():
+    """Dropping motion as a measurement must not drop it as context."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    stream._subscription.on_state(
+        device.entity_motion, {"state": "on", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    stream._subscription.on_state(
+        device.entity_movement_score, score_event(0.42, "2026-09-08T12:00:01+00:00")
+    )
+    rows = stream.window(60.0, now=epoch("2026-09-08T12:00:01+00:00") + 5)
+    assert [row["motion"] for row in rows] == [True]
+    live.stop_all()
+
+
+def test_the_same_instant_delivered_twice_is_one_reading():
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    event = score_event(0.42, "2026-09-08T12:00:00+00:00")
+    stream._subscription.on_state(device.entity_movement_score, event)
+    stream._subscription.on_state(device.entity_movement_score, dict(event))
+    assert len(stream.window(60.0, now=epoch("2026-09-08T12:00:00+00:00") + 5)) == 1
+    live.stop_all()
+
+
+def test_the_same_value_at_a_new_instant_is_a_new_reading():
+    """A room that keeps reporting 0.0 is reporting, and a rate per second
+    of wall time depends on knowing that."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    stream._subscription.on_state(
+        device.entity_movement_score, score_event(0.0, "2026-09-08T12:00:00+00:00")
+    )
+    stream._subscription.on_state(
+        device.entity_movement_score, score_event(0.0, "2026-09-08T12:00:01+00:00")
+    )
+    assert len(stream.window(60.0, now=epoch("2026-09-08T12:00:01+00:00") + 5)) == 2
+    live.stop_all()
+
+
+def test_a_late_reading_is_not_appended_out_of_order():
+    """`_trim` and `window` both assume the buffer is sorted."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    stream._subscription.on_state(
+        device.entity_movement_score, score_event(0.4, "2026-09-08T12:00:05+00:00")
+    )
+    stream._subscription.on_state(
+        device.entity_movement_score, score_event(0.9, "2026-09-08T12:00:01+00:00")
+    )
+    rows = stream.window(60.0, now=epoch("2026-09-08T12:00:05+00:00") + 5)
+    assert [row["t"] for row in rows] == sorted(row["t"] for row in rows)
+    assert len(rows) == 1
+    live.stop_all()
+
+
+def test_live_and_the_recorder_import_count_the_same_thing():
+    """The point of the fix: a profile learned from history has to judge
+    live data that was counted the same way."""
+    from app import history_import, presence_rate
+
+    events = [
+        score_event(0.5 if index % 3 == 0 else 0.0, f"2026-09-08T12:00:{index:02d}+00:00")
+        for index in range(40)
+    ]
+
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+    for index, event in enumerate(events):
+        stream._subscription.on_state(device.entity_movement_score, event)
+        if index % 5 == 0:                      # motion flips along the way
+            stream._subscription.on_state(
+                device.entity_motion,
+                {"state": "on" if index % 10 == 0 else "off",
+                 "last_updated": event["last_updated"]},
+            )
+    live_rows = stream.window(120.0, now=epoch("2026-09-08T12:00:39+00:00") + 1)
+    live.stop_all()
+
+    imported = [
+        {**sample.as_dict()}
+        for sample in history_import.merge(
+            [{"state": e["state"], "last_changed": e["last_updated"]} for e in events], [], []
+        )
+    ]
+
+    assert len(live_rows) == len(imported)
+    assert presence_rate.event_rate(live_rows, 1e-3) == presence_rate.event_rate(
+        imported, 1e-3
+    )

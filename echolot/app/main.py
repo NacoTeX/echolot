@@ -12,6 +12,7 @@ these as HA entities already, so no direct device protocol is needed.
 
 import asyncio
 import logging
+import math
 import os
 import subprocess
 import time
@@ -34,6 +35,7 @@ from app import (
     overview,
     presets,
     reachability,
+    timeline,
     zone_logic,
     zones,
 )
@@ -57,16 +59,7 @@ async def lifespan(_app: FastAPI):
     if os.environ.get("ECHOLOT_MQTT_EXPORT", "true").lower() in ("0", "false", "no"):
         logger.info("MQTT export disabled by configuration")
     else:
-        try:
-            await mqtt_bridge.bridge.start()
-            task = asyncio.create_task(
-                mqtt_bridge.publish_loop(compute_all_zone_states, zones.list_zones, forget_zone_runtime)
-            )
-        except mqtt_bridge.MqttUnavailable as err:
-            # Entirely normal without the Mosquitto add-on; everything else
-            # keeps working, the zones just stay local to this UI.
-            logger.info("MQTT export inactive: %s", err)
-            mqtt_bridge.bridge.error = str(err)
+        task = asyncio.create_task(_run_mqtt_export())
 
     try:
         yield
@@ -79,6 +72,42 @@ async def lifespan(_app: FastAPI):
                 pass
         mqtt_bridge.bridge.stop()
         await ha_client.close_client()
+
+
+#: How long to wait before asking the Supervisor about MQTT again, in
+#: seconds, doubling up to the last value. Starting the add-on before the
+#: broker used to mean no export until the add-on itself was restarted —
+#: a plausible order on a rebooting machine, and an invisible failure.
+MQTT_RETRY_BACKOFF = (10, 30, 60, 300)
+
+
+async def _run_mqtt_export() -> None:
+    """Connect to MQTT and mirror zones, retrying until the broker exists."""
+    from app import feature_api
+
+    attempt = 0
+    while True:
+        try:
+            await mqtt_bridge.bridge.start()
+        except mqtt_bridge.MqttUnavailable as err:
+            # Entirely normal without the Mosquitto add-on; everything else
+            # keeps working, the zones just stay local to this UI. Worth
+            # retrying anyway: the broker may simply not be up yet.
+            delay = MQTT_RETRY_BACKOFF[min(attempt, len(MQTT_RETRY_BACKOFF) - 1)]
+            attempt += 1
+            logger.info("MQTT export inactive: %s — neuer Versuch in %ss", err, delay)
+            mqtt_bridge.bridge.error = str(err)
+            await asyncio.sleep(delay)
+            continue
+
+        # Publish when a reading arrives, not when a timer comes round: the
+        # device reacts in a second and a ten-second export would add ten.
+        wakeup = asyncio.Event()
+        feature_api.live.on_any_change(lambda *_: wakeup.set())
+        await mqtt_bridge.publish_loop(
+            compute_all_zone_states, zones.list_zones, forget_zone_runtime, wakeup=wakeup
+        )
+        return
 
 
 app = FastAPI(title="Echolot", lifespan=lifespan)
@@ -99,9 +128,36 @@ def _validation_detail(err: ValidationError) -> list[dict]:
 
 def _safe_float(value) -> float | None:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    # NaN and the infinities survive float() but poison every comparison
+    # downstream: NaN >= threshold is False, so a broken sensor would read
+    # as a quiet room rather than as a broken sensor.
+    return number if math.isfinite(number) else None
+
+
+#: What Home Assistant says when it has no reading. Both are states of the
+#: transport, not measurements — `unavailable` means the integration lost
+#: the device, `unknown` that it has never reported one.
+NO_READING = ("unavailable", "unknown", "none", "")
+
+
+def _binary_state(state) -> bool | None:
+    """A binary_sensor's reading, or None when it has not got one.
+
+    Only `on` and `off` are readings. Until 0.13.5 this was written as
+    `state["state"] == "on"`, which quietly turned `unavailable` into
+    "no motion" — so a device that had fallen off the network published a
+    confidently empty room once the hold time ran out. Every other value
+    is the absence of a measurement and has to be reported as such.
+    """
+    if not isinstance(state, dict):
+        return None
+    raw = state.get("state")
+    if raw in ("on", "off"):
+        return raw == "on"
+    return None
 
 
 def _parse_ts(value) -> float | None:
@@ -200,9 +256,28 @@ async def _read_device_state(device: devices.Device, allow_detect: bool = True) 
                 "Einrichtung anbieten."
             ),
         }
+    detected = _binary_state(motion)
+    if detected is None:
+        # The entity exists but is not reporting. That is a transport
+        # failure, and the honest answer is "no measurement" — not "no
+        # motion". A movement score without a working motion sensor is
+        # deliberately not treated as partial evidence: the zone machine
+        # falls back to the motion boolean whenever no threshold is
+        # configured, so admitting a half-available device would put that
+        # fallback on a value that is not there.
+        reported = motion.get("state") if isinstance(motion, dict) else None
+        return {
+            "available": False,
+            "error": (
+                f"Entity {device.entity_motion} meldet „{reported}“ statt on/off. "
+                "Home Assistant hat für dieses Gerät gerade keinen Messwert — "
+                "ist es im Netz erreichbar?"
+            ),
+        }
+
     return {
         "available": True,
-        "motion": motion["state"] == "on",
+        "motion": detected,
         "movement_score": _safe_float(score["state"]) if score else None,
         "threshold": _safe_float(threshold["state"]) if threshold else None,
     }
@@ -213,9 +288,83 @@ async def _read_device_state(device: devices.Device, allow_detect: bool = True) 
 #: deleted zone should not keep its hold running if the id is reused.
 _zone_runtimes: dict[str, zone_logic.ZoneRuntime] = {}
 
+#: The floor between two evaluation rounds.
+#:
+#: Zone state has exactly one owner now. `compute_zone_state` mutates the
+#: zone's runtime — the motion hysteresis memory and the hold deadline —
+#: and re-reads every member from Home Assistant, and it used to be called
+#: from three places: the dashboard's poll, the overview, and the MQTT
+#: publisher. Making the publisher event-driven earlier in this same
+#: release made that worse rather than better: a reading arriving three
+#: times a second became three full rounds of Home Assistant requests a
+#: second, on top of whatever the open dashboard was already asking for.
+#:
+#: Half a second is below what anyone notices in a room and far above the
+#: rate at which readings arrive in bursts.
+MIN_EVALUATION_INTERVAL = 0.5
+
+
+class ZoneEvaluator:
+    """Owns the zone runtimes, and the latest answer for each zone."""
+
+    def __init__(self) -> None:
+        self._snapshots: dict[str, dict] = {}
+        self._last_run = 0.0
+        self._lock = asyncio.Lock()
+
+    def forget(self, zone_id: str) -> None:
+        _zone_runtimes.pop(zone_id, None)
+        self._snapshots.pop(zone_id, None)
+        timeline.timeline.forget(zone_id)
+
+    def snapshot(self, zone_id: str) -> dict | None:
+        return self._snapshots.get(zone_id)
+
+    async def refresh(self, zone_list: list, *, force: bool = False) -> list[tuple]:
+        """Evaluate every zone, or hand back the last answer if it is fresh.
+
+        `force` is for a caller that has nothing to fall back on — a
+        request for a zone that has never been evaluated.
+        """
+        async with self._lock:
+            now = time.monotonic()
+            stale = force or (now - self._last_run) >= MIN_EVALUATION_INTERVAL
+            if stale:
+                states = await asyncio.gather(
+                    *(compute_zone_state(zone) for zone in zone_list)
+                )
+                self._last_run = now
+                # Updated, not replaced: a single-zone refresh must not
+                # throw away every other zone's answer.
+                self._snapshots.update(
+                    {zone.id: state for zone, state in zip(zone_list, states)}
+                )
+                # The one place that sees every transition, so the one
+                # place that can write down why it happened.
+                for zone, state in zip(zone_list, states):
+                    timeline.timeline.record(zone.id, zone.name, state)
+            return [
+                (zone, self._snapshots.get(zone.id))
+                for zone in zone_list
+                if self._snapshots.get(zone.id) is not None
+            ]
+
+    async def state_of(self, zone) -> dict:
+        """One zone's state: the snapshot, or an evaluation if there is none.
+
+        A dashboard polling every two seconds therefore costs nothing in
+        Home Assistant requests — it reads what the evaluator already
+        worked out. Only a zone nobody has evaluated yet pays for one.
+        """
+        await self.refresh([zone], force=zone.id not in self._snapshots)
+        return self._snapshots[zone.id]
+
+
+evaluator = ZoneEvaluator()
+
 
 def forget_zone_runtime(zone_id: str) -> None:
-    _zone_runtimes.pop(zone_id, None)
+    evaluator.forget(zone_id)
 
 
 async def _read_devices(device_ids: list[str]) -> list[tuple[str, devices.Device | None, dict]]:
@@ -243,6 +392,73 @@ async def _missing_device_state() -> dict:
     return {"available": False, "motion": None, "error": "Gerät existiert nicht mehr"}
 
 
+#: The crossing rate's own memory, per device.
+#:
+#: `presence_rate.evaluate` has two levels — a higher one to switch on and
+#: a lower one to stay on — and picks between them from `occupied_now`,
+#: which is meant to be *that device's* previous verdict. 0.13.2 passed
+#: the running OR of the zone loop instead, so the first device in every
+#: zone was always judged as if it had just been vacant and the exit level
+#: was never used: a device that had gone quiet but not silent dropped out
+#: immediately, which is the one case the two levels exist for.
+#:
+#: Keyed by device id rather than by zone, so a device in two zones is one
+#: history and the member order cannot change any device's answer.
+_rate_state: dict[str, dict] = {}
+
+
+def _profile_key(profile) -> tuple:
+    """What a verdict's history is only valid for.
+
+    Recalibrating moves the levels, so the state from the old profile
+    describes a different question and is dropped rather than carried.
+    """
+    return (profile.crossing_threshold, profile.baseline_rate, profile.window_seconds)
+
+
+def _device_rate_verdict(device) -> bool | None:
+    """One device's rate verdict, or None when the rate cannot say.
+
+    Memoised on the newest sample in the window: with no new reading the
+    answer cannot have changed, so the two zone-walking call sites and the
+    single-zone route all get one evaluation and one hysteresis step per
+    piece of data — not one per request.
+
+    Imported lazily because app.feature_api imports app.main.
+    """
+    from app import feature_api, presence_rate
+
+    profile = presence_rate.profile_from_dict(device.presence_profile)
+    stream = feature_api.live.stream(device.id)
+    if profile is None or stream is None:
+        _rate_state.pop(device.id, None)
+        return None
+
+    window = stream.window(profile.window_seconds)
+    newest = window[-1].get("t") if window else None
+    key = _profile_key(profile)
+
+    state = _rate_state.get(device.id)
+    if state is not None and state["key"] != key:
+        state = None
+    if state is not None and state["newest"] == newest:
+        return state["verdict"]
+
+    # The memory survives a gap in the data even though the *reported*
+    # verdict does not: a hiccup should not silently re-arm the higher
+    # enter level for someone who is still sitting in the room.
+    previous = bool(state["remembered"]) if state else False
+    result = presence_rate.evaluate(profile, window, occupied_now=previous)
+    verdict = bool(result["occupied"]) if result["available"] else None
+    _rate_state[device.id] = {
+        "key": key,
+        "newest": newest,
+        "verdict": verdict,
+        "remembered": previous if verdict is None else verdict,
+    }
+    return verdict
+
+
 def _zone_rate_verdict(zone) -> bool | None:
     """What the crossing rate says about this zone, or None if it cannot say.
 
@@ -250,27 +466,20 @@ def _zone_rate_verdict(zone) -> bool | None:
     seeing an elevated rate is enough. A device with no learned baseline
     contributes nothing — not a "vacant" vote — so a zone where nobody has
     calibrated behaves exactly as it did before.
-
-    Imported lazily because app.feature_api imports app.main.
     """
-    from app import feature_api, presence_rate
-
     verdict = None
     for device_id in zone.device_ids:
         device = devices.get_device(device_id)
-        if device is None or not device.presence_profile:
+        if device is None:
+            _rate_state.pop(device_id, None)
             continue
-        profile = presence_rate.profile_from_dict(device.presence_profile)
-        stream = feature_api.live.stream(device_id)
-        if profile is None or stream is None:
+        if not device.presence_profile:
+            _rate_state.pop(device_id, None)
             continue
-        window = stream.window(profile.window_seconds)
-        result = presence_rate.evaluate(
-            profile, window, occupied_now=bool(verdict)
-        )
-        if not result["available"]:
+        one = _device_rate_verdict(device)
+        if one is None:
             continue
-        verdict = bool(verdict) or bool(result["occupied"])
+        verdict = bool(verdict) or one
     return verdict
 
 
@@ -321,14 +530,13 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
 
 
 async def compute_all_zone_states(zone_list: list) -> list[tuple]:
-    """Every zone's state, evaluated concurrently.
+    """Every zone's state, through the one evaluator.
 
-    The MQTT loop walks every zone on every tick. Walking them in sequence
-    would add up their latencies; running them together means the whole
-    cycle costs about as long as its slowest zone.
+    Zones are evaluated concurrently inside it: walking them in sequence
+    would add up their latencies, while running them together costs about
+    as long as the slowest zone.
     """
-    states = await asyncio.gather(*(compute_zone_state(zone) for zone in zone_list))
-    return list(zip(zone_list, states))
+    return await evaluator.refresh(zone_list)
 
 
 @app.get("/api/health")
@@ -359,10 +567,16 @@ async def api_overview() -> dict:
     )
     device_states = [(d, built_states.get(d.id)) for d in device_list]
 
-    zone_verdicts = await asyncio.gather(*(compute_zone_state(z) for z in zone_list))
+    # Reads the snapshot rather than evaluating: the overview is a status
+    # report, and a status report should not be advancing the state
+    # machine it is reporting on.
+    zone_verdicts = {
+        zone.id: state for zone, state in await evaluator.refresh(zone_list)
+    }
 
     zone_views = []
-    for zone, verdict in zip(zone_list, zone_verdicts):
+    for zone in zone_list:
+        verdict = zone_verdicts.get(zone.id) or {"available": False, "members": []}
         zone_views.append(
             {
                 "id": zone.id,
@@ -979,7 +1193,32 @@ async def api_zone_state(zone_id: str) -> dict:
     zone = zones.get_zone(zone_id)
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
-    return await compute_zone_state(zone)
+    return await evaluator.state_of(zone)
+
+
+@app.get("/api/zones/{zone_id}/timeline")
+def api_zone_timeline(zone_id: str, limit: int = 50) -> dict:
+    """Why this zone is where it is: its transitions, newest first.
+
+    In memory and bounded — for looking at the last while after something
+    surprised you, not for auditing. It is empty after a restart, and
+    says so rather than pretending the room did nothing.
+    """
+    if zones.get_zone(zone_id) is None:
+        raise HTTPException(status_code=404, detail="Zone nicht gefunden")
+    events = timeline.timeline.events(zone_id, limit=max(1, min(limit, 200)))
+    return {
+        "events": [{**event, "explanation": timeline.explain(event)} for event in events]
+    }
+
+
+@app.get("/api/timeline")
+def api_timeline(limit: int = 50) -> dict:
+    """Every zone's transitions interleaved, newest first."""
+    events = timeline.timeline.all_events(limit=max(1, min(limit, 200)))
+    return {
+        "events": [{**event, "explanation": timeline.explain(event)} for event in events]
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

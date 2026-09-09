@@ -1,5 +1,340 @@
 # Changelog
 
+## 0.13.5
+
+Drei Fehler aus einem externen Code-Review, alle drei in der Kette, die
+entscheidet, ob ein Raum als leer gilt. Zwei davon habe ich in 0.13.2
+selbst eingebaut. Zu jedem Punkt zuerst ein Regressionstest gegen den
+alten Code, dann die minimale Korrektur.
+
+**Ein ausgefallener Sensor galt als „keine Bewegung".** `_read_device_state`
+las `motion["state"] == "on"`. Home Assistant meldet aber `unavailable`,
+wenn die Integration das Gerät verloren hat, und `unknown`, wenn es nie
+einen Wert geliefert hat — beides wurde damit zu `available: True,
+motion: False`. Ein Gerät, das aus dem Netz gefallen war, veröffentlichte
+nach Ablauf der Haltezeit also einen zuversichtlich leeren Raum. Nur `on`
+und `off` sind jetzt Messwerte; alles andere ist das Fehlen einer Messung
+und wird als solches gemeldet. Ein Bewegungswert ohne funktionierenden
+Bewegungssensor gilt bewusst nicht als Teilbeleg: die Zonenlogik fällt
+ohne Schwellwert auf genau diesen Bewegungswert zurück.
+
+Dazu: `NaN` und `inf` überleben `float()`, und jeder spätere Vergleich
+damit ist False — ein kaputter Messwert hätte sich als ruhiger Raum
+gelesen. `_safe_float` verlangt jetzt `math.isfinite`.
+
+**Die Raten-Hysterese hatte kein Gedächtnis.** `presence_rate.evaluate`
+hat zwei Schwellen — eine höhere zum Einschalten, eine niedrigere zum
+Anbleiben — und wählt über `occupied_now`, was der *eigene* Vorzustand
+des Geräts sein soll. Übergeben wurde stattdessen das laufende
+ODER-Ergebnis der Zonenschleife, also war das erste Gerät jeder Zone
+immer „gerade noch leer" und die Ausschaltschwelle kam nie zum Einsatz.
+Genau der Fall, für den die zwei Schwellen existieren — ein Raum, der
+leiser wird, aber nicht still —, fiel sofort heraus. Der Zustand liegt
+jetzt pro Gerät, gemerkt am neuesten Messwert des Fensters: ein Gerät in
+zwei Zonen wird einmal ausgewertet, die Reihenfolge der Mitglieder ändert
+kein Ergebnis, und ein Profilwechsel verwirft die alte Historie. Eine
+Datenlücke meldet weiterhin „unbekannt", setzt aber die Erinnerung nicht
+zurück — wer still sitzt, soll sich nach einem Aussetzer nicht erst wieder
+bewegen müssen.
+
+**Die langsame Erkennung hat die Bewegungs-Hysterese verunreinigt.**
+`runtime.raw` ist das Gedächtnis der *Bewegungs*-Hysterese: zwischen Ein-
+und Ausschaltschwelle liefert `_raw_decision` das, was es zuletzt gesagt
+hat. 0.13.2 schrieb das kombinierte Ergebnis aus Bewegung und Rate dort
+hinein, also rastete eine Minute erhöhter Rate den Bewegungspfad ein: lag
+der Bewegungswert im Zwischenband, blieb die Zone belegt, lange nachdem
+die Rate wieder gefallen war. Nur Bewegung schreibt jetzt dieses
+Gedächtnis. `raw_motion` bezeichnet wieder tatsächlich Bewegung, und ein
+neues Feld `trigger` sagt, welche Quelle die Zone gerade hält
+(`motion`, `rate` oder nichts).
+
+**Nebenbei eine falsche Aussage entfernt.** Die Begründung im Verdikt
+formatierte eine Rate pro Sekunde als Prozentsatz der Messwerte — aus
+12,5/s wurde „1250 % der Messwerte". Richtige Zahl, falscher Satz. Jetzt
+steht dort „Ereignisse/s".
+
+**Eine ausgefallene Zone sah in Home Assistant aus wie vorher.** Die
+Discovery nannte nur die Verfügbarkeit des Add-ons, und `publish_zone`
+schwieg, wenn eine Zone keine Messung hatte — Home Assistant behielt also
+den letzten ON/OFF-Wert, unbegrenzt, während das Add-on selbst munter
+„online" meldete. Ein veralteter „frei"-Wert ist schlimmer als gar keiner:
+eine Automation kann ihn nicht von einem echten unterscheiden. Jede Zone
+hat jetzt ein eigenes Verfügbarkeits-Topic, und die Discovery verlangt
+`availability_mode: all` — Add-on **und** Zone müssen online sein. Die
+`unique_id` bleibt unverändert, bestehende Entities also auch.
+
+**Der Export wartet nicht mehr auf den Timer.** Zehn Sekunden Polling
+hießen: eine Bewegung kurz nach einem Takt wartet fast einen ganzen
+Zyklus, und ein kurzer Impuls zwischen zwei Takten fehlt ganz — das Gerät
+reagiert in einer Sekunde, der Export legte zehn drauf. Die
+Live-Abonnements bekommen die Zustandsänderungen ohnehin, sobald sie
+passieren; sie wecken jetzt den Export. Der Timer bleibt für die zwei
+Dinge ohne Ereignis: eine ablaufende Haltezeit und eine hinzugekommene
+oder entfernte Zone.
+
+**MQTT wird nach einem Fehlstart erneut versucht.** Das Add-on vor dem
+Broker zu starten — eine plausible Reihenfolge beim Hochfahren einer
+Maschine — bedeutete bisher: kein Export, bis das Add-on selbst neu
+gestartet wird. Jetzt mit Backoff bis fünf Minuten.
+
+**Das Live-Abonnement klebte an alten Entity-IDs.** Der Abgleich prüfte
+nur die Geräte-ID. Eine korrigierte Entity-ID — von Hand oder über die
+automatische Suche — reparierte damit den gespeicherten Wert, während das
+laufende Abonnement auf der alten Entity blieb: die Geräteseite meldete
+„behoben", und es kamen weiterhin keine Werte. Die automatische Suche
+machte es schlimmer, weil sie genau dann anspringt, wenn die IDs falsch
+sind. Verglichen wird jetzt ein Fingerabdruck der abonnierten Entities.
+Eine laufende Aufzeichnung verliert ihren Zuhörer dabei nicht — der
+wandert auf das neue Abonnement mit.
+
+**Eine Aufzeichnung ohne Sampler wird abgelehnt statt gestartet.**
+`sampler.start()` liefert False, wenn es kein Live-Abonnement gibt, und
+die Route hat das ignoriert: die Sitzung wurde angelegt, die Oberfläche
+zeigte „läuft", und es wurde nie etwas gesammelt.
+
+**Ein Messwert wurde doppelt gezählt.** Nur der Bewegungswert ist eine
+Messung; Schwelle und Bewegungs-Boolean sagen, was eine Messung bedeutet,
+nicht dass es eine neue gibt. Ein Motion-Ereignis erzeugte aber ebenfalls
+ein Sample — gebaut aus dem *gecachten* Score und mit dessen älterem
+Zeitstempel, weil `build_sample` den Stempel des Scores nimmt, wenn es
+einen hat. Ein Messwert plus eine Bewegungsumschaltung legte dieselbe
+Zahl also zweimal ins Fenster, zum selben Zeitpunkt: die Zahl der
+Überschreitungen stieg, die beobachtete Zeitspanne nicht. Genau das
+verfälscht eine Rate pro Sekunde. Schlimmer noch, Live-Pfad und
+Recorder-Import maßen dadurch verschieden — der Import liest nur die
+Score-Reihe —, ein aus dem Verlauf gelerntes Profil beurteilte also
+anders gezählte Daten. Ein Test hält jetzt fest, dass beide Wege dieselbe
+Rate ergeben.
+
+Dazu eine bewusste Regel gegen doppelt zugestellte Ereignisse: ein
+Messwert wird über den Zeitpunkt identifiziert, mit dem Home Assistant
+ihn gestempelt hat. Derselbe Zeitpunkt zweimal ist eine Messung, die
+zweimal zugestellt wurde — derselbe *Wert* zu einem neuen Zeitpunkt ist
+eine echte zweite Messung und bleibt. Ein älterer Zeitstempel als der
+neueste wird verworfen, weil `_trim` und `window` auf der Reihenfolge
+aufbauen.
+
+**Ein fertiger Build hat zwischenzeitliche Änderungen überschrieben.**
+`run_build` und `run_ota` halten ein Device-Objekt über die Dauer eines
+Compilerlaufs — Minuten — und schrieben es am Ende komplett zurück. Alles,
+was inzwischen geändert wurde, war damit weg: korrigierte Entity-IDs, eine
+Adresse, ein frisch übernommenes Präsenzprofil. Ein während des Builds
+gelöschtes Gerät kam beim Abschluss wieder. Jobs schreiben jetzt nur die
+Felder, die sie selbst erzeugen, unter dem Registry-Lock, und nur solange
+das Gerät noch existiert (`devices.update_device`). Ein Tippfehler im
+Feldnamen wird abgelehnt statt still verworfen.
+
+**Unterbrochene Jobs bleiben nicht auf „wird gebaut…" stehen.** Ein Build
+lebt in einem Hintergrund-Task; nach einem Neustart — meist ein Update —
+gibt es den Task nicht mehr, der Datensatz sagte aber weiterhin „läuft":
+der Knopf blieb deaktiviert und nirgends stand, warum. Beim Start werden
+solche Jobs jetzt als unterbrochen markiert, mit einem Text, der sagt,
+dass man einfach neu starten kann.
+
+**Ein Fenster war „so viele Messwerte, wie zufällig nebeneinander
+lagen".** Damit sahen drei verschiedene Fragen wie eine Antwort aus: wie
+lang die Strecke war, wie viel davon überhaupt jemand zugehört hat, und
+wie viele Ereignisse darin lagen. Zehn Bursts aus je fünf Messwerten,
+jeder 0,4 s lang und im Abstand von 60 s — zusammen **vier Sekunden**
+Beobachtung — wurden als zehn Ein-Minuten-Fenster für den Leerwert
+akzeptiert. Und fünf hohe Werte in 0,4 s ergaben `available: True` mit
+12,5 Ereignissen/s, also eine zuversichtliche Antwort aus einer
+Fünftelsekunde.
+
+Fenster liegen jetzt auf einem festen Raster, der Rest am Ende ist kein
+Fenster, und geteilt wird durch die **beobachtete** Zeit statt durch den
+Abstand zwischen erstem und letztem Messwert. Solange das Fenster noch
+nicht vergangen ist, lautet die Antwort `warming_up`; ist es vergangen,
+hatte aber überwiegend keine Datenquelle, `gap`.
+
+**Eine Lücke ist keine Ruhe — eine Ruhe aber auch keine Lücke.** Ein
+stiller Raum meldet trotzdem: das Wohnzimmer um vier Uhr morgens lieferte
+0,7 Messwerte pro Sekunde, und die längste Lücke in irgendeiner echten
+Aufnahme war 18,7 s. Zeit innerhalb einer Lücke über 30 s zählt deshalb
+nicht als beobachtet, eine gewöhnliche stille Strecke schon.
+
+**Die Messgröße heißt jetzt, was sie ist.** Gezählt werden Messwerte
+*über* der Schwelle, nicht Übergänge von darunter nach darüber — eine
+Ereignisrate, keine Übertrittsrate. Die Funktion heißt `event_rate`. Auf
+echte Übertritte umzustellen wäre eine Algorithmusänderung mit neuer
+Profilversion und Neukalibrierung und steht bewusst nicht hier drin.
+
+**Profile tragen eine Version und alte werden nicht weiterverwendet.**
+Der Leerwert derselben Aufnahme sinkt von 0,084 auf 0,067, weil der
+Divisor ein anderer ist — dieselbe Wohnung, andere Messgröße. Ein Gerät
+mit altem Profil trägt nichts mehr zur ratenbasierten Präsenz bei, und
+die Übersicht sagt, dass eine Leer-Aufnahme neu übernommen werden muss.
+Stillschweigend weiterrechnen wäre die schlechtere Variante.
+
+**Zwei dokumentierte Zahlen dieses Projekts waren falsch.** „Person
+direkt vor der Tür: 3,03 Ereignisse/s, 1 von 1 Fenstern erkannt" kam aus
+**neun Sekunden** Aufnahme. Neun Sekunden sind kein Fenster; diese
+Aufnahme ergibt jetzt gar keins, und die ehrliche Antwort ist, dass sie
+nichts sagt. Und „3 von 4 Couch-Fenstern" sind jetzt 3 von 3: das vierte
+war der Restbrocken am Ende der Aufnahme. Die bekannte Fehlstelle aus
+0.13.1 ist damit weg — **nicht weil besser erkannt wird, sondern weil
+das Bruchstück verschwunden ist.**
+
+### Und zwei Punkte aus der zweiten Prioritätsstufe
+
+**Die Firmwarebasis war nicht festgenagelt.** Das Template holte ESPectre
+von `ref: main` und `requirements.txt` erlaubte ESPHome ab 2024.9 ohne
+Obergrenze — derselbe Echolot-Release baute nächsten Monat also eine
+andere Firmware, und „gestern lief es noch" hörte auf, ein brauchbarer
+Satz zu sein. Jetzt ein konkreter ESPectre-Commit
+(`ce23b0b6…`) und ESPHome auf die Nebenversionsreihe begrenzt
+(`>=2026.6.5,<2026.7`).
+
+Dazu ein **Build-Manifest** pro erfolgreichem Build: ESPectre-Commit,
+ESPHome-Version, Board, ein Hash der Konfiguration **ohne** Geheimnisse,
+Prüfsumme und Größe der Firmware. Damit hat „welche Firmware ist da
+eigentlich drauf" später eine Antwort.
+
+Die Obergrenze steht bei 2026.6 und nicht beim Neuesten: **ab 2026.7
+verlangt ESPHome Python ≥ 3.12**, und dieses Add-on läuft auf dem
+Debian-Bookworm-Basisimage von Home Assistant, das 3.11 mitbringt — die
+CI ebenso. Mein erster Pin auf 2026.8.2 war damit in *beiden* Umgebungen
+nicht installierbar; die CI hat es gefangen, bevor es ein Add-on-Build
+tun konnte. Auf eine neuere Reihe zu gehen heißt zuerst das Basisimage zu
+wechseln, bewusst, und danach ein Gerät neu zu bauen und zu prüfen.
+
+*Offene Einschränkung:* „gepinnt" heißt hier reproduzierbar, nicht
+verifiziert. Dieses Repository kompiliert in der CI keine echte Firmware —
+die Konfigurationsvalidierung fängt keine C/C++-Konflikte. Ein echter
+Compile-Smoke für je ein Xtensa- und ein RISC-V-Board bleibt offen.
+
+**Der Notfall-Access-Point hatte kein Passwort.** Er trägt ein Captive
+Portal, das WLAN-Zugangsdaten entgegennimmt, und er geht genau dann auf,
+wenn ohnehin etwas kaputt ist — Routerwechsel, geändertes Passwort. Offen
+ist er also ausgerechnet im ungünstigsten Moment. Jedes Gerät bekommt ein
+eigenes Passwort, sichtbar bei den übrigen Zugangsdaten, wo es auch
+gebraucht wird: wenn das Gerät nicht erreichbar ist, kommt man an das
+Add-on ja noch heran.
+
+Ein erzeugtes Passwort ändert nichts an Hardware, die schon geflasht ist —
+es muss einkompiliert werden. Deshalb keine stille Migration: die
+Übersicht meldet für jedes Gerät, das vor 0.13.5 gebaut wurde, dass Neu
+bauen und Flashen den offenen AP schließt.
+
+**Das Speichern der Kalibrierung lag im Asyncio-Pfad.** Das Review sagt:
+erst messen. Gemessen an diesem Code, sechs Sitzungen mit zusammen
+120.000 Messwerten, kostet ein Schreibvorgang **171 ms** — er serialisiert
+jedes Mal die gesamte Historie und ersetzt die Datei. Das passierte alle
+hundert Messwerte direkt in `ingest`, und `ingest` läuft auf demselben
+Loop wie die Websocket-Abonnements.
+
+Der heiße Pfad markiert den Speicher jetzt nur als geändert; ein einzelner
+Writer-Thread schreibt, und ein Schwall wird zu einem Schreibvorgang
+zusammengefasst. Gemessen: **1673 ms → 7 ms** für tausend Messwerte im
+aufrufenden Pfad. Alles andere — anlegen, markieren, beenden, löschen,
+importieren — schreibt weiterhin synchron: das sind Benutzeraktionen,
+deren Ergebnis auf der Platte sein soll, wenn die Antwort zurückgeht.
+
+*Offene Einschränkung, ausdrücklich:* `json.dumps` gibt den GIL nicht
+frei. Ein Schreibvorgang hält den Interpreter also weiterhin rund 171 ms
+an — nur eben einmal statt zehnmal, und niemand wartet mehr darauf. Der
+eigentliche Umbau (append-orientiert oder SQLite) bleibt offen, samt
+Migration mit Sicherung. Der Preis der Änderung: ein Absturz kostet jetzt
+die letzten zwei Sekunden statt der letzten hundert Messwerte.
+
+**Der Zonenzustand hat jetzt genau einen Besitzer.** `compute_zone_state`
+verändert den Zonen-Runtime — das Gedächtnis der Bewegungs-Hysterese und
+die Haltefrist — und liest bei jedem Aufruf alle Mitglieder aus Home
+Assistant. Aufgerufen wurde es aus drei Richtungen: dem Dashboard-Poll,
+der Übersicht und dem MQTT-Publisher.
+
+**Der ereignisgesteuerte Export weiter oben in dieser Version hat das
+verschlimmert statt verbessert:** ein Messwert, der dreimal pro Sekunde
+eintrifft, wurde zu drei vollen Runden Home-Assistant-Abfragen pro
+Sekunde — zusätzlich zu dem, was ein offenes Dashboard ohnehin abfragte.
+Das war ein Fehler, den ich in derselben Version eingebaut habe.
+
+Jetzt wertet ein `ZoneEvaluator` aus, mit einer Untergrenze von einer
+halben Sekunde zwischen zwei Runden, und alles andere liest den Snapshot.
+Ein offenes Dashboard kostet damit **keine** Home-Assistant-Abfragen
+mehr, und eine Statusanzeige verändert nicht mehr den Zustandsautomaten,
+über den sie berichtet.
+
+**Und daraus fällt die erste neue Funktion des Reviews ab: eine
+erklärbare Präsenz-Zeitleiste.** Die Frage, die ein Präsenzsystem
+tatsächlich gestellt bekommt, ist nie „ist der Raum belegt" — das
+beantwortet der Punkt auf der Kachel. Sie lautet „warum blieb das Licht
+noch eine Minute an" oder „warum ging es aus, während ich dasaß", und
+darauf hatte Echolot bisher keine Antwort. Der Zustand war ein Urteil
+ohne Protokoll.
+
+Der Evaluator schreibt jetzt jeden Übergang mit: wann, von wo nach wo,
+welche Quelle ihn ausgelöst hat (schnelle Bewegung, die langsame Rate,
+oder eine ablaufende Haltezeit) und was jedes Mitgliedsgerät in dem
+Moment meldete. Ein Verlust der Messung zählt dabei als Übergang — genau
+das will man hinterher erklären, und es wäre unsichtbar, wenn man nur den
+Zustandsnamen vergliche. Zu sehen im Zonen-Tab unter „Verlauf".
+
+`GET /api/zones/{id}/timeline` und `GET /api/timeline`.
+
+Bewusst im Arbeitsspeicher und bewusst begrenzt (200 Übergänge je Zone):
+das ist zum Nachsehen, nachdem einen etwas überrascht hat, kein
+Prüfprotokoll — und eine Historie auf der Platte wäre ein zweites
+Speicherproblem obendrauf, mit weniger Grund. Nach einem Neustart ist der
+Verlauf leer, und die Oberfläche sagt das, statt so zu tun, als hätte der
+Raum nichts getan.
+
+Nebenbei ein Layoutfehler, der dabei sichtbar wurde: die Chips mit der
+Feinabstimmung einer Zone saßen auf den Knöpfen darunter.
+
+**Und Replay: neue Verfahren messen, ohne etwas anzufassen.** Das Review
+verlangt, Algorithmusänderungen erst im Vergleichsbetrieb zu bewerten —
+zu Recht, denn die vorhandenen Zahlen kommen aus einem Raum und wenigen
+Sitzungen, und eine Änderung, die eine davon verbessert, kann eine andere
+ruinieren.
+
+`GET /api/calibrations/{id}/replay` spielt eine vorhandene Aufnahme durch
+fünf Verfahren gleichzeitig: die Rate bei 15, 30, 60 und 120 Sekunden
+sowie den Bewegungs-Boolean des Geräts als Referenz. Ausgegeben werden je
+Verfahren Fehlalarme auf „Raum leer", Verpasstes auf „belegt" und —
+getrennt ausgewiesen — die Fenster, die sich nicht beurteilen ließen. Eine
+Erfolgsquote, die ihre Unbekannten versteckt, ist keine.
+
+**Es ist ausdrücklich schreibfrei:** kein Zonen-Runtime, kein
+Geräteprofil, nicht der Live-Evaluator. Messen darf nicht das Licht
+bewegen.
+
+**Und es sagt, wenn die Zahlen sich selbst messen.** Wird der Maßstab aus
+derselben Aufnahme gelernt, die dann bewertet wird, steht das als Warnung
+über der Tabelle; `?baseline=<andere Sitzung>` macht daraus einen echten
+Vergleich. Im Calibration Lab unter „Vergleich".
+
+Dabei noch ein Fehler gefunden: der Kalibrierungs-Tab rendert die
+Sitzungsliste alle zwei Sekunden neu, wodurch sich aufgeklappte Bereiche
+unter der lesenden Person wieder schlossen — und das gerade geholte
+Ergebnis wegwarfen. Derselbe Fix wie bei den Gerätekarten.
+
+### Nachgetragen: drei Punkte, die ich beim ersten Durchgang übersehen hatte
+
+Beim erneuten Abgleich mit dem Auftrag fielen drei Teilaufgaben auf, die
+ich als erledigt geführt hatte, ohne sie umzusetzen.
+
+**Eine umbenannte Zone behielt in Home Assistant ihren alten Namen.** Name
+und `object_id` stehen in der Discovery-Nachricht, und die wurde nur beim
+allerersten Mal gesendet. Gemerkt wird jetzt der angekündigte *Name*, nicht
+bloß, dass angekündigt wurde — ändert er sich, geht die Discovery erneut
+raus.
+
+**Eine gelöschte Zone spukte weiter, wenn sie im ausgeschalteten Zustand
+gelöscht wurde.** Die Menge der angekündigten Zonen lag nur im
+Arbeitsspeicher: nach dem Start war sie leer, die Zone stand in keiner
+Liste mehr, also wurde ihre retained Discovery nie gelöscht und die
+Entität blieb in Home Assistant stehen. Die Menge liegt jetzt auf der
+Platte und wird beim Start eingelesen.
+
+**Das Aufnahmelimit wurde stillschweigend erreicht.** Bei 100.000
+Messwerten je Sitzung verwarf `ingest` alles Weitere ohne ein Wort: die
+Anzeige blieb auf „läuft", der Zähler stand still, und niemand erfuhr,
+dass die Aufzeichnung aufgehört hatte aufzuzeichnen. Die Sitzung wird
+jetzt einmal markiert, die Oberfläche sagt es während der Aufnahme und
+danach, und wer die Daten später liest, sieht, dass sie abgeschnitten
+und nicht beendet wurden.
+
 ## 0.13.4
 
 Oberfläche: die Geräteliste war eine Wand.

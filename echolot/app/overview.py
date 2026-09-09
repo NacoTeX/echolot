@@ -13,7 +13,7 @@ way.
 
 from dataclasses import dataclass
 
-from app import health
+from app import health, presence_rate
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,44 @@ def collect_problems(
                         f"„{label}“ ist geflasht, aber Home Assistant liefert keine "
                         "Werte dafür."
                     ),
+                    device_id=device.id,
+                )
+            )
+
+        # The password only reaches a device by being compiled into it.
+        # Generating one for the record changes nothing on hardware that
+        # is already flashed, so the migration has to be asked for rather
+        # than assumed — and the manifest is what distinguishes a device
+        # built with a closed fallback AP from one built before 0.13.5.
+        if status == "success" and not (device.build_manifest or {}).get(
+            "fallback_ap_secured"
+        ):
+            problems.append(
+                Problem(
+                    kind="fallback_ap_open",
+                    message=(
+                        f"„{label}“ wurde gebaut, als der Notfall-Access-Point noch "
+                        "ohne Passwort war. Neu bauen und flashen schließt ihn."
+                    ),
+                    device_id=device.id,
+                )
+            )
+
+        # A profile written under an older definition is not used, and
+        # saying nothing would leave the device quietly contributing
+        # nothing to rate-based presence while its card still shows a
+        # profile. The measurement changed; the recalibration is real
+        # work and has to be asked for.
+        if presence_rate.profile_outdated(device.presence_profile):
+            problems.append(
+                Problem(
+                    kind="profile_outdated",
+                    message=(
+                        f"Das Präsenzprofil von „{label}“ stammt aus einer älteren "
+                        "Auswertung und wird nicht mehr verwendet. Eine Leer-Aufnahme "
+                        "neu übernehmen."
+                    ),
+                    tab="calibration",
                     device_id=device.id,
                 )
             )

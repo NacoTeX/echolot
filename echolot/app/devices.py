@@ -152,6 +152,19 @@ def new_ota_password() -> str:
     return secrets.token_hex(16)
 
 
+def new_fallback_password() -> str:
+    """The access point a device opens when it cannot reach the Wi-Fi.
+
+    That AP used to have no password at all. It carries a captive portal
+    that takes Wi-Fi credentials, and it comes up exactly when something
+    is already wrong — a router swap, a changed passphrase — so it is
+    most likely to be open at the least convenient moment. ESPHome wants
+    at least eight characters; sixteen hex is comfortably past that and
+    still typable off a screen.
+    """
+    return secrets.token_hex(8)
+
+
 class Device(BaseModel):
     id: str
     created_at: float
@@ -173,6 +186,15 @@ class Device(BaseModel):
     #: meaningless without it, so a device without one simply does not
     #: contribute that signal.
     presence_profile: dict | None = None
+    #: Guards the fallback access point. Generated per device, and shown
+    #: alongside the other credentials so it can be typed in when the
+    #: portal actually comes up.
+    fallback_password: str = Field(default_factory=new_fallback_password)
+    #: What the last successful build was made of: the ESPectre commit,
+    #: the ESPHome version, the board, a hash of the configuration with
+    #: the secrets left out, and the firmware's own checksum. Written so
+    #: "which firmware is on this device" has an answer later.
+    build_manifest: dict | None = None
     #: Baked into the firmware, and needed again when Home Assistant adopts
     #: the device — so it has to be readable here, not just generated.
     api_encryption_key: str = Field(default_factory=new_api_key)
@@ -233,6 +255,7 @@ class Device(BaseModel):
         return {
             "api_encryption_key": self.api_encryption_key,
             "ota_password": self.ota_password,
+            "fallback_password": self.fallback_password,
         }
 
     def apply_update(self, patch: DeviceUpdate) -> None:
@@ -362,6 +385,79 @@ def save_device(device: Device) -> None:
         index = _read_index()
         index[device.id] = device.model_dump()
         _write_index(index)
+
+
+def update_device(device_id: str, **fields) -> Device | None:
+    """Write only the named fields, under the registry lock.
+
+    `save_device` replaces the whole record, which is right for a route
+    that has just read it and wrong for a job that has been holding a
+    Device object for minutes. A build or an OTA run does exactly that:
+    anything changed meanwhile — corrected entity ids, an address, a
+    freshly applied presence profile — was silently replaced by the copy
+    the job started with, and a device deleted during a build came back
+    when the build finished.
+
+    Returns None when the device is gone, so a job can tell that its
+    result has nowhere to go instead of re-creating it.
+    """
+    # Pydantic drops unknown keys silently, so a typo in a field name
+    # would write nothing and report success — the quietest possible way
+    # to lose a build result.
+    unknown = set(fields) - set(Device.model_fields)
+    if unknown:
+        raise ValueError(f"Unbekannte Gerätefelder: {sorted(unknown)}")
+
+    with _lock:
+        index = _read_index()
+        stored = index.get(device_id)
+        if stored is None:
+            return None
+        record = dict(stored)
+        record.update(fields)
+        record["updated_at"] = time.time()
+        # Round-trip through the model so a bad field fails here, next to
+        # its caller, rather than at the next read.
+        device = Device.model_validate(record)
+        index[device_id] = device.model_dump()
+        _write_index(index)
+        return device
+
+
+INTERRUPTED_MESSAGE = (
+    "Der Vorgang wurde durch einen Neustart des Add-ons unterbrochen. "
+    "Er lief in einem Prozess, den es nicht mehr gibt — einfach neu starten."
+)
+
+
+def mark_interrupted_jobs() -> list[str]:
+    """Fail anything still queued or running at start-up.
+
+    A build or an OTA run lives in a background task. After a restart —
+    an add-on update, most often — that task is gone, but the record kept
+    saying "wird gebaut…" forever: the button stayed disabled and nothing
+    anywhere said why. Called once from the lifespan.
+    """
+    busy = {BuildStatus.QUEUED, BuildStatus.RUNNING}
+    touched: list[str] = []
+    with _lock:
+        index = _read_index()
+        for device_id, record in index.items():
+            changed = False
+            if record.get("status") in busy:
+                record["status"] = BuildStatus.ERROR
+                record["build_error"] = INTERRUPTED_MESSAGE
+                changed = True
+            if record.get("ota_status") in busy:
+                record["ota_status"] = BuildStatus.ERROR
+                record["ota_error"] = INTERRUPTED_MESSAGE
+                changed = True
+            if changed:
+                record["updated_at"] = time.time()
+                touched.append(device_id)
+        if touched:
+            _write_index(index)
+    return touched
 
 
 def delete_device(device_id: str) -> bool:

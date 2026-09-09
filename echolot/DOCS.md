@@ -643,11 +643,17 @@ jemals mehr brauchen, sagt es das beim Bauen mit der genauen Zahl. Ohne
 
 Gemessen an echter Hardware, in drei Aufnahmen aus einem Wohnzimmer:
 
-| Situation | Überschreitungen/s |
+| Situation | Ereignisse/s |
 | --- | --- |
 | Raum leer, jemand bewegt sich in der übrigen Wohnung (20 min) | **0,027** |
 | Person sitzt still auf der Couch | **0,261** |
-| Person direkt vor der Tür | **3,03** |
+
+Eine dritte Zeile stand hier bis 0.13.5: „Person direkt vor der Tür,
+3,03". Die kam aus **neun Sekunden** Aufnahme, geteilt durch den Abstand
+zwischen erstem und letztem Messwert. Neun Sekunden sind kein Fenster,
+und die Rate war ein kurzer Ausschlag, auf eine Sekunde hochgerechnet.
+Seit die Fenster auf einem festen Raster liegen, ergibt diese Aufnahme
+gar kein Fenster mehr — die ehrliche Antwort ist, dass sie nichts sagt.
 
 Die wichtigste Zahl ist die erste: zwanzig Minuten durch die Wohnung
 laufen erzeugt **zehnmal weniger** als still im Raum sitzen. Das Signal
@@ -675,18 +681,28 @@ kontaminierte Fenster selbst. Zu kurz gemessen liefert nicht eine
 schwache, sondern eine zuversichtlich falsche Antwort. Es braucht daher
 mindestens zehn volle Fenster, also gut zehn Minuten.
 
-Am so gelernten Profil (Leerwert 0,084, Einschaltschwelle 0,167):
+Am so gelernten Profil (Leerwert 0,067, Einschaltschwelle 0,133):
 
 | | Fenster als belegt erkannt |
 | --- | --- |
-| Person sitzt still auf der Couch | 3 von 4 |
-| Person direkt vor der Tür | 1 von 1 |
+| Person sitzt still auf der Couch | 3 von 3 |
 | Raum leer, Wohnung belegt | **1 von 20** |
 
-Die beiden Ausreißer sind erklärbar: das verpasste Couch-Fenster ist die
-letzte Minute der Aufnahme, das falsch erkannte Leer-Fenster kreuzte bei
-0,286 — Couch-Niveau, vermutlich jemand direkt vor der Tür. Genau dieses
-Fenster meldet das Profil zusätzlich als verdächtig.
+Bis 0.13.5 stand hier „3 von 4". Das vierte Couch-Fenster war der
+Restbrocken am Ende der Aufnahme — kein volles Fenster, und eine Rate aus
+einer halben Minute ist mit einer aus einer ganzen nicht vergleichbar. Es
+zählt jetzt gar nicht mehr mit. **Die Erkennung ist dadurch nicht besser
+geworden; das Bruchstück ist verschwunden.**
+
+Das eine falsch erkannte Leer-Fenster liegt auf Couch-Niveau, vermutlich
+jemand direkt vor der Tür. Genau dieses Fenster meldet das Profil
+zusätzlich als verdächtig.
+
+Der Leerwert ist von 0,084 auf 0,067 gesunken, weil jetzt durch die
+beobachtete Zeit geteilt wird und nicht durch den Abstand zwischen erstem
+und letztem Messwert eines Fensters. Beides sind Zahlen über dasselbe
+Zimmer, aber nicht über dieselbe Messgröße — deshalb tragen Profile eine
+Version, und alte werden nicht weiterverwendet.
 
 `GET /api/calibrations/{id}/presence-rate` lernt die Rate aus den mit
 „Raum leer" markierten Messwerten einer Sitzung und bewertet die übrigen
@@ -698,6 +714,49 @@ Lichteinschalten will. Es beantwortet die andere Frage: ist noch jemand
 da.
 
 **Was nicht behauptet wird:** ein Raum, ein Gerät, drei Sitzungen.
+
+### Was ein Fenster ist
+
+Ein Fenster ist eine bekannte Strecke Wanduhr, und erst danach das, was
+hineinfiel. Bis 0.13.5 war es „so viele Messwerte, wie zufällig
+nebeneinander lagen", und das ließ drei verschiedene Fragen wie eine
+Antwort aussehen: wie lang die Strecke war, wie viel davon überhaupt
+jemand zugehört hat, und wie viele Ereignisse darin lagen.
+
+Was daraus folgte, in Zahlen: zehn Bursts aus je fünf Messwerten, jeder
+Burst 0,4 s lang und im Abstand von 60 s — insgesamt **vier Sekunden**
+Beobachtung — wurden als zehn Ein-Minuten-Fenster akzeptiert und als
+zehn Minuten Leerwert verbucht. Und fünf hohe Werte in 0,4 s ergaben
+`available: True` mit 12,5 Ereignissen/s: eine zuversichtliche Antwort
+aus einer Fünftelsekunde.
+
+Jetzt:
+
+- **Festes Raster.** Fenster laufen vom ersten Messwert an in festen
+  Schritten. Der Rest am Ende ist kein Fenster.
+- **Geteilt wird durch die beobachtete Zeit**, nicht durch den Abstand
+  zwischen erstem und letztem Messwert.
+- **Eine Lücke ist keine Ruhe.** Ein stiller Raum meldet trotzdem — das
+  Wohnzimmer um vier Uhr morgens lieferte 0,7 Messwerte pro Sekunde, und
+  die längste Lücke in irgendeiner echten Aufnahme war 18,7 s. Zeit
+  innerhalb einer Lücke über 30 s zählt deshalb nicht als beobachtet,
+  eine gewöhnliche stille Strecke schon.
+- **`warming_up` statt einer Antwort**, solange das Fenster noch nicht
+  vergangen ist, und `gap`, wenn es vergangen ist, aber überwiegend ohne
+  Datenquelle.
+
+**Die Messgröße heißt jetzt, was sie ist.** Gezählt werden Messwerte
+*über* der Schwelle, nicht Übergänge von darunter nach darüber. Das ist
+eine Ereignisrate, keine Übertrittsrate. Die Funktion heißt
+`event_rate`, und die Anzeige sagt „Ereignisse/s". Auf echte Übertritte
+umzustellen wäre eine Algorithmusänderung mit neuer Profilversion und
+Neukalibrierung — das steht hier bewusst nicht.
+
+**Profile tragen eine Version.** Ein Profil aus einer älteren Auswertung
+beschreibt eine andere Messgröße und wird nicht stillschweigend
+weiterverwendet: das Gerät trägt dann nichts zur ratenbasierten Präsenz
+bei, und die Übersicht sagt, dass eine Leer-Aufnahme neu übernommen
+werden muss.
 
 ### Ein Abonnement pro Gerät, dauerhaft
 
@@ -816,6 +875,168 @@ Die mittlere Zeile ist der richtige Maßstab für den Alltag, nicht die
 obere: mit 0,000 als Leerwert würde der Melder losgehen, sobald jemand
 im Flur vorbeiläuft. Der Unterschied zwischen 0,000 und 0,027 ist
 zugleich der Beleg, dass das Signal wirklich durch Wände geht.
+
+### Wann ein Messwert keiner ist
+
+Home Assistant kennt zwei Zustände, die wie ein Wert aussehen und keiner
+sind: `unavailable`, wenn die Integration das Gerät verloren hat, und
+`unknown`, wenn es nie einen geliefert hat. Bis 0.13.5 stand im Code
+`motion["state"] == "on"` — beide wurden damit zu „keine Bewegung" auf
+einem als verfügbar gemeldeten Gerät. Ein Gerät, das aus dem Netz
+gefallen war, veröffentlichte nach Ablauf der Haltezeit einen
+zuversichtlich leeren Raum.
+
+Gültig sind jetzt nur `on` und `off`. Alles andere ist das Fehlen einer
+Messung, und die Zone meldet dann `available: false` statt „frei".
+
+**Ein Bewegungswert ohne funktionierenden Bewegungssensor zählt bewusst
+nicht als halber Beleg.** Die Zonenlogik fällt ohne konfigurierten
+Schwellwert genau auf den Bewegungs-Boolean zurück; ein halb verfügbares
+Gerät würde diesen Rückfallpfad auf einen Wert stellen, den es nicht
+gibt.
+
+`NaN` und `inf` überleben `float()`, und jeder spätere Vergleich mit
+ihnen ist False — ein kaputter Messwert läse sich als ruhiger Raum.
+Zahlen müssen `math.isfinite` erfüllen.
+
+### Zwei Hysteresen, zwei Gedächtnisse
+
+Es gibt zwei unabhängige Hysteresen, und 0.13.2 hat sie sich teilen
+lassen. Beides waren Fehler.
+
+**Die Rate braucht ihr eigenes pro Gerät.** `evaluate` wählt über
+`occupied_now` zwischen Einschalt- und Ausschaltschwelle, und gemeint ist
+der Vorzustand *dieses Geräts*. Übergeben wurde das laufende
+ODER-Ergebnis der Zonenschleife: das erste Gerät jeder Zone galt damit
+immer als gerade noch leer, die Ausschaltschwelle kam nie zum Einsatz.
+Der Zustand liegt jetzt in `main._rate_state`, gemerkt am neuesten
+Messwert des Fensters — ohne neuen Messwert kann sich die Antwort nicht
+geändert haben, also wird pro Datenpunkt genau einmal ausgewertet, egal
+wie viele Zonen das Gerät enthalten. Ein Profilwechsel verwirft die
+Historie, ein gelöschtes Gerät ebenso. Eine Datenlücke meldet
+„unbekannt", setzt die Erinnerung aber nicht zurück.
+
+**Nur Bewegung schreibt das Bewegungs-Gedächtnis.** `runtime.raw` ist das
+Gedächtnis der Bewegungs-Hysterese: zwischen den beiden Schwellen liefert
+`_raw_decision` das, was es zuletzt gesagt hat. Das kombinierte Ergebnis
+dort hineinzuschreiben rastete den Bewegungspfad ein — lag der
+Bewegungswert im Zwischenband, blieb die Zone belegt, lange nachdem die
+Rate gefallen war. Die Rate wird jetzt erst *nach* dem Gedächtnis
+hinzu-geodert.
+
+`raw_motion` bezeichnet damit wieder Bewegung. Welche Quelle die Zone
+gerade hält, steht in `trigger`: `motion`, `rate` oder nichts.
+
+### Wo geschrieben wird, und wo nicht
+
+Kalibrierungsdaten liegen als eine JSON-Datei. Jeder Schreibvorgang
+serialisiert die **gesamte** Historie und ersetzt die Datei — an diesem
+Code gemessen, sechs Sitzungen mit zusammen 120.000 Messwerten: 171 ms.
+Das ist für eine Gerätekartei völlig in Ordnung und für eine wachsende
+Messreihe nicht.
+
+Bis 0.13.5 passierte das alle hundert Messwerte direkt in `ingest`, und
+`ingest` läuft auf demselben Event-Loop wie die Websocket-Abonnements.
+Jetzt markiert der heiße Pfad den Speicher nur als geändert, ein einzelner
+Writer-Thread schreibt, und ein Schwall wird zu einem Schreibvorgang
+zusammengefasst: **1673 ms → 7 ms** für tausend Messwerte im aufrufenden
+Pfad.
+
+Alles andere schreibt weiterhin synchron — anlegen, markieren, beenden,
+löschen, importieren sind Benutzeraktionen, deren Ergebnis auf der Platte
+sein soll, wenn die Antwort zurückgeht.
+
+**Was das nicht löst:** `json.dumps` gibt den GIL nicht frei. Ein
+Schreibvorgang hält den Interpreter weiterhin rund 171 ms an — nur eben
+einmal statt zehnmal, und niemand wartet mehr darauf. Eine
+append-orientierte Aufzeichnung oder SQLite wäre die eigentliche Antwort;
+das steht aus, samt Migration mit Sicherung. Und ein Absturz kostet jetzt
+die letzten zwei Sekunden statt der letzten hundert Messwerte.
+
+### Wer den Zonenzustand besitzt
+
+Genau eine Komponente. `compute_zone_state` verändert den Zonen-Runtime —
+das Gedächtnis der Bewegungs-Hysterese und die Haltefrist — und liest bei
+jedem Aufruf alle Mitglieder aus Home Assistant. Bis 0.13.5 riefen das
+drei Stellen auf: der Dashboard-Poll alle zwei Sekunden, die Übersicht
+alle zehn, und der MQTT-Publisher. Eine Statusanzeige veränderte damit
+den Automaten, über den sie berichtet.
+
+Der ereignisgesteuerte Export in derselben Version machte es schlimmer:
+ein Messwert dreimal pro Sekunde wurde zu drei vollen Runden
+Home-Assistant-Abfragen pro Sekunde.
+
+`ZoneEvaluator` wertet jetzt aus — mit einer Untergrenze von einer halben
+Sekunde zwischen zwei Runden, weit unter dem, was man in einem Raum
+bemerkt, und weit über der Rate, mit der Messwerte in Schwällen
+eintreffen. Alles andere liest den Snapshot:
+
+- Ein offenes Dashboard kostet **keine** Abfragen mehr.
+- Die Übersicht liest, statt auszuwerten.
+- MQTT bekommt weiterhin sofort mit, dass etwas passiert ist — nur eben
+  aus derselben Auswertung wie alle anderen.
+
+Nur eine Zone, die noch nie ausgewertet wurde, zahlt einmal dafür.
+
+### Warum die Zone tut, was sie tut
+
+Die Frage, die ein Präsenzsystem tatsächlich gestellt bekommt, ist nie
+„ist der Raum belegt" — das beantwortet der Punkt auf der Kachel. Sie
+lautet „warum blieb das Licht noch eine Minute an" oder „warum ging es
+aus, während ich dasaß".
+
+Der Evaluator ist die einzige Stelle, die jeden Übergang sieht, also
+schreibt er sie mit: Zeitpunkt, Zustand vorher und nachher, die
+auslösende Quelle (`motion`, `rate`, oder eine ablaufende Haltezeit) und
+was jedes Mitgliedsgerät in dem Moment meldete.
+
+**Ein Verlust der Messung zählt als Übergang.** Vergliche man nur den
+Zustandsnamen, wäre er unsichtbar — dabei ist „das Gerät war weg" die
+häufigste Erklärung für etwas, das jemand hinterher nicht versteht.
+
+Im Zonen-Tab unter „Verlauf", oder über `GET /api/zones/{id}/timeline`
+und `GET /api/timeline`.
+
+**Bewusst im Arbeitsspeicher und bewusst begrenzt** — 200 Übergänge je
+Zone. Das ist zum Nachsehen, nachdem einen etwas überrascht hat, und kein
+Prüfprotokoll; eine Historie auf der Platte wäre ein zweites
+Speicherproblem obendrauf (siehe oben), mit weniger Grund. Nach einem
+Neustart des Add-ons ist der Verlauf leer, und die Oberfläche sagt das.
+
+### Verfahren vergleichen, ohne etwas anzufassen
+
+Die vorhandenen Zahlen kommen aus einem Raum und wenigen Sitzungen. Eine
+Änderung, die eine davon verbessert, kann eine andere ruinieren — also
+wird sie zuerst gemessen und nicht verdrahtet.
+
+`GET /api/calibrations/{id}/replay` spielt eine vorhandene Aufnahme durch
+fünf Verfahren gleichzeitig: die Ereignisrate bei 15, 30, 60 und 120
+Sekunden, dazu den Bewegungs-Boolean des Geräts als Referenz — der fährt
+heute das Licht und ist der Maßstab, den ein neues Verfahren schlagen
+muss.
+
+Je Verfahren:
+
+| | |
+| --- | --- |
+| **Fehlalarm** | Fenster mit Label „Raum leer", die als belegt gelten |
+| **Verpasst** | Fenster mit „belegt", die als leer gelten |
+| **Nicht beurteilbar** | zu kurz oder Lücke — getrennt ausgewiesen |
+
+Die letzte Spalte ist Absicht: eine Erfolgsquote, die ihre Unbekannten
+versteckt, ist keine.
+
+**Schreibfrei.** Kein Zonen-Runtime, kein Geräteprofil, nicht der
+Live-Evaluator. Messen darf nicht das Licht bewegen.
+
+**Es sagt, wenn die Zahlen sich selbst messen.** Wird der Maßstab aus
+derselben Aufnahme gelernt, die dann bewertet wird, steht das als Warnung
+über der Tabelle. `?baseline=<andere Sitzung>` lernt den Leerwert aus
+einer anderen Sitzung und macht daraus einen echten Vergleich — was das
+Review für belastbare Aussagen ohnehin verlangt: nach ganzen Sitzungen
+trennen, und Schwellen nicht auf den Testdaten optimieren.
+
+Im Calibration Lab unter „Vergleich" an jeder Messung.
 
 ### Confidence fusion
 
