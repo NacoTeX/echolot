@@ -27,20 +27,34 @@ from app import mqtt_bridge  # noqa: E402
 
 
 class FakeInfo:
-    def __init__(self, rc):
+    """One publish, and whether the broker has acknowledged it.
+
+    `rc` is the client accepting the message; `published` is the PUBACK.
+    At QoS 0 there is never a PUBACK, so the two are the same thing —
+    which is exactly why the deletion path uses QoS 1.
+    """
+
+    def __init__(self, rc, published=True):
         self.rc = rc
+        self.published = published
+
+    def is_published(self):
+        return self.published
 
 
 class FakeClient:
-    """Records publishes and can be told to reject them."""
+    """Records publishes, and can reject them or leave them unacknowledged."""
 
     def __init__(self, rc=mqtt.MQTT_ERR_SUCCESS):
         self.published: list[tuple[str, str, bool]] = []
         self.rc = rc
+        #: False makes every publish sit unacknowledged, the way a broker
+        #: that took the connection but not the message would.
+        self.acknowledges = True
 
-    def publish(self, topic, payload, retain=False):
+    def publish(self, topic, payload, retain=False, qos=0):
         self.published.append((topic, payload, retain))
-        return FakeInfo(self.rc)
+        return FakeInfo(self.rc, published=self.acknowledges)
 
     def topics(self):
         return [topic for topic, _, _ in self.published]
@@ -196,19 +210,102 @@ def test_an_unchanged_name_is_still_announced_only_once(bridge):
     assert discovery_count(bridge._client, "z1") == 1
 
 
-def test_announced_zones_survive_a_restart(tmp_path, monkeypatch, bridge):
-    """A zone deleted while the add-on was stopped was never
-    un-announced: its retained discovery message stayed on the broker and
-    the entity haunted Home Assistant. Nothing in memory remembered it had
-    ever been announced."""
-    monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path))
-    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
-    assert mqtt_bridge.load_announced() == {"z1"}
+def test_forget_zone_reports_whether_the_broker_took_it(bridge):
+    """The caller keeps a tombstone until this says True.
 
-    bridge.forget_zone("z1")
-    assert mqtt_bridge.load_announced() == set()
+    Reporting success for a delete that never left the machine is how a
+    retained discovery message survived every attempt to remove it: the
+    zone was struck off the announced set and nobody ever tried again.
+    """
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    assert bridge.forget_zone("z1") is True
+
+    bridge.publish_zone("z2", "Flur", occupied=True, available=True)
+    bridge.connected = False
+    assert bridge.forget_zone("z2") is False
+    assert bridge.announced_ids() == {"z2"}, "eine nicht gesendete Löschung darf nichts vergessen"
+
+    bridge.connected = True
+    bridge._client.rc = mqtt.MQTT_ERR_QUEUE_SIZE
+    assert bridge.forget_zone("z2") is False
+    assert bridge.announced_ids() == {"z2"}
 
 
 def test_a_missing_store_is_not_a_broken_export(tmp_path, monkeypatch):
     monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path / "gibtsnicht"))
+    assert mqtt_bridge.load_state() == (set(), set())
     assert mqtt_bridge.load_announced() == set()
+
+
+# --- the broker's word, not the client's (R4) --------------------------
+
+
+def test_a_delete_the_broker_never_acknowledged_is_not_done(bridge):
+    """`publish().rc == SUCCESS` means the *client* took the message. At
+    QoS 0 nothing ever confirms it left the machine — and a deletion does
+    not self-heal the way an announcement does: `on_connect` re-announces,
+    nothing re-deletes."""
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    bridge._client.acknowledges = False
+
+    assert bridge.forget_zone("z1") is False
+    assert bridge.announced_ids() == {"z1"}, "die Zone gilt noch als angekündigt"
+
+    # And it is not sent again while it is still in flight.
+    before = len(bridge._client.published)
+    assert bridge.forget_zone("z1") is False
+    assert len(bridge._client.published) == before
+
+    # The broker acknowledges them.
+    for info in bridge._pending_deletes["z1"]:
+        info.published = True
+    assert bridge.forget_zone("z1") is True
+    assert bridge.announced_ids() == set()
+
+
+def test_the_deletions_go_out_at_qos_one(bridge):
+    """QoS 0 has no acknowledgement to wait for, so there would be
+    nothing to make the tombstone reliable."""
+    sent = []
+    original = bridge._client.publish
+
+    def recording(topic, payload, retain=False, qos=0):
+        sent.append((topic, qos))
+        return original(topic, payload, retain=retain, qos=qos)
+
+    bridge._client.publish = recording
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    sent.clear()
+    bridge.forget_zone("z1")
+    assert sent == [
+        (mqtt_bridge.zone_discovery_topic("z1"), 1),
+        (mqtt_bridge.zone_state_topic("z1"), 1),
+        (mqtt_bridge.zone_availability_topic("z1"), 1),
+    ]
+
+
+def test_a_disconnect_voids_what_was_in_flight(bridge):
+    """Whatever the client was holding is gone with the connection; the
+    tombstone outlives it and the delete is sent again."""
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    bridge._client.acknowledges = False
+    assert bridge.forget_zone("z1") is False
+    assert "z1" in bridge._pending_deletes
+
+    bridge.connected = False
+    assert bridge.forget_zone("z1") is False
+    assert bridge._pending_deletes == {}
+
+    bridge.connected = True
+    bridge._client.acknowledges = True
+    assert bridge.forget_zone("z1") is True
+
+
+def test_checking_the_acknowledgement_never_blocks(bridge):
+    """It runs on the evaluator's loop. Waiting there would stop every
+    zone from being evaluated, not just this one from being deleted."""
+    import inspect
+
+    source = inspect.getsource(mqtt_bridge.ZoneBridge.forget_zone)
+    assert "wait_for_publish" not in source
+    assert "is_published" in source

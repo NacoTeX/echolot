@@ -1,9 +1,14 @@
 """The /api/fusion/zones routes, which nothing covered before.
 
 The fusion module itself is tested as pure functions in test_fusion.py.
-These tests cover the wiring: that the routes reach the telemetry hub and
-the calibration profiles, and that a zone with no direct data degrades
-instead of failing.
+These tests cover the wiring: that the routes reach the canonical sample
+stream and the calibration profiles, and that a zone with no data
+degrades instead of failing.
+
+Until 0.13.6 the wiring went to the direct telemetry hub specifically, so
+a device without ESPectre's Direct HTTP API contributed nothing at all —
+and that API is closed to this add-on at the pinned upstream commit (see
+app/ha_sampler.py). Fusion now reads whichever transport is canonical.
 """
 
 import json
@@ -19,7 +24,8 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp(prefix="echolot-tests-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import calibration, devices as dev_mod, server, telemetry, zones  # noqa: E402
+from app import calibration, devices as dev_mod, samples, server, telemetry, zones  # noqa: E402
+from app.telemetry import Sample  # noqa: E402
 from app.devices import BuildStatus, Device, DeviceCreate  # noqa: E402
 
 
@@ -47,19 +53,32 @@ def api(monkeypatch):
     monkeypatch.setattr(zones, "get_zone", lambda zid: zone if zid == zone.id else None)
     monkeypatch.setattr(dev_mod, "get_device", lambda did: make_device(did))
     monkeypatch.setattr(calibration.store, "latest_profiles", lambda: {})
-    # The hub is a process-wide singleton, so samples fed by one test would
-    # otherwise still be in the window for the next one — and the test that
-    # matters most here is the one about having no samples at all.
+    # Both stores are process-wide singletons, so samples fed by one test
+    # would otherwise still be in the window for the next one — and the
+    # test that matters most here is the one about having no samples.
     telemetry.hub._samples.clear()
     telemetry.hub._status.clear()
+    for device_id in ("a", "b"):
+        samples.bus.forget(device_id)
+    samples.bus._refused.clear()
     return TestClient(server.app)
 
 
 def feed(device_id: str, score: float, threshold: float = 1.0) -> None:
-    """Hand the hub a sample the way a device's SSE stream would.
+    """One reading from Home Assistant, the canonical source."""
+    samples.bus.publish(
+        device_id,
+        Sample(t=time.time(), movement_score=score, threshold=threshold,
+               motion=score > threshold),
+        source=samples.SOURCE_HOME_ASSISTANT,
+    )
+
+
+def feed_direct(device_id: str, score: float, threshold: float = 1.0) -> None:
+    """Hand the hub a frame the way a device's SSE stream would.
 
     ingest() takes the raw JSON frame, not a parsed dict — the parsing is
-    part of what it does.
+    part of what it does — and it offers the result to the bus.
     """
     telemetry.hub.ingest(
         device_id,
@@ -84,9 +103,36 @@ def test_two_agreeing_devices_make_a_confident_zone(api):
     assert body[0]["agreement"] > 0.8
 
 
-def test_a_zone_without_direct_data_degrades_rather_than_failing(api):
-    # The fusion needs the device's own SSE stream; a zone whose devices
-    # never connected must say so, not answer with a confident vacancy.
+def test_home_assistant_data_alone_is_enough_for_fusion(api):
+    """The regression: fusion read the direct hub only, so a device
+    without the Direct HTTP API was permanently 'no_recent_sample' even
+    while Home Assistant was delivering its readings."""
+    feed("a", 5.0)
+    feed("b", 4.0)
+    body = api.get("/api/fusion/zones").json()[0]
+    assert body["available"] is True
+    assert body["source"] == samples.SOURCE_HOME_ASSISTANT
+    assert all(m["basis"] != "no_recent_sample" for m in body["members"])
+
+
+def test_the_direct_transport_does_not_add_a_second_vote(api):
+    """Two readings of the same movement over two transports are one
+    measurement delivered twice. The bus refuses the non-canonical one and
+    counts the refusal rather than hiding it."""
+    feed("a", 5.0)
+    before = api.get("/api/fusion/zones").json()[0]
+
+    for _ in range(5):
+        feed_direct("a", 5.0)
+    after = api.get("/api/fusion/zones").json()[0]
+
+    assert after["confidence"] == before["confidence"]
+    assert samples.bus.status()["refused_by_source"][samples.SOURCE_DIRECT] >= 5
+
+
+def test_a_zone_without_any_data_degrades_rather_than_failing(api):
+    # A zone whose devices never delivered must say so, not answer with a
+    # confident vacancy.
     body = api.get("/api/fusion/zones").json()
     assert body[0]["available"] is False
     assert body[0]["occupied"] is None

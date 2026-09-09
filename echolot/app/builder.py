@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -114,8 +115,10 @@ def reset_toolchain(board) -> bool:
 #: produces the same firmware base. Moving it is a deliberate act: bump
 #: this, rebuild a device, and check it still senses.
 #:
-#: Honest limitation: this repository cannot compile firmware in CI yet,
-#: so "pinned" here means reproducible, not verified. See DOCS.md.
+#: Since 0.13.6 CI links a real image for one board per instruction set
+#: against exactly this commit (tools/compile_firmware.py), so "pinned"
+#: now means verified as well as reproducible — for those two boards, on
+#: CI's Linux runner, and not on hardware. See DOCS.md.
 ESPECTRE_REF = "ce23b0b61b95b87a75f12681a0e576d8f3df5d1b"
 
 #: Fields that must never reach a manifest or a log.
@@ -131,6 +134,92 @@ def esphome_version() -> str:
         return "unbekannt"
 
 
+def esphome_pin() -> str:
+    """The requirement this add-on ships, as written.
+
+    The installed version alone does not say what was *allowed*: a patch
+    series is a range, and "which build produced this image" needs both
+    ends of that question answered.
+    """
+    try:
+        for line in (Path(__file__).parent / "requirements.txt").read_text().splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("esphome"):
+                return stripped
+    except OSError:
+        pass
+    return "unbekannt"
+
+
+def addon_version() -> str:
+    """This add-on's own version.
+
+    Stamped into the image at build time; config.yaml is the fallback for
+    a source checkout, where it is the same file Home Assistant reads.
+    """
+    stamped = os.environ.get("ECHOLOT_VERSION")
+    if stamped:
+        return stamped.strip()
+    try:
+        for line in (Path(__file__).parent.parent / "config.yaml").read_text().splitlines():
+            if line.startswith("version:"):
+                return line.split(":", 1)[1].strip().strip('"\'')
+    except OSError:
+        pass
+    return "unbekannt"
+
+
+def addon_revision() -> str | None:
+    """The commit this add-on was built from, when it can be known.
+
+    Present in a git checkout and in an image built with the label; absent
+    in a plain source copy, where it is reported as unknown rather than
+    guessed.
+    """
+    stamped = os.environ.get("ECHOLOT_BUILD_REVISION")
+    if stamped:
+        return stamped.strip()
+    root = Path(__file__).resolve().parents[2]
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = proc.stdout.strip()
+    return revision if proc.returncode == 0 and revision else None
+
+
+def framework_base(build_dir: Path | None = None) -> dict:
+    """Which ESP-IDF and toolchain packages actually went into the image.
+
+    The template asks for `type: esp-idf` and no version, so ESPHome picks
+    its recommended framework — which changes with ESPHome. Reading it
+    back from what PlatformIO installed is the difference between "we
+    asked for esp-idf" and "this image contains esp-idf 5.x.y".
+    """
+    base: dict = {"type": "esp-idf", "framework_version": None, "packages": {}}
+    packages_dir = platformio_core_dir() / "packages"
+    if not packages_dir.is_dir():
+        return base
+    for package in sorted(packages_dir.iterdir()):
+        manifest = package / "package.json"
+        if not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        name, version_string = data.get("name"), data.get("version")
+        if not name or not version_string:
+            continue
+        base["packages"][str(name)] = str(version_string)
+        if str(name) == "framework-espidf":
+            base["framework_version"] = str(version_string)
+    return base
+
+
 def config_fingerprint(device: Device) -> str:
     """A short hash of what was built, with the secrets left out."""
     payload = device.config.model_dump()
@@ -141,11 +230,33 @@ def config_fingerprint(device: Device) -> str:
 
 
 def build_manifest(device: Device, firmware: Path | None) -> dict:
-    """What this artefact was made of, so a later question has an answer."""
+    """What this artefact was made of, so a later question has an answer.
+
+    "Which build produced this image" needs more than the sources: an
+    allowed patch series is not a resolved dependency, and `type: esp-idf`
+    with no version is whatever ESPHome recommended that week. So the
+    manifest names the add-on revision it was built by, carries its own
+    id, and records the framework and toolchain packages that were
+    actually installed when the image was linked.
+
+    Credentials never appear here — see `_SECRET_CONFIG_FIELDS` and the
+    fingerprint below, which hashes the config with them removed.
+    """
     manifest = {
+        # A single build, nameable in a bug report. Two images built from
+        # identical sources are still two builds.
+        "build_id": uuid.uuid4().hex,
+        "echolot_version": addon_version(),
+        "echolot_revision": addon_revision(),
         "espectre_ref": ESPECTRE_REF,
         "esphome_version": esphome_version(),
+        # The requirement as written: the installed version alone does not
+        # say what the next build would have been allowed to pick.
+        "esphome_pin": esphome_pin(),
+        "framework": framework_base(),
         "board": device.config.board,
+        # Where the compile ran, not what it produced.
+        "built_on_arch": os.environ.get("ECHOLOT_BUILD_ARCH") or None,
         "config_hash": config_fingerprint(device),
         # Lets a later reader tell a device flashed with a closed fallback
         # AP from one flashed before 0.13.5, when that AP had no password.

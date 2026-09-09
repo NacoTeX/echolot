@@ -135,41 +135,121 @@ function recommendationBlock(session) {
 //: just fetched. Same fix as the device cards.
 const openReplays = new Set();
 
-//: Replays one session through every strategy and lays the results side
-//: by side. The caveat comes from the backend, because whether the
-//: numbers measured themselves is a property of the run, not of the view.
+//: Replays one session two ways and lays the results out.
+//:
+//: Der Fenstervergleich gruppiert nach Label und bewertet jedes Label für
+//: sich; der chronologische Durchlauf schickt die Aufnahme durch dieselben
+//: Funktionen wie der Livebetrieb, mit Hysterese und Haltezeit. Beides
+//: steht da, weil beides etwas anderes beantwortet.
+//:
+//: Der Vorbehalt kommt aus dem Backend: ob die Zahlen sich selbst gemessen
+//: haben, ist eine Eigenschaft des Laufs und nicht der Ansicht.
+function replaySeconds(value) {
+  if (value === null || value === undefined) return "—";
+  return value >= 60 ? `${Math.round(value / 60)} min` : `${Math.round(value)} s`;
+}
+
+function replayLatency(entry) {
+  if (!entry) return "—";
+  return `${entry.median} s (max ${entry.worst})`;
+}
+
+function replayComparisonRows(comparison) {
+  return comparison.strategies
+    .map((strategy) => {
+      if (!strategy.available) {
+        return `<tr class="replay-unavailable">
+            <td>${escapeHtml(strategy.name)}</td>
+            <td colspan="3">${escapeHtml(strategy.reason)}</td>
+          </tr>`;
+      }
+      const score = strategy.score;
+      const share = (value) => (value === null ? "—" : `${Math.round(value * 100)} %`);
+      return `<tr${strategy.reference ? ' class="replay-reference"' : ""}>
+          <td>${escapeHtml(strategy.name)}${strategy.reference ? " (aktuell)" : ""}</td>
+          <td>${score.false_alarms}/${score.empty_windows} · ${share(score.false_alarm_rate)}</td>
+          <td>${score.misses}/${score.occupied_windows} · ${share(score.miss_rate)}</td>
+          <td>${score.unusable_windows}</td>
+        </tr>`;
+    })
+    .join("");
+}
+
+function replayRunRow(label, run) {
+  if (!run || !run.available) return "";
+  const budget = run.budget;
+  const accuracy = run.accuracy;
+  return `<tr>
+      <td>${escapeHtml(label)}</td>
+      <td>${replaySeconds(budget.occupied)}</td>
+      <td>${replaySeconds(accuracy.false_occupied_seconds)}</td>
+      <td>${replaySeconds(accuracy.false_empty_seconds)}</td>
+      <td>${replayLatency(accuracy.entry_latency)}</td>
+      <td>${replayLatency(accuracy.release_latency)}</td>
+    </tr>`;
+}
+
+function replayBudgetLine(run) {
+  if (!run || !run.available) return "";
+  const b = run.budget;
+  // Jede Sekunde der Aufnahme steht hier, auch die, über die das
+  // Verfahren nichts sagen konnte.
+  return `<p class="hint">Zeitbilanz über ${replaySeconds(b.total_seconds)}:
+      belegt ${replaySeconds(b.occupied)} ·
+      leer ${replaySeconds(b.empty)} ·
+      Aufwärmen ${replaySeconds(b.warming_up)} ·
+      Lücke ${replaySeconds(b.gap)} ·
+      unbekannt ${replaySeconds(b.unknown)} ·
+      Rest ${replaySeconds(b.remainder)}</p>`;
+}
+
 async function loadReplay(id, target) {
   if (target.dataset.loaded) return;
   target.innerHTML = '<p class="hint">wird ausgewertet…</p>';
   try {
     const body = await calibrationJson(`api/calibrations/${id}/replay`);
-    const rows = body.strategies
-      .map((strategy) => {
-        if (!strategy.available) {
-          return `<tr class="replay-unavailable">
-              <td>${escapeHtml(strategy.name)}</td>
-              <td colspan="3">${escapeHtml(strategy.reason)}</td>
-            </tr>`;
-        }
-        const score = strategy.score;
-        const share = (value) => (value === null ? "—" : `${Math.round(value * 100)} %`);
-        return `<tr${strategy.reference ? ' class="replay-reference"' : ""}>
-            <td>${escapeHtml(strategy.name)}${strategy.reference ? " (aktuell)" : ""}</td>
-            <td>${score.false_alarms}/${score.empty_windows} · ${share(score.false_alarm_rate)}</td>
-            <td>${score.misses}/${score.occupied_windows} · ${share(score.miss_rate)}</td>
-            <td>${score.unusable_windows}</td>
-          </tr>`;
-      })
-      .join("");
+    const identity = body.identity;
+    const simulation = body.simulation;
+
+    let simulationBlock;
+    if (simulation.with_rate && simulation.with_rate.available) {
+      simulationBlock = `
+        <div class="table-scroll">
+          <table class="replay-table">
+            <thead><tr>
+              <th>Durchlauf</th><th>belegt</th><th>fälschlich belegt</th>
+              <th>fälschlich leer</th><th>Eintritt</th><th>Freigabe</th>
+            </tr></thead>
+            <tbody>
+              ${replayRunRow("mit Rate", simulation.with_rate)}
+              ${replayRunRow("nur Bewegung", simulation.motion_only)}
+            </tbody>
+          </table>
+        </div>
+        ${replayBudgetLine(simulation.with_rate)}`;
+    } else {
+      simulationBlock = `<p class="hint">${escapeHtml(simulation.reason || "Kein chronologischer Durchlauf möglich.")}</p>`;
+    }
+
+    // Die Einstellungen, aus denen die Zahlen stammen. Eine Zahl ohne sie
+    // ist keine Messung.
+    const p = body.parameters;
     target.innerHTML = `
-      <p class="status ${body.in_sample ? "status-warn" : "status-ok"}">${escapeHtml(body.caveat)}</p>
+      <p class="status ${identity.in_sample ? "status-warn" : "status-ok"}">${escapeHtml(identity.caveat)}</p>
+      <p class="hint">Fenster ${p.window_seconds} s · Schwelle ${p.crossing_threshold} ·
+        Haltezeit ${p.hold_seconds} s · Takt ${p.tick_seconds} s ·
+        Abdeckung ≥ ${Math.round(p.min_coverage * 100)} % ·
+        Gedächtnis ${p.rate_memory_seconds} s</p>
+      <h4 class="replay-heading">Chronologischer Durchlauf</h4>
+      ${simulationBlock}
+      <h4 class="replay-heading">Fenstervergleich</h4>
       <div class="table-scroll">
         <table class="replay-table">
           <thead><tr>
             <th>Verfahren</th><th>Fehlalarm (leer)</th>
             <th>Verpasst (belegt)</th><th>Nicht beurteilbar</th>
           </tr></thead>
-          <tbody>${rows}</tbody>
+          <tbody>${replayComparisonRows(body.window_comparison)}</tbody>
         </table>
       </div>`;
     target.dataset.loaded = "1";
@@ -197,7 +277,7 @@ function renderCalibrationSessions(sessions, devices) {
         <button type="button" class="delete-calibration btn-secondary">Löschen</button>
       </div>
       <details class="device-section session-replay"${openReplays.has(session.id) ? " open" : ""}>
-        <summary>Vergleich — was andere Fensterlängen entschieden hätten</summary>
+        <summary>Replay — was Echolot aus dieser Aufnahme gemacht hätte</summary>
         <div class="device-section-body"><div class="replay-body"></div></div>
       </details>
     </article>`;

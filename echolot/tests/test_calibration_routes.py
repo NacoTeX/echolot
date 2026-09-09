@@ -27,9 +27,11 @@ from app import (  # noqa: E402
     feature_api,
     ha_sampler,
     live_presence,
+    samples,
     server,
 )
 from app.devices import BuildStatus, Device, DeviceCreate  # noqa: E402
+from app.telemetry import Sample  # noqa: E402
 
 
 def make_device(*, with_entities: bool = True) -> Device:
@@ -75,8 +77,11 @@ def api(tmp_path, monkeypatch):
     # The live service owns the subscription; a recording attaches to it.
     live = live_presence.LivePresence(subscription_factory=FakeSubscription)
     monkeypatch.setattr(feature_api, "live", live)
-    sampler = ha_sampler.HomeAssistantSampler(store.ingest, live)
+    # The sampler is the liveness check; the readings themselves reach the
+    # store through the canonical bus, once (app/samples.py).
+    sampler = ha_sampler.HomeAssistantSampler(live)
     monkeypatch.setattr(feature_api, "sampler", sampler)
+    samples.bus.forget("probe")
 
     device = make_device()
     monkeypatch.setattr(dev_mod, "get_device", lambda did: device if did == "probe" else None)
@@ -322,8 +327,61 @@ def test_the_replay_route_compares_strategies(api, monkeypatch):
     response = client.get(f"/api/calibrations/{created.json()['id']}/replay")
     assert response.status_code == 200
     body = response.json()
-    assert body["in_sample"] is True
-    assert [s["name"] for s in body["strategies"]][:1] == ["rate_15s"]
+
+    # Provenance first: without a baseline the numbers measure themselves,
+    # and the response has to say so where a reader will see it.
+    assert body["identity"]["in_sample"] is True
+    assert body["identity"]["session"]["source"] == "history"
+    assert body["identity"]["baseline"] is None
+
+    assert body["window_comparison"]["kind"] == "window_comparison"
+    assert [s["name"] for s in body["window_comparison"]["strategies"]][:1] == ["rate_15s"]
+
+    # And the chronological run, with a time budget that adds up.
+    simulation = body["simulation"]["with_rate"]
+    budget = simulation["budget"]
+    parts = sum(value for key, value in budget.items() if key != "total_seconds")
+    assert abs(parts - budget["total_seconds"]) < 1.0
+    assert "motion_only" in body["simulation"]
+
+
+def test_a_baseline_from_another_device_is_refused(api, monkeypatch):
+    """What a room does empty is a fact about that room and that antenna.
+    Accepting a foreign device silently would make a transfer experiment
+    look like an ordinary out-of-sample comparison."""
+    from app import ha_client
+
+    async def fake_history(entity_id, start, end):
+        return history_states(300) if entity_id.startswith("sensor.") else []
+
+    monkeypatch.setattr(ha_client, "get_history_range", fake_history)
+    client, _sampler, store, _opened = api
+
+    created = client.post(
+        "/api/calibrations/import",
+        json={"device_id": "probe", "start": "2026-09-08T04:00:00+00:00",
+              "end": "2026-09-08T04:05:00+00:00", "label": "empty"},
+    ).json()
+    # A second session on a different device, built directly: the import
+    # route would refuse a device that does not exist.
+    other = store.adopt(
+        "anderes-geraet",
+        [Sample(t=float(i), movement_score=0.1, threshold=0.5, motion=False)
+         for i in range(300)],
+        label="empty",
+    )
+
+    refused = client.get(
+        f"/api/calibrations/{created['id']}/replay?baseline={other['id']}"
+    )
+    assert refused.status_code == 409
+    assert "anderen Gerät" in refused.json()["detail"]
+
+    allowed = client.get(
+        f"/api/calibrations/{created['id']}/replay?baseline={other['id']}&transfer=true"
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["identity"]["cross_device"] is True
 
 
 def test_replaying_an_unknown_session_is_a_404(api):

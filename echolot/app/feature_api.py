@@ -21,6 +21,7 @@ from app import (
     live_presence,
     presence_rate,
     replay,
+    samples,
     telemetry,
     zones,
 )
@@ -32,7 +33,7 @@ router = APIRouter()
 def fused_zones() -> list[dict]:
     profiles = calibration.store.latest_profiles()
     return [
-        fusion.evaluate_zone(zone, devices.get_device, telemetry.hub, profiles)
+        fusion.evaluate_zone(zone, devices.get_device, samples.bus, profiles)
         for zone in zones.list_zones()
     ]
 
@@ -43,15 +44,26 @@ def fused_zone(zone_id: str) -> dict:
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
     return fusion.evaluate_zone(
-        zone, devices.get_device, telemetry.hub, calibration.store.latest_profiles()
+        zone, devices.get_device, samples.bus, calibration.store.latest_profiles()
     )
 
 
 @router.get("/api/devices/{device_id}/telemetry")
 def device_telemetry(device_id: str, seconds: int = 1800) -> dict:
+    """The canonical readings, whichever transport produced them.
+
+    It used to be the direct collector's own buffer, so a device without
+    ESPectre's Direct HTTP API showed an empty trace and an error — while
+    Home Assistant was delivering its readings the whole time.
+    """
     if devices.get_device(device_id) is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
-    return telemetry.hub.snapshot(device_id, seconds=seconds)
+    return {
+        **samples.bus.snapshot(device_id, seconds=seconds),
+        # The direct collector's connection state, whether or not it is
+        # the source: "why is there no direct data" is a real question.
+        "direct": telemetry.hub.status(device_id),
+    }
 
 
 @router.get("/api/devices/{device_id}/telemetry/stream")
@@ -60,7 +72,7 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
 
     async def events():
-        queue = telemetry.hub.subscribe(device_id)
+        queue = samples.bus.subscribe(device_id)
         try:
             yield ": connected\n\n"
             while True:
@@ -71,7 +83,7 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
                     continue
                 yield f"data: {json.dumps(sample.as_dict(), separators=(',', ':'))}\n\n"
         finally:
-            telemetry.hub.unsubscribe(device_id, queue)
+            samples.bus.unsubscribe(device_id, queue)
 
     return StreamingResponse(
         events(),
@@ -85,10 +97,11 @@ async def device_telemetry_stream(device_id: str) -> StreamingResponse:
 #: there is no last minute unless something has been listening.
 live = live_presence.LivePresence()
 
-#: A recording attaches to that stream rather than opening its own. Samples
-#: come from Home Assistant, not from the device's Direct API — see
-#: app/ha_sampler.py for why that API is out of reach.
-sampler = ha_sampler.HomeAssistantSampler(calibration.store.ingest, live)
+#: Recordings are fed from the canonical sample bus (app/samples.py), not
+#: from here. This is what answers "is there anything to record from" —
+#: see app/ha_sampler.py, and for why the device's own Direct API is out
+#: of reach, the module docstring there.
+sampler = ha_sampler.HomeAssistantSampler(live)
 
 
 @router.get("/api/calibrations")
@@ -295,31 +308,55 @@ def calibration_presence_rate(session_id: str) -> dict:
 
 
 @router.get("/api/calibrations/{session_id}/replay")
-def replay_calibration(session_id: str, baseline: str | None = None) -> dict:
-    """Replay a session through several detectors and compare them.
+def replay_calibration(
+    session_id: str,
+    baseline: str | None = None,
+    hold_seconds: float = 0.0,
+    transfer: bool = False,
+) -> dict:
+    """Replay a session and report what the add-on would have decided.
 
     Read-only: it touches no zone runtime, no device profile and not the
     live evaluator, so asking cannot change what the lights do. That is
     the point — the review asks for new algorithms to be measured before
     they are wired to anything.
 
+    Two runs over the same material. `window_comparison` groups by label
+    and scores each label's windows on their own; `simulation` runs the
+    recording forward through the same functions the live path takes,
+    with hysteresis and hold time in place.
+
     `baseline` names another session to learn the empty-room rate from.
     Without it the rate is learned from the material being judged, which
-    measures itself; the response says so rather than leaving the reader
-    to notice.
+    measures itself; so does a baseline that is this session, or one whose
+    recording overlaps it in time. The response says which. A baseline
+    from another device is refused unless `transfer=true` says the
+    comparison is meant to be a transfer test.
     """
+    session = calibration.store.get(session_id)
     samples = calibration.store.samples(session_id)
-    if samples is None:
+    if samples is None or session is None:
         raise HTTPException(status_code=404, detail="Kalibrierung nicht gefunden")
 
-    baseline_samples = None
+    baseline_session = baseline_samples = None
     if baseline:
+        baseline_session = calibration.store.get(baseline)
         baseline_samples = calibration.store.samples(baseline)
-        if baseline_samples is None:
+        if baseline_samples is None or baseline_session is None:
             raise HTTPException(
                 status_code=404, detail="Die Maßstab-Sitzung gibt es nicht"
             )
-    return replay.compare(samples, baseline_samples=baseline_samples)
+    try:
+        return replay.report(
+            session,
+            samples,
+            baseline=baseline_session,
+            baseline_samples=baseline_samples,
+            transfer=transfer,
+            hold_seconds=max(0.0, hold_seconds),
+        )
+    except replay.BaselineRefused as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
 
 @router.post("/api/calibrations/{session_id}/apply")

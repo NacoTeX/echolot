@@ -84,29 +84,21 @@ def test_an_unparsable_timestamp_does_not_lose_the_reading():
     assert sample.movement_score == 0.4
 
 
-# --- attached to the live stream --------------------------------------------
+# --- the check that a recording has something behind it ----------------
 #
-# The sampler no longer owns a subscription. app/live_presence.py holds one
-# per device permanently, because the crossing rate needs a window that
-# exists before anybody presses record; a recording attaches to it.
+# The sampler no longer owns a subscription, and since 0.13.6 it no longer
+# feeds one either: readings reach the calibration store through the
+# canonical bus (app/samples.py), once. Attaching here as well meant a
+# device with the Direct HTTP API enabled recorded the same movement
+# twice. What remains is the question `create_calibration` asks before it
+# says yes — is anything listening to this device at all.
 
 
 class FakeStream:
     def __init__(self, device_id="probe"):
         self.device_id = device_id
-        self.listeners = set()
         self.connected = True
         self.error = None
-
-    def add_listener(self, listener):
-        self.listeners.add(listener)
-
-    def remove_listener(self, listener):
-        self.listeners.discard(listener)
-
-    def deliver(self, sample):
-        for listener in tuple(self.listeners):
-            listener(self.device_id, sample)
 
 
 class FakeLive:
@@ -119,51 +111,46 @@ class FakeLive:
 
 @pytest.fixture
 def wired():
-    captured = []
     live = FakeLive()
-    sampler = ha_sampler.HomeAssistantSampler(
-        lambda device_id, sample: captured.append((device_id, sample)), live
-    )
+    sampler = ha_sampler.HomeAssistantSampler(live)
     assert sampler.start(make_device()) is True
-    return sampler, captured, live.streams["probe"]
+    return sampler, live.streams["probe"]
 
 
-def test_a_recording_attaches_to_the_existing_stream(wired):
-    _, _, stream = wired
-    assert len(stream.listeners) == 1
+def test_a_recording_is_marked_as_running(wired):
+    sampler, _ = wired
+    assert sampler.running_for("probe") is True
 
 
-def test_samples_from_the_stream_reach_the_session(wired):
-    _, captured, stream = wired
-    sample = ha_sampler.build_sample(state("0.42"), state("on"), 0.5)
-    stream.deliver(sample)
-    assert captured == [("probe", sample)]
+def test_the_sampler_does_not_feed_anything_itself(wired):
+    """The regression this file's role changed for: two feeds into one
+    store is one movement recorded twice."""
+    sampler, stream = wired
+    assert not hasattr(sampler, "_sink")
+    assert not hasattr(stream, "listeners"), "der Sampler hängt sich nicht mehr an"
 
 
-def test_stopping_detaches(wired):
-    sampler, captured, stream = wired
+def test_stopping_ends_the_recording(wired):
+    sampler, _ = wired
     sampler.stop("probe")
-    assert stream.listeners == set()
-    stream.deliver(ha_sampler.build_sample(state("0.42"), None, None))
-    assert captured == []
     assert sampler.running_for("probe") is False
 
 
-def test_starting_twice_attaches_once(wired):
-    sampler, _, stream = wired
+def test_starting_twice_is_refused(wired):
+    sampler, _ = wired
     assert sampler.start(make_device()) is False
-    assert len(stream.listeners) == 1
 
 
 def test_a_device_with_no_live_stream_cannot_be_recorded():
     """Nothing is listening to it — usually because Echolot has not
-    resolved its entities."""
-    sampler = ha_sampler.HomeAssistantSampler(lambda *_: None, FakeLive(streams={}))
+    resolved its entities. Three sessions were once recorded and exported
+    before anyone noticed there had never been any data in them."""
+    sampler = ha_sampler.HomeAssistantSampler(FakeLive(streams={}))
     assert sampler.start(make_device()) is False
 
 
 def test_the_connection_state_comes_from_the_stream(wired):
-    sampler, _, stream = wired
+    sampler, stream = wired
     assert sampler.status("probe") == {"connected": True, "error": None}
     stream.connected = False
     stream.error = "getrennt"
@@ -171,13 +158,49 @@ def test_the_connection_state_comes_from_the_stream(wired):
     assert sampler.status("gibtsnicht") == {"connected": False, "error": None}
 
 
-def test_stop_all_detaches_every_recording():
-    stream_a, stream_b = FakeStream("a"), FakeStream("b")
-    live = FakeLive({"a": stream_a, "b": stream_b})
-    sampler = ha_sampler.HomeAssistantSampler(lambda *_: None, live)
+def test_stop_all_ends_every_recording():
+    live = FakeLive({"a": FakeStream("a"), "b": FakeStream("b")})
+    sampler = ha_sampler.HomeAssistantSampler(live)
     for device_id in ("a", "b"):
         device = make_device()
         device.id = device_id
         sampler.start(device)
     sampler.stop_all()
-    assert stream_a.listeners == set() and stream_b.listeners == set()
+    assert not sampler.running_for("a") and not sampler.running_for("b")
+
+
+# --- values that are not measurements (R2) -----------------------------
+
+
+def test_nan_and_infinity_are_not_measurements():
+    """They survive `float()`. A NaN score compares False against every
+    threshold, so it is silently never a crossing; an infinity is always
+    one. Neither belongs in a rate measured per second."""
+    for raw in ("nan", "NaN", "inf", "-inf", "Infinity"):
+        assert ha_sampler._float(state(raw)) is None
+    assert ha_sampler.build_sample(state("nan"), None, None) is None
+
+
+def test_a_timestamp_from_the_future_is_refused():
+    """The live buffer is bounded relative to its *newest* reading, so one
+    reading stamped a year ahead drops every real one and keeps the window
+    empty until it ages out — which it never would."""
+    import time
+    from datetime import datetime, timezone
+
+    ahead = datetime.fromtimestamp(time.time() + 86_400, tz=timezone.utc).isoformat()
+    sample = ha_sampler.build_sample(state("0.42", ahead), None, None)
+    # The reading is kept — it is a real measurement — but not its stamp.
+    assert sample is not None and sample.movement_score == 0.42
+    assert sample.t == 0.0
+
+
+def test_a_small_clock_difference_is_tolerated():
+    """Home Assistant and the add-on can disagree by a few seconds without
+    either being wrong."""
+    import time
+    from datetime import datetime, timezone
+
+    soon = datetime.fromtimestamp(time.time() + 5, tz=timezone.utc).isoformat()
+    sample = ha_sampler.build_sample(state("0.42", soon), None, None)
+    assert sample.t > 0.0

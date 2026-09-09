@@ -39,6 +39,7 @@ recording produces today are lower (the same baseline recording gives
 version.
 """
 
+import math
 from dataclasses import dataclass
 
 #: How far back the rate is measured. Sixty seconds is where separation
@@ -115,6 +116,15 @@ MIN_SAMPLES_PER_WINDOW = 5
 #: recalibrated, which is the honest outcome.
 PROFILE_VERSION = 2
 
+#: How long a device's rate hysteresis remembers across a data outage.
+#:
+#: Somebody sitting still through a short dropout should not have to move
+#: again to be seen; somebody who left an hour ago should not still be
+#: holding the room on evidence nobody has confirmed since. Two window
+#: lengths is the compromise, and it is a decision rather than a side
+#: effect of a cache key.
+RATE_MEMORY_SECONDS = 120.0
+
 
 @dataclass(frozen=True)
 class RateProfile:
@@ -134,6 +144,16 @@ class RateProfile:
     #: Windows that look occupied inside an "empty" recording.
     suspect_windows: int = 0
     window_count: int = 0
+    #: Which transport measured the material this was learned from — see
+    #: app/samples.py. None on a profile learned before 0.13.6, and on
+    #: material that carries no source; those are all Home Assistant
+    #: readings, because that is the only path the live evaluation has
+    #: ever taken. Recorded rather than versioned: an existing profile is
+    #: still a correct answer to the question it was learned under, and
+    #: bumping the version would throw every one of them away. What it
+    #: buys is the mismatch check — the same room measured over a
+    #: different transport is a different measurement.
+    source: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -148,6 +168,7 @@ class RateProfile:
             "exit_rate": round(self.exit_rate, 5),
             "suspect_windows": self.suspect_windows,
             "window_count": self.window_count,
+            "source": self.source,
             "warning": self.warning,
         }
 
@@ -180,36 +201,99 @@ class RateProfile:
         return min(self.enter_rate, self.baseline_rate * DEFAULT_EXIT_RATIO)
 
 
+#: Why a stored profile is not being used. Three different situations,
+#: kept apart because they need three different things from the person:
+#: recalibrate, fix the data, or nothing at all.
+MISSING = "missing"
+OUTDATED = "outdated"
+MALFORMED = "malformed"
+USABLE = "usable"
+
+
+def _finite(value) -> float:
+    """A float, or a refusal. NaN and the infinities are not numbers here.
+
+    They survive float() and then make every comparison False, so a
+    profile carrying one would read as a room that is never occupied.
+    """
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{value!r} ist keine endliche Zahl")
+    return number
+
+
+def profile_status(data) -> str:
+    """Whether a stored profile can be used, and if not, why.
+
+    Every branch returns; nothing raises. This is read on the shared
+    evaluation pass, and one device with a damaged profile must not take
+    the other rooms down with it.
+    """
+    if not isinstance(data, dict) or not data:
+        return MISSING
+    try:
+        version = int(data.get("version") or 1)
+    except (TypeError, ValueError):
+        # A version that is not a number says nothing about which
+        # definition wrote this, so the profile cannot be trusted at all.
+        return MALFORMED
+    if version != PROFILE_VERSION:
+        return OUTDATED
+    return USABLE if _parse_profile(data) is not None else MALFORMED
+
+
 def profile_outdated(data) -> bool:
-    """True for a stored profile written under an older definition."""
-    return isinstance(data, dict) and int(data.get("version") or 1) != PROFILE_VERSION
+    """True for a stored profile that is present but cannot be used."""
+    return profile_status(data) in (OUTDATED, MALFORMED)
+
+
+def _parse_profile(data: dict) -> RateProfile | None:
+    """The strict half: shapes and ranges, or None."""
+    try:
+        window_seconds = _finite(data["window_seconds"])
+        baseline_rate = _finite(data["baseline_rate"])
+        crossing_threshold = _finite(data["crossing_threshold"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    # Ranges, not just types. A window of zero divides by zero downstream;
+    # a negative baseline makes every ratio meaningless and every room
+    # occupied.
+    if window_seconds <= 0 or baseline_rate < 0 or crossing_threshold < 0:
+        return None
+
+    try:
+        return RateProfile(
+            crossing_threshold=crossing_threshold,
+            baseline_rate=baseline_rate,
+            baseline_spread=max(0.0, _finite(data.get("baseline_spread") or 0.0)),
+            window_seconds=window_seconds,
+            sample_count=max(0, int(data.get("sample_count") or 0)),
+            observed_seconds=max(0.0, _finite(data.get("observed_seconds") or 0.0)),
+            suspect_windows=max(0, int(data.get("suspect_windows") or 0)),
+            window_count=max(0, int(data.get("window_count") or 0)),
+            source=(str(data["source"]) if data.get("source") else None),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def profile_from_dict(data) -> RateProfile | None:
     """Rebuild a profile from what as_dict() produced, or None if unusable.
+
+    Never raises. Until 0.13.6 the version was converted outside the
+    try block, so a stored `{"version": "broken"}` — a hand-edited file,
+    a half-written record — raised ValueError out of the shared
+    evaluation pass and took every zone with it.
 
     A profile from an older version is unusable on purpose. Version 1
     divided by the span between readings rather than by observed time, so
     its baseline is a number about a different measurement; carrying it
     forward would silently judge new data against an old definition.
     """
-    if not isinstance(data, dict):
+    if profile_status(data) != USABLE:
         return None
-    if profile_outdated(data):
-        return None
-    try:
-        return RateProfile(
-            crossing_threshold=float(data["crossing_threshold"]),
-            baseline_rate=float(data["baseline_rate"]),
-            baseline_spread=float(data.get("baseline_spread") or 0.0),
-            window_seconds=float(data["window_seconds"]),
-            sample_count=int(data.get("sample_count") or 0),
-            observed_seconds=float(data.get("observed_seconds") or 0.0),
-            suspect_windows=int(data.get("suspect_windows") or 0),
-            window_count=int(data.get("window_count") or 0),
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
+    return _parse_profile(data)
 
 
 @dataclass(frozen=True)
@@ -243,33 +327,58 @@ class Window:
 
 
 def observed_seconds(samples: list[dict], start: float, end: float) -> float:
-    """How much of [start, end) had a live source behind it.
+    """How much of [start, end) a live source can be shown to have covered.
 
-    A quiet room still reports: the movement score is a float derived from
-    CSI, and even a living room at four in the morning produced 0.7
-    readings a second. A minute with no reading at all is therefore not a
-    quiet minute, it is a minute nobody was listening — so time inside a
-    gap longer than MAX_SAMPLE_GAP is not counted as observed, while an
-    ordinary quiet stretch (the longest measured was 18.7 s) still is.
+    A reading proves the source was alive at that instant and says nothing
+    about any other instant. What it is allowed to stand for either side
+    of itself has to be bounded, or the arithmetic invents evidence: until
+    0.13.6 this subtracted gaps over thirty seconds and counted everything
+    else — including the time before the first reading and after the last
+    — so five readings spanning four tenths of a second in the middle of a
+    minute were reported as sixty seconds observed, and the same burst at
+    the edge of the window was rejected. The same evidence, two answers,
+    decided by where it happened to fall.
+
+    So each reading covers `MAX_SAMPLE_GAP / 2` either side of itself, and
+    the observed time is the union of those intervals clipped to the
+    window. Two readings closer together than MAX_SAMPLE_GAP therefore
+    join up — an ordinary quiet stretch (the longest measured in a real
+    recording was 18.7 s) stays continuous — while a real hole opens a
+    real hole, and a burst covers only what a burst can cover.
+
+    A quiet room still reports: the movement score is derived from CSI,
+    and even a living room at four in the morning produced 0.7 readings a
+    second. A minute with no reading at all is not a quiet minute, it is a
+    minute nobody was listening.
     """
     span = end - start
     if span <= 0:
         return 0.0
-    stamps = sorted(row.get("t") or 0.0 for row in samples)
+    stamps = sorted(
+        stamp
+        for stamp in (row.get("t") for row in samples)
+        if isinstance(stamp, (int, float)) and math.isfinite(stamp)
+    )
     if not stamps:
         return 0.0
 
-    missing = 0.0
-    previous = start
+    reach = MAX_SAMPLE_GAP / 2.0
+    covered = 0.0
+    open_from = open_to = None
     for stamp in stamps:
-        gap = stamp - previous
-        if gap > MAX_SAMPLE_GAP:
-            missing += gap
-        previous = stamp
-    trailing = end - previous
-    if trailing > MAX_SAMPLE_GAP:
-        missing += trailing
-    return max(0.0, span - missing)
+        low = max(start, stamp - reach)
+        high = min(end, stamp + reach)
+        if high <= low:
+            continue
+        if open_to is not None and low <= open_to:
+            open_to = max(open_to, high)
+            continue
+        if open_to is not None:
+            covered += open_to - open_from
+        open_from, open_to = low, high
+    if open_to is not None:
+        covered += open_to - open_from
+    return min(span, covered)
 
 
 def event_rate(samples: list[dict], threshold: float, *, observed: float | None = None) -> float:
@@ -304,6 +413,36 @@ def event_rate(samples: list[dict], threshold: float, *, observed: float | None 
         return 0.0
     events = sum(row["movement_score"] >= threshold for row in scored)
     return events / observed
+
+
+def label_segments(samples: list[dict]) -> list[tuple]:
+    """Contiguous runs of one label, in time order.
+
+    Windows must not be built across a label boundary. `learn_baseline`
+    used to drop every non-empty reading first and then window what was
+    left, so a recording labelled empty/still/empty/still every twenty
+    seconds reported the full ten minutes as empty-room observation —
+    two hundred seconds of somebody sitting there bridged away by the
+    gap rule. Segmenting first makes those gaps what they are: the end of
+    one stretch and the start of another.
+    """
+    ordered = sorted(
+        (row for row in samples if isinstance(row.get("t"), (int, float))
+         and math.isfinite(row["t"])),
+        key=lambda row: row["t"],
+    )
+    segments: list[tuple] = []
+    current: list[dict] = []
+    label = None
+    for row in ordered:
+        if row.get("label") != label:
+            if current:
+                segments.append((label, current))
+            label, current = row.get("label"), []
+        current.append(row)
+    if current:
+        segments.append((label, current))
+    return segments
 
 
 def split_windows(samples: list[dict], window_seconds: float) -> list[Window]:
@@ -362,14 +501,19 @@ def learn_baseline(
     gives a confidently wrong one. Ten *observed* minutes, now, rather
     than ten groups of readings.
     """
-    empty = [
-        row for row in samples
-        if row.get("label") == "empty" and row.get("movement_score") is not None
-    ]
+    scored = [row for row in samples if row.get("movement_score") is not None]
+    empty = [row for row in scored if row.get("label") == "empty"]
     if len(empty) < 30:
         return None
 
-    windows = usable_windows(split_windows(empty, window_seconds))
+    # Segment first, window inside each segment. Filtering to "empty" and
+    # windowing the remainder joined separate empty stretches across the
+    # occupied minutes between them, and counted those minutes as empty
+    # observation.
+    windows = []
+    for label, rows in label_segments(scored):
+        if label == "empty":
+            windows.extend(usable_windows(split_windows(rows, window_seconds)))
     if len(windows) < MIN_BASELINE_WINDOWS:
         return None
 
@@ -399,7 +543,17 @@ def learn_baseline(
             1 for rate in rates if rate > max(centre * 3.0, centre + 0.05)
         ),
         window_count=len(rates),
+        # Only when the material agrees with itself. Mixed sources mean
+        # this baseline describes no single measurement, and saying so is
+        # more useful than picking one.
+        source=_single_source(empty),
     )
+
+
+def _single_source(rows: list[dict]) -> str | None:
+    """The one transport these readings came from, or None."""
+    seen = {row.get("source") for row in rows if row.get("source")}
+    return seen.pop() if len(seen) == 1 else None
 
 
 def evaluate(
@@ -423,16 +577,31 @@ def evaluate(
     instead would reject a perfectly observed minute whose readings
     happen to start late in it.
     """
-    scored = [row for row in recent if row.get("movement_score") is not None]
-    stamps = [row.get("t") or 0.0 for row in scored]
+    scored = [
+        row for row in recent
+        if row.get("movement_score") is not None
+        and isinstance(row.get("t"), (int, float))
+        and math.isfinite(row["t"])
+        and math.isfinite(row["movement_score"])
+    ]
+    stamps = [row["t"] for row in scored]
     if window is not None:
         span = window.duration
         observed = window.observed
     else:
-        span = (max(stamps) - min(stamps)) if len(stamps) >= 2 else 0.0
-        observed = (
-            observed_seconds(scored, min(stamps), max(stamps)) if len(stamps) >= 2 else 0.0
-        )
+        # The rolling window, stated rather than inferred. Taking the span
+        # between the first and last reading made the window whatever the
+        # data happened to fill, so a buffer holding four seconds of
+        # readings was judged as a four-second window and passed. The
+        # window is `window_seconds` ending at the newest reading; how
+        # much of it was observed is then the same question replay asks.
+        if stamps:
+            end = max(stamps)
+            start = end - profile.window_seconds
+            span = min(profile.window_seconds, end - min(stamps))
+            observed = observed_seconds(scored, start, end)
+        else:
+            span = observed = 0.0
     rate = event_rate(scored, profile.crossing_threshold, observed=observed)
     ratio = rate / profile.baseline_rate if profile.baseline_rate else 0.0
 
@@ -449,6 +618,11 @@ def evaluate(
     # answer from a fifth of a second of evidence. The window has to have
     # actually elapsed, and something has to have been listening for most
     # of it, before there is anything to judge.
+    # One release rule, written once: the window has to have elapsed to
+    # MIN_COVERAGE of its length, and MIN_COVERAGE of it has to have been
+    # observed. Two different questions — has enough time passed, and was
+    # anything listening while it did — and both have to be answered
+    # before there is a verdict.
     if len(scored) < MIN_SAMPLES_PER_WINDOW or span < profile.window_seconds * MIN_COVERAGE:
         return {
             **base,
@@ -487,6 +661,51 @@ def evaluate(
             f"Faktor {ratio:.1f}"
         ),
     }
+
+
+def advance(
+    profile: RateProfile,
+    rows: list[dict],
+    memory: dict | None,
+    *,
+    now: float,
+    source=None,
+    window: "Window | None" = None,
+    memory_seconds: float = RATE_MEMORY_SECONDS,
+) -> tuple[bool | None, dict | None]:
+    """One device's verdict, carrying its own hysteresis between calls.
+
+    Returns `(verdict, memory)`. The verdict is True, False, or None when
+    the rate cannot say; `memory` is opaque and belongs to the caller —
+    hand back what came out last time and nothing else.
+
+    This is the step both the live path and the replay runner take, and
+    it is one function on purpose. `evaluate` alone is not the whole
+    answer: which of the two levels applies depends on what this device
+    said last time, and that memory has rules of its own. It is dropped
+    when the profile moves (recalibrating asks a different question), when
+    the source is replaced (a rebuilt subscription is different data), and
+    when it goes stale (`memory_seconds`). An outage keeps it: a person
+    sitting still through a dropout should not have to move again to be
+    seen.
+
+    A replay that reimplemented any of that would be measuring something
+    the add-on does not do.
+    """
+    key = (profile.crossing_threshold, profile.baseline_rate, profile.window_seconds)
+    if memory is not None and (
+        memory.get("key") != key
+        or memory.get("source") != source
+        or now - memory.get("at", now) > memory_seconds
+    ):
+        memory = None
+
+    previous = bool(memory["remembered"]) if memory else False
+    result = evaluate(profile, rows, occupied_now=previous, window=window)
+    verdict = bool(result["occupied"]) if result["available"] else None
+    if verdict is None:
+        return None, memory
+    return verdict, {"key": key, "source": source, "remembered": verdict, "at": now}
 
 
 def _percentile(values: list[float], fraction: float) -> float:

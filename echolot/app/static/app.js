@@ -56,6 +56,11 @@ function renderZones(zones) {
         // and different, and saying so points at the fix.
         label = "keine Geräte";
         cls = "zone-pill-unknown";
+      } else if (z.pending) {
+        // Die Auswertung ist eine eigene Schleife; eine gerade angelegte
+        // Zone hat noch keine Runde hinter sich.
+        label = "wird ausgewertet…";
+        cls = "zone-pill-unknown";
       } else if (!z.available) {
         label = "nicht verfügbar";
         cls = "zone-pill-unknown";

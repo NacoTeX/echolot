@@ -325,7 +325,13 @@ async function refreshZone(id, tileEl) {
     return;
   }
 
-  if (!state.available) {
+  if (state.pending) {
+    // Noch keine Auswertungsrunde für diese Zone — nicht dasselbe wie
+    // "nicht verfügbar", wo gemessen wurde und nichts ankam.
+    dot.className = "tile-dot tile-dot-unknown";
+    stateEl.textContent = "wird ausgewertet…";
+    stateEl.className = "tile-state status-pending";
+  } else if (!state.available) {
     dot.className = "tile-dot tile-dot-unknown";
     stateEl.textContent = "nicht verfügbar";
     stateEl.className = "tile-state status-warn";

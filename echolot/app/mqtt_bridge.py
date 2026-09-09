@@ -12,7 +12,6 @@ config.yaml), so nothing needs configuring when the Mosquitto add-on is
 installed. Without a broker the bridge simply stays dormant.
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -39,35 +38,55 @@ DEVICE_INFO = {
 }
 
 
-#: What Home Assistant has been told about, kept across restarts.
+#: What Home Assistant has been told about, and what still has to be
+#: taken back, kept across restarts.
 #:
-#: The publisher used to hold this in memory only, so a zone deleted while
-#: the add-on was stopped was never un-announced: its retained discovery
-#: message stayed on the broker and the entity haunted Home Assistant
-#: until someone cleared the topic by hand. On the next start the zone is
-#: simply not in the list any more, and nothing in memory remembered that
-#: it ever had been.
-def _announced_path() -> Path:
+#: The announced set alone was not a deletion queue. `forget_zone()`
+#: returns immediately when the broker is disconnected, and the loop then
+#: set `known = current` anyway — so on the next pass the zone to remove
+#: was not in `known` any more and nobody ever retried. Its retained
+#: discovery message stayed on the broker and the entity haunted Home
+#: Assistant. Failed publishes were ignored the same way.
+#:
+#: So a zone that should go gets a tombstone written down *before* the
+#: first attempt, and the tombstone is only dropped once every retained
+#: topic has actually been taken. Announcements and tombstones are stored
+#: together, because writing one without the other loses the other.
+def _state_path() -> Path:
     return Path(os.environ.get("ECHOLOT_DATA_DIR", "/data")) / "mqtt_announced.json"
 
 
-def load_announced() -> set[str]:
+def load_state() -> tuple[set[str], set[str]]:
+    """(announced, tombstones), tolerant of anything on disk."""
     try:
-        return set(json.loads(_announced_path().read_text(encoding="utf-8")))
+        stored = json.loads(_state_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return set()
+        return set(), set()
+    if isinstance(stored, list):
+        # The 0.13.5 shape: a bare list of announced ids.
+        return set(stored), set()
+    if not isinstance(stored, dict):
+        return set(), set()
+    return set(stored.get("announced") or []), set(stored.get("tombstones") or [])
 
 
-def remember_announced(zone_ids: set[str]) -> None:
+def remember_state(announced: set[str], tombstones: set[str]) -> None:
     try:
-        path = _announced_path()
+        path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(sorted(zone_ids)), encoding="utf-8")
+        temporary.write_text(
+            json.dumps({"announced": sorted(announced), "tombstones": sorted(tombstones)}),
+            encoding="utf-8",
+        )
         temporary.replace(path)
     except OSError:
         # Losing this costs a ghost entity, not a broken export.
-        logger.warning("Angekündigte Zonen konnten nicht gespeichert werden")
+        logger.warning("MQTT-Zustand konnte nicht gespeichert werden")
+
+
+def load_announced() -> set[str]:
+    return load_state()[0]
 
 
 class MqttUnavailable(Exception):
@@ -186,6 +205,9 @@ class ZoneBridge:
         #: enough: renaming a zone changes the discovery payload, and
         #: without noticing, Home Assistant kept the old name forever.
         self._announced: dict[str, str] = {}
+        #: zone id -> the three delete publishes still awaiting a PUBACK.
+        #: See `forget_zone`.
+        self._pending_deletes: dict[str, list] = {}
         self.connected = False
         self.error: str | None = None
 
@@ -214,6 +236,10 @@ class ZoneBridge:
                 # zone on reconnect and makes the bridge self-healing.
                 with self._lock:
                     self._announced.clear()
+                    # Anything that was in flight when the connection went
+                    # is not in flight any more. The tombstone outlives
+                    # this, so the delete is sent again.
+                    self._pending_deletes.clear()
                 logger.info("MQTT connected to %s", config["host"])
             else:
                 self.error = f"Verbindung abgelehnt (Code {rc})"
@@ -243,19 +269,32 @@ class ZoneBridge:
         self._client = None
         self.connected = False
 
-    def _publish(self, topic: str, payload: str, *, retain: bool = True) -> bool:
-        """Publish and say whether the broker accepted it.
+    def _send(self, topic: str, payload: str, *, retain: bool = True, qos: int = 0):
+        """Hand one message to the client, or None when it refused it.
 
         paho returns an MQTTMessageInfo whose rc tells you the message was
         dropped — queue full, or not connected after all. Discarding that
         turns a silent failure into a zone that quietly stops updating in
         Home Assistant, with nothing anywhere saying why.
+
+        The info is handed back rather than reduced to a bool, because
+        `rc == SUCCESS` means the *client* took it, not that the broker
+        did. For a deletion that difference decides whether a tombstone
+        may be dropped — see `forget_zone`.
         """
-        info = self._client.publish(topic, payload, retain=retain)
+        info = self._client.publish(topic, payload, retain=retain, qos=qos)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             logger.warning("MQTT publish to %s rejected (rc=%s)", topic, info.rc)
-            return False
-        return True
+            return None
+        return info
+
+    def _publish(self, topic: str, payload: str, *, retain: bool = True) -> bool:
+        """Fire and forget. True when the client took the message."""
+        return self._send(topic, payload, retain=retain) is not None
+
+    def announced_ids(self) -> set[str]:
+        with self._lock:
+            return set(self._announced)
 
     def publish_zone(self, zone_id: str, zone_name: str, occupied: bool, available: bool) -> None:
         if not self._client or not self.connected:
@@ -278,7 +317,6 @@ class ZoneBridge:
                 return
             with self._lock:
                 self._announced[zone_id] = zone_name
-            remember_announced(set(self._announced))
 
         # Say whether this zone has a measurement at all, then — only if
         # it does — what that measurement is. An unavailable zone stops
@@ -289,16 +327,47 @@ class ZoneBridge:
         if available:
             self._publish(zone_state_topic(zone_id), "ON" if occupied else "OFF")
 
-    def forget_zone(self, zone_id: str) -> None:
-        """Empty retained config message removes the entity from HA."""
+    def forget_zone(self, zone_id: str) -> bool:
+        """Clear every retained topic. True only once the broker said so.
+
+        The caller keeps a tombstone until this says True, and what counts
+        as True is the point. `publish().rc == SUCCESS` means the *client*
+        accepted the message; at QoS 0 nothing ever confirms it left the
+        machine. A deletion does not self-heal the way an announcement
+        does — `on_connect` re-announces, but nothing re-deletes — so the
+        three deletions go out at QoS 1 and the tombstone survives until
+        all three are acknowledged.
+
+        The acknowledgement is *checked*, never waited for: this runs on
+        the evaluator's loop, and blocking it would stop every zone.
+        A delete therefore normally takes two rounds, which is what the
+        tombstone is for.
+        """
         if not self._client or not self.connected:
-            return
-        self._publish(zone_discovery_topic(zone_id), "")
-        self._publish(zone_state_topic(zone_id), "")
-        self._publish(zone_availability_topic(zone_id), "")
-        with self._lock:
-            self._announced.pop(zone_id, None)
-        remember_announced(set(self._announced))
+            # Whatever was in flight is not any more.
+            self._pending_deletes.pop(zone_id, None)
+            return False
+
+        pending = self._pending_deletes.get(zone_id)
+        if pending is not None:
+            if not all(info.is_published() for info in pending):
+                return False            # still in flight; do not resend
+            self._pending_deletes.pop(zone_id, None)
+            with self._lock:
+                self._announced.pop(zone_id, None)
+            return True
+
+        sent = [
+            self._send(zone_discovery_topic(zone_id), "", qos=1),
+            self._send(zone_state_topic(zone_id), "", qos=1),
+            self._send(zone_availability_topic(zone_id), "", qos=1),
+        ]
+        if any(info is None for info in sent):
+            return False
+        self._pending_deletes[zone_id] = sent
+        # Already acknowledged (a fast local broker, or a test double)?
+        # Then this round is allowed to finish the job.
+        return self.forget_zone(zone_id)
 
     def status(self) -> dict:
         if self.connected:
@@ -309,60 +378,74 @@ class ZoneBridge:
 bridge = ZoneBridge()
 
 
-async def publish_loop(
-    compute_all_zone_states,
-    list_zones,
-    on_zone_gone=None,
-    interval: float = 10.0,
-    wakeup: "asyncio.Event | None" = None,
-) -> None:
-    """Mirror zone state to MQTT, independent of the UI.
+class ZonePublisher:
+    """Mirrors the evaluator's rounds onto MQTT, with a deletion queue.
 
-    A zone can also disappear because someone edited zones.json by hand,
-    which never goes through the delete route — hence `on_zone_gone`, so
-    the caller can drop the zone's hold-time state alongside the entity.
-
-    `wakeup` makes this event-driven with the timer as a floor rather than
-    as the only clock. On a pure timer a movement that arrives just after
-    a tick waits most of `interval` before Home Assistant hears about it,
-    and a short pulse between two ticks can be missed entirely — the
-    device reacts in a second and the export then adds ten. The live
-    subscriptions already receive Home Assistant's state changes as they
-    happen, so setting the event publishes immediately. The timer stays
-    for hold times expiring, for zones added or removed, and as the
-    fallback whenever nothing is listening.
+    It does no evaluation of its own. The export used to run its own loop
+    with its own clock and its own calls into Home Assistant, which is
+    how a reading arriving three times a second became three rounds of
+    requests; now it publishes what the one evaluator worked out, when it
+    works it out.
     """
-    # Seeded from disk, so a zone deleted while the add-on was stopped is
-    # un-announced on the next start instead of haunting Home Assistant.
-    known: set[str] = load_announced()
-    while True:
-        try:
-            zones = list_zones()
-            current = {z.id for z in zones}
-            for gone in known - current:
-                bridge.forget_zone(gone)
-                if on_zone_gone is not None:
-                    on_zone_gone(gone)
-            known = current
 
-            # One call for all zones: it fetches Home Assistant's states
-            # once per tick rather than once per zone per device.
-            for zone, state in await compute_all_zone_states(zones):
-                bridge.publish_zone(
-                    zone.id, zone.name, bool(state.get("occupied")), bool(state.get("available"))
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - a bad cycle must not kill the loop
+    def __init__(self, on_zone_gone=None) -> None:
+        self.announced, self.tombstones = load_state()
+        self._on_zone_gone = on_zone_gone
+
+    def __call__(self, states: list[tuple]) -> None:
+        try:
+            self.publish(states)
+        except Exception:  # noqa: BLE001 - a bad round must not kill the loop
             logger.exception("MQTT publish cycle failed")
 
-        if wakeup is None:
-            await asyncio.sleep(interval)
-            continue
-        try:
-            await asyncio.wait_for(wakeup.wait(), timeout=interval)
-        except asyncio.TimeoutError:
-            pass
-        # Cleared after the wait rather than before the next cycle, so a
-        # change arriving while a cycle is still running is not lost.
-        wakeup.clear()
+    def publish(self, states: list[tuple]) -> None:
+        desired = {zone.id for zone, _ in states}
+
+        # A queued delete for a zone that exists again is not a delete any
+        # more, and working it would take a live entity away. Dropped
+        # before the queue is worked, not after.
+        revived = self.tombstones & desired
+        if revived:
+            self.tombstones -= revived
+            self._remember()
+
+        # Anything announced that should not exist gets a tombstone, and
+        # the tombstone is written down before the first attempt to
+        # remove it — a delete that fails must survive the failure.
+        vanished = (self.announced | bridge.announced_ids()) - desired - self.tombstones
+        if vanished:
+            self.tombstones |= vanished
+            self._remember()
+
+        self._retry_deletions()
+
+        for zone, state in states:
+            bridge.publish_zone(
+                zone.id, zone.name, bool(state.get("occupied")), bool(state.get("available"))
+            )
+            if zone.id in bridge.announced_ids() and zone.id not in self.announced:
+                self.announced.add(zone.id)
+                self._remember()
+
+    def _retry_deletions(self) -> None:
+        """Work the queue. Whatever does not take stays queued."""
+        done = set()
+        for zone_id in sorted(self.tombstones):
+            if bridge.forget_zone(zone_id):
+                done.add(zone_id)
+                if self._on_zone_gone is not None:
+                    self._on_zone_gone(zone_id)
+        if done:
+            self.tombstones -= done
+            self.announced -= done
+            self._remember()
+
+    def _remember(self) -> None:
+        remember_state(self.announced, self.tombstones)
+
+
+def attach(evaluator, on_zone_gone=None) -> ZonePublisher:
+    """Publish on every evaluator round, for the life of the process."""
+    publisher = ZonePublisher(on_zone_gone)
+    evaluator.add_listener(publisher)
+    return publisher

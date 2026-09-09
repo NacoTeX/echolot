@@ -257,3 +257,19 @@ def test_an_unbuilt_device_is_not_asked_to_rebuild_for_the_access_point():
     """There is no firmware on it to be open."""
     problems = collect(device_states=[(device(status=BuildStatus.IDLE), None)])
     assert "fallback_ap_open" not in kinds(problems)
+
+
+def test_a_damaged_profile_is_named_as_damaged_not_as_outdated():
+    """From the follow-up review (R7). The two need different things from
+    the person: recalibrate, or look at the file."""
+    from app import presence_rate
+
+    subject = device()
+    subject.presence_profile = {"version": "broken"}
+    assert presence_rate.profile_status(subject.presence_profile) == presence_rate.MALFORMED
+
+    problems = collect(
+        device_states=[(subject, {"available": True, "motion": False})]
+    )
+    assert "profile_malformed" in kinds(problems)
+    assert "profile_outdated" not in kinds(problems)

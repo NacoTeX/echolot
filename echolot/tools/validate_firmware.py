@@ -32,6 +32,12 @@ def main() -> int:
 
     # Every board, plus the variants whose branches are otherwise never
     # exercised: the optional blocks off, and API encryption on.
+    #
+    # The encrypted case validates and does *not* link: noise-c/libsodium
+    # collides with a header ESPectre publishes globally (DOCS.md, "Der
+    # Verschlüsselungscode"). That is the difference between this tool and
+    # tools/compile_firmware.py in one line — a green tick here says the
+    # YAML is well-formed, never that a compiler would accept it.
     cases = [(key, True, True, False) for key in BOARDS]
     cases.append(("esp32c6", False, False, False))
     cases.append(("esp32c6", True, True, True))

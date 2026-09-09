@@ -51,8 +51,17 @@ def window(crossings: int, *, span: float = 60.0, samples: int = 40, start: floa
 
 
 class FakeStream:
-    def __init__(self, rows):
+    """A stand-in for one live subscription.
+
+    `generation` is the stream's own number: replacing the object here
+    stands for new data arriving on the same subscription, so the default
+    keeps it. A *rebuilt* subscription — the device's entity ids changed
+    — gets a different one, and that is a different source.
+    """
+
+    def __init__(self, rows, generation=1):
         self.rows = rows
+        self.generation = generation
 
     def window(self, seconds, *, now=None):
         return list(self.rows)
@@ -81,6 +90,18 @@ def make_device(device_id="wohnzimmer", profile=PROFILE):
     return device
 
 
+def new_round():
+    """Start a fresh evaluation round.
+
+    The evaluator clears its per-tick device cache at the top of every
+    cycle, so a device is evaluated once per round however many zones
+    hold it. A test that means "later, with new data" has to say so —
+    otherwise it is asking the same round twice and gets the cached
+    answer, which is the intended behaviour, not a bug.
+    """
+    main.evaluator._device_verdicts.clear()
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """Point main at fake devices and fake live streams, and start clean."""
@@ -91,8 +112,10 @@ def wired(monkeypatch):
     monkeypatch.setattr(main.devices, "get_device", lambda i: registry.get(i))
     monkeypatch.setattr(feature_api, "live", FakeLive(streams))
     main._rate_state.clear()
+    new_round()
     yield registry, streams
     main._rate_state.clear()
+    new_round()
 
 
 def levels():
@@ -119,6 +142,7 @@ def test_a_device_that_was_active_stays_active_between_the_levels(wired):
     streams[device.id] = FakeStream(window(30))          # well above enter
     assert main._zone_rate_verdict(zone) is True
 
+    new_round()
     streams[device.id] = FakeStream(window(8, start=100.0))  # between the levels
     assert main._zone_rate_verdict(zone) is True, "die Ausschaltschwelle wurde nicht benutzt"
 
@@ -132,13 +156,15 @@ def test_a_device_that_was_idle_does_not_switch_on_between_the_levels(wired):
     streams[device.id] = FakeStream(window(0))
     assert main._zone_rate_verdict(zone) is False
 
+    new_round()
     streams[device.id] = FakeStream(window(8, start=100.0))
     assert main._zone_rate_verdict(zone) is False
 
 
 def test_member_order_does_not_change_a_devices_answer(wired):
     """Each device carries its own history, so shuffling a zone's members
-    cannot make one of them read differently."""
+    cannot make one of them read differently — neither inside a round,
+    where the shared cache answers, nor in the round after it."""
     registry, streams = wired
     quiet, active = make_device("flur"), make_device("wohnzimmer")
     registry.update({quiet.id: quiet, active.id: active})
@@ -150,10 +176,11 @@ def test_member_order_does_not_change_a_devices_answer(wired):
     assert main._zone_rate_verdict(forwards) is True
     quiet_state = dict(main._rate_state[quiet.id])
 
+    new_round()
     backwards = Zone(id="b", created_at=0, updated_at=0, name="B",
                      device_ids=[active.id, quiet.id])
     assert main._zone_rate_verdict(backwards) is True
-    assert main._rate_state[quiet.id]["verdict"] == quiet_state["verdict"]
+    assert main._rate_state[quiet.id]["remembered"] == quiet_state["remembered"]
 
 
 def test_a_device_in_two_zones_is_evaluated_once_per_reading(wired):
@@ -193,6 +220,7 @@ def test_recalibrating_drops_the_old_history(wired):
     streams[device.id] = FakeStream(window(30))
     assert main._zone_rate_verdict(zone) is True
 
+    new_round()
     device.presence_profile = dict(PROFILE, baseline_rate=0.5)   # far higher bar
     streams[device.id] = FakeStream(window(8, start=100.0))
     assert main._zone_rate_verdict(zone) is False
@@ -227,11 +255,45 @@ def test_a_gap_in_the_data_does_not_re_arm_the_enter_level(wired):
     streams[device.id] = FakeStream(window(30))
     assert main._zone_rate_verdict(zone) is True
 
+    new_round()
     streams[device.id] = FakeStream([])                       # dropout
     assert main._zone_rate_verdict(zone) is None
 
+    new_round()
     streams[device.id] = FakeStream(window(8, start=200.0))   # back, still quiet
     assert main._zone_rate_verdict(zone) is True
+
+
+def test_a_rebuilt_stream_does_not_inherit_the_old_memory(wired):
+    """Correcting a device's entity ids rebuilds its subscription: empty
+    buffer, possibly different entities. Carrying the hysteresis across
+    would answer a question about the old source with the new one."""
+    registry, streams = wired
+    device = make_device()
+    registry[device.id] = device
+    zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
+
+    streams[device.id] = FakeStream(window(30), generation=1)
+    assert main._zone_rate_verdict(zone) is True
+
+    new_round()
+    # Same data between the levels, but a new subscription behind it.
+    streams[device.id] = FakeStream(window(8, start=100.0), generation=2)
+    assert main._zone_rate_verdict(zone) is False
+
+
+def test_every_live_stream_gets_its_own_number(wired):
+    """`id()` used to serve as the generation, and CPython gives the
+    freed address of the old stream straight to its replacement."""
+    from app import live_presence
+
+    seen = set()
+    for _ in range(50):
+        stream = live_presence.DeviceStream(
+            make_device(), subscription_factory=lambda *a, **k: object()
+        )
+        seen.add(stream.generation)
+    assert len(seen) == 50
 
 
 def test_a_deleted_device_leaves_no_state_behind(wired):
@@ -242,6 +304,7 @@ def test_a_deleted_device_leaves_no_state_behind(wired):
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
     assert main._zone_rate_verdict(zone) is True
 
+    new_round()
     registry.pop(device.id)
     assert main._zone_rate_verdict(zone) is None
     assert device.id not in main._rate_state

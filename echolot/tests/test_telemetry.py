@@ -23,17 +23,21 @@ def test_current_and_compatible_payload_names_are_accepted():
         now=12,
     )
 
+    # `source` is filled in by the bus, not by the parser: a payload says
+    # what was measured, not which transport carried it.
     assert current.as_dict() == {
         "t": 1_700_000_000.0,
         "movement_score": 2.5,
         "threshold": 1.25,
         "motion": True,
+        "source": None,
     }
     assert compatible.as_dict() == {
         "t": 12,
         "movement_score": 3.5,
         "threshold": 2.0,
         "motion": True,
+        "source": None,
     }
 
 
@@ -267,3 +271,14 @@ def test_the_chain_walk_terminates_on_a_cycle():
     a.__cause__ = b
     b.__cause__ = a
     assert telemetry.failure_kind(a) == "other"
+
+
+def test_nan_and_infinity_are_not_measurements():
+    """A NaN score compares False against every threshold, so it is
+    silently never a crossing; an infinity is always one."""
+    import json
+
+    for raw in (float("nan"), float("inf"), "nan", "inf"):
+        payload = json.dumps({"timestamp": 1.0, "movement_score": raw, "threshold": 0.5})
+        sample = parse_payload(payload)
+        assert sample is None or sample.movement_score is None

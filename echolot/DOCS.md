@@ -459,6 +459,53 @@ those 2 GB each time and getting a fresh chance at an interrupted
 download. Budget the space accordingly on small installations; the
 official ESPHome add-on stores its cache the same way.
 
+### Was CI von der Firmware prüft
+
+Zwei getrennte Fragen, zwei Jobs.
+
+**Konfiguration** (`tools/validate_firmware.py`): rendert die Vorlage für
+*jedes* Board plus die Varianten, deren Zweige sonst nie durchlaufen
+werden, und lässt `esphome config` darüber laufen. Drei Fehler kamen so in
+Releases, weil die erzeugte YAML nur gelesen und nie geprüft wurde:
+`ota: platform: esp32` (gibt es nicht), `cpu_frequency: 240MHz` auf Chips,
+die niedriger enden, und ein fehlender `esp32_ble_server`, der den
+BLE-Kanal dauerhaft abschaltete. Das dauert Sekunden und läuft bei jeder
+Änderung.
+
+**Kompilierung** (`tools/compile_firmware.py`, seit 0.13.6): linkt ein
+echtes Image. `esphome config` holt ESPectre nicht, startet keinen
+Compiler und kann nicht sagen, dass der gepinnte ESPHome-Stand und der
+gepinnte ESPectre-Commit sich über einen Header uneinig sind — genau der
+Fehler, der bei einem Nutzer als Zwanzig-Minuten-Build mit einem
+C++-Fehler ankommt, den er nicht geschrieben hat.
+
+Je ein Board pro Befehlssatz — Xtensa `esp32`, RISC-V `esp32c6` — in der
+Konfiguration, die auch ausgeliefert wird: Weboberfläche, Diagnose und
+Direct-API an, API-Verschlüsselung aus. Letzteres nicht aus Bequemlichkeit
+— sie *validiert*, aber sie *linkt nicht* (siehe „Der
+Verschlüsselungscode"), und ein Job, der scheitern muss, ist kein Job.
+Genau diese Lücke hat der Compile-Job bei seinem ersten echten Lauf
+gezeigt: die Konfigurationsprüfung war für die verschlüsselte Variante
+die ganze Zeit grün. Zwei statt sechs, weil die beiden Befehlssätze das
+sind, was sich wirklich unterscheidet: getrennte Toolchain-Downloads,
+getrennte Compiler, getrennte Chip-Header. ESP32-C3/C5/C6 unterscheiden
+sich untereinander auf eine Weise, die `esphome config` bereits abdeckt.
+
+Der Job läuft bei Pushes auf `main` und bei Pull Requests mit dem Label
+`firmware`, nicht bei jedem Commit: ein kalter Build lädt rund 2 GB je
+Befehlssatz. Das Label anzuhängen startet einen Lauf — dafür horcht der
+Workflow neben den Standardereignissen auch auf `labeled`, sonst wäre das
+Label ein Mechanismus, der nie auslöst. Der PlatformIO-Cache wird auf beide Pins verschlüsselt —
+ESPHome-Anforderung und ESPectre-Commit —, sodass ein Bump von einem der
+beiden von vorn baut statt gegen ein altes Framework zu linken.
+
+Lokal genauso aufrufbar:
+
+```bash
+python echolot/tools/compile_firmware.py            # beide Boards
+python echolot/tools/compile_firmware.py esp32c6    # nur eines
+```
+
 ### Dashboard
 
 The **Dashboard** tab shows every device and zone as a tile. Each device
@@ -467,10 +514,11 @@ drawn across it** — that is the view that tells you whether the threshold
 sits in a sensible place and whether the signal is steady or flickering,
 which a bare on/off indicator cannot.
 
-The chart opens pre-filled from Echolot's bounded direct-data buffer. If no
-direct samples are available yet, it falls back to Home Assistant's recorded
-history (the last 30 minutes, if the recorder keeps that entity), so it is
-useful immediately rather than starting blank. Below it sit the current score
+The chart opens pre-filled from Echolot's bounded buffer of canonical
+readings (see „Eine kanonische Datenquelle" below). If none have arrived
+yet, it falls back to Home Assistant's recorded history (the last 30
+minutes, if the recorder keeps that entity), so it is useful immediately
+rather than starting blank. Below it sit the current score
 and threshold; zone tiles highlight *which* member device is currently
 tripping.
 
@@ -480,17 +528,69 @@ that GATT service when it restructured in September 2026, so the button is
 gone rather than left to fail against firmware that no longer answers.
 
 Its successor is ESPectre's Direct HTTP/SSE surface on port 62587, enabled
-by the `direct_api` option (on by default). Echolot now keeps one connection
-to that local stream per built device, retains a bounded in-memory history,
-and fans it out through its own same-origin SSE endpoint. The browser never
-connects to a device directly, so this also works through Home Assistant
-Ingress. Device tiles mark the stream as **Direkt verbunden**; Home Assistant
-history and polling remain the automatic fallback while a device is offline.
+by the `direct_api` option (on by default). Echolot can keep one connection
+to that local stream per built device and fan it out through its own
+same-origin SSE endpoint, so the browser never connects to a device directly
+and this also works through Home Assistant Ingress.
+
+**Der Kollektor läuft aber nicht von selbst** — siehe „Eine kanonische
+Datenquelle" gleich unten. Am gepinnten ESPectre-Commit weist ein
+ESPHome-gebautes Gerät jede Anfrage dieses Add-ons mit 403 ab, und die
+einzige Umgehung wäre eine vorgetäuschte Herkunft.
 
 ESPectre has used more than one route shape during development. Echolot probes
 the known event routes automatically. For an upstream build with a different
 route, set `ESPECTRE_DIRECT_PATHS` in the container environment to a
 comma-separated list such as `/events,/api/events`.
+
+### Eine kanonische Datenquelle
+
+Echolot kann ein Gerät auf zwei Wegen hören: über die
+Home-Assistant-Entities, die es per ESPHome-API veröffentlicht, und über
+ESPectres eigenen Direct-HTTP-Stream auf dem Gerät. Bis 0.13.5 liefen
+beide, **beide** speisten den Kalibrierungsspeicher, und die
+Konfidenz-Fusion las ausschließlich den direkten. Also:
+
+- ein Gerät ohne Direct-API steuerte zur Fusion **nichts** bei, während
+  Home Assistant seine Werte die ganze Zeit lieferte;
+- ein Gerät mit Direct-API konnte dieselbe Bewegung **doppelt**
+  aufzeichnen — und die Ereignisrate zählt pro Sekunde, doppelt zählen
+  fügt also keine Auflösung hinzu, es verdoppelt die Zahl;
+- an keinem Messwert stand, welcher Transport ihn gemessen hatte.
+
+Seit 0.13.6 gibt es genau **eine kanonische Quelle je Gerät**
+(`app/samples.py`). Jeder Messwert trägt sie, ein Messwert aus einer
+anderen Quelle wird abgelehnt statt untergemischt, und die Ablehnungen
+werden gezählt — ein Kollektor, der läuft und nichts beiträgt, soll
+sichtbar sein und nicht rätselhaft. Kalibrierung, Fusion, Live-Kurve und
+CSV-Export lesen diesen einen Strom.
+
+Welche Quelle kanonisch ist, ist eine **Einstellung** und kein Rennen
+zwischen den Transporten: ein Ratenprofil wird unter einer Quelle
+gelernt, und still darunter zu wechseln würde die Messung ändern, ohne
+ihre Definition zu ändern. `ECHOLOT_SAMPLE_SOURCE` wählt
+(`home_assistant`, Voreinstellung, oder `direct`).
+
+**Warum Home Assistant die Voreinstellung ist.** Nicht aus Bequemlichkeit,
+sondern weil der andere Weg am gepinnten Upstream nicht offensteht. Am
+Commit `ce23b0b6` konfiguriert ein ESPHome-gebautes Gerät seinen
+Direct-HTTP-Dienst mit `DirectHttpServiceConfig::for_first_party_portals()`
+— erlaubt sind genau `https://espectre.dev` und zwei Geschwister-Domains
+—, und das ESPHome-Frontend übergibt `allow_missing_origin = false`
+(`espectre.cpp`, das `RuntimeDirectHttpBridgeConfig`-Literal).
+Loopback-Origins sind wegkompiliert, solange
+`CONFIG_ESPECTRE_DIRECT_DEV_ORIGINS_ENABLED` nicht gesetzt ist, und die
+Kconfig, die der ESPHome-Build erreicht (`src/cpp/Kconfig.projbuild` samt
+der von dort eingebundenen `espectre_config`), **deklariert dieses Symbol
+gar nicht** — nur das Native-Frontend und die Micro-Firmware tun das.
+
+Jede Anfrage dieses Add-ons bekommt also **403 „Origin rejected"**, außer
+sie behauptet, espectre.dev zu sein. Das tut Echolot nicht. Der direkte
+Kollektor bleibt für Firmware verfügbar, die ihn zulässt, läuft aber nur
+auf ausdrückliche Anforderung (`ECHOLOT_DIRECT_COLLECTOR=true`) und nennt
+im Log den Grund, wenn er ausbleibt. Sein Verbindungszustand steht
+weiterhin unter `/api/devices/{id}/telemetry` neben den kanonischen
+Messwerten — „warum kommen keine Direktdaten" ist eine echte Frage.
 
 ### Was auf der Direkt-Telemetrie liegt
 
@@ -1009,11 +1109,42 @@ Die vorhandenen Zahlen kommen aus einem Raum und wenigen Sitzungen. Eine
 Änderung, die eine davon verbessert, kann eine andere ruinieren — also
 wird sie zuerst gemessen und nicht verdrahtet.
 
-`GET /api/calibrations/{id}/replay` spielt eine vorhandene Aufnahme durch
-fünf Verfahren gleichzeitig: die Ereignisrate bei 15, 30, 60 und 120
-Sekunden, dazu den Bewegungs-Boolean des Geräts als Referenz — der fährt
-heute das Licht und ist der Maßstab, den ein neues Verfahren schlagen
-muss.
+`GET /api/calibrations/{id}/replay` liefert **zwei Durchläufe** über
+dasselbe Material, weil sie Verschiedenes beantworten.
+
+**Chronologischer Durchlauf** (`simulation`) schickt die Aufnahme
+vorwärts durch genau die Funktionen, die auch der Livebetrieb nimmt:
+`presence_rate.advance` für den Gerätebefund samt seinem
+Hysterese-Gedächtnis und `zone_logic.evaluate` für die Zone. Die Uhr wird
+injiziert — es sind die Zeitstempel der Aufnahme selbst — und Labels
+werden erst hinterher gelesen, um zu bewerten, nie um die Eingabe
+umzusortieren. Daneben läuft dieselbe Maschine mit abgeschalteter Rate:
+Bewegung, Hysterese und Haltezeit, also das, was das Add-on vor der Rate
+getan hat und was sie schlagen muss.
+
+Je Durchlauf:
+
+| | |
+| --- | --- |
+| **belegt** | wie lange die Zone belegt war |
+| **fälschlich belegt** | belegt, während das Label „Raum leer" sagt |
+| **fälschlich leer** | leer, während das Label „belegt" sagt |
+| **Eintritt / Freigabe** | wie lange es dauerte, bis der Wechsel kam (Median und schlechtester Fall) |
+
+Dazu eine **vollständige Zeitbilanz**: belegt, leer, Aufwärmen, Lücke,
+unbekannt und Rest. Die Teile summieren sich auf die Gesamtdauer. Vorher
+verschwand Zeit lautlos aus dem Bericht — `split_windows` wirft ein
+angefangenes Restfenster weg, bevor irgendetwas es zählt, also meldete
+eine zehnsekündige Aufnahme *null* bewertete und *null* unbrauchbare
+Fenster. Jetzt steht sie als zehn Sekunden „Aufwärmen" da.
+
+**Fenstervergleich** (`window_comparison`) ist der ältere Bericht und
+bleibt: er gruppiert nach Label und bewertet jedes Label für sich, über
+die Ereignisrate bei 15, 30, 60 und 120 Sekunden plus den
+Bewegungs-Boolean. Als Überblick nützlich, als Simulation nicht — die
+Gruppierung zerstört die Reihenfolge der Sitzung, und jedes Fenster wird
+aus dem Stand bewertet, sodass die Ausschaltschwelle dort nie zum Einsatz
+kommt.
 
 Je Verfahren:
 
@@ -1029,14 +1160,30 @@ versteckt, ist keine.
 **Schreibfrei.** Kein Zonen-Runtime, kein Geräteprofil, nicht der
 Live-Evaluator. Messen darf nicht das Licht bewegen.
 
-**Es sagt, wenn die Zahlen sich selbst messen.** Wird der Maßstab aus
-derselben Aufnahme gelernt, die dann bewertet wird, steht das als Warnung
-über der Tabelle. `?baseline=<andere Sitzung>` lernt den Leerwert aus
-einer anderen Sitzung und macht daraus einen echten Vergleich — was das
-Review für belastbare Aussagen ohnehin verlangt: nach ganzen Sitzungen
-trennen, und Schwellen nicht auf den Testdaten optimieren.
+**Herkunft steht im Bericht** (`identity`), nicht in der Ansicht. Sitzung
+und Maßstab mit ID, Gerät, Quelle und Zeitraum; dazu `parameters` mit
+Fensterlänge, Schwelle, Haltezeit, Takt, Mindestabdeckung und
+Gedächtnisdauer. Eine Zahl ohne die Einstellungen, aus denen sie stammt,
+ist keine Messung.
 
-Im Calibration Lab unter „Vergleich" an jeder Messung.
+**Es sagt, wenn die Zahlen sich selbst messen.** `in_sample` ist nicht
+„wurde ein Maßstab angegeben". Eine Sitzung, die als ihr eigener Maßstab
+genannt wird, ist in-sample, egal wie sie übergeben wurde — und eine, die
+sich zeitlich mit dem Bewerteten überschneidet, auch: dieselben Minuten
+können nicht zugleich Maßstab und Gemessenes sein. `?baseline=<andere
+Sitzung>` lernt den Leerwert aus einer anderen Sitzung und macht daraus
+einen echten Vergleich.
+
+**Ein fremdes Gerät wird abgelehnt.** Was ein Raum leer tut, ist eine
+Eigenschaft dieses Raums und dieser Antenne. Ein Maßstab von einem
+anderen Gerät ist ein Übertragungsexperiment und muss so genannt werden:
+`?transfer=true`, sonst antwortet die Route mit 409.
+
+`?hold_seconds=<n>` simuliert eine Nachlaufzeit, die es in der Aufnahme
+nicht gab — nützlich, um zu sehen, was eine Zoneneinstellung geändert
+hätte, bevor man sie setzt.
+
+Im Calibration Lab unter „Replay" an jeder Messung.
 
 ### Confidence fusion
 

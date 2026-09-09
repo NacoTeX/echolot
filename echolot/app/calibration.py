@@ -90,11 +90,35 @@ class CalibrationStore:
     #: becomes one write rather than one write per hundred samples.
     COALESCE_SECONDS = 2.0
 
+    #: How long to wait after a failed write before trying again.
+    RETRY_SECONDS = 5.0
+
+    #: A bound on the whole history, not just on one session.
+    #:
+    #: Every save serialises every session, so the cost of writing grows
+    #: with everything ever recorded — which is the thing that made the
+    #: writer worth moving off the hot path in the first place. Reaching
+    #: the bound refuses new material rather than dropping old material:
+    #: a recording is somebody's afternoon, and silently deleting one to
+    #: make room for another is not a trade this add-on gets to make.
+    MAX_TOTAL_SAMPLES = 600_000
+    MAX_SESSIONS = 100
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._sessions: dict[str, dict] = {}
+        #: Bumped under `_lock` on every change. A write carries the
+        #: revision it was taken at, so an older snapshot cannot land on
+        #: top of a newer one — which is how a delete could have been
+        #: undone by a write that was already in flight.
+        self._revision = 0
+        self._written = -1
         self._dirty = threading.Event()
+        self._stopping = threading.Event()
         self._writer_lock = threading.Lock()
+        #: Held for the duration of a write, so two writers serialise and
+        #: the revision check below means something.
+        self._write_lock = threading.Lock()
         self._writer = None
         self._load()
 
@@ -117,7 +141,7 @@ class CalibrationStore:
                 session["ended_at"] = time.time()
                 changed = True
         if changed:
-            self._save()
+            self.flush()
 
     # --- persistence ------------------------------------------------------
     #
@@ -129,19 +153,63 @@ class CalibrationStore:
     # every hundred samples, growing with the history, for a write nobody
     # is waiting on.
     #
-    # So the hot path marks the store dirty and a single writer thread
-    # does the work. Everything else — creating, labelling, stopping,
-    # deleting, importing — still writes synchronously: those are user
-    # actions whose result should be on disk when the request returns,
-    # and they happen once, not per reading.
+    # Moving it to a thread was not enough, and 0.13.5 shipped it anyway.
+    # The writer held the same RLock for the whole serialisation and file
+    # operation, and `ingest` needs that lock — so a sample arriving
+    # during a write parked the event loop for exactly as long as before.
+    # The bottleneck had moved, not gone.
+    #
+    # Now the lock is held only long enough to copy the structure. The
+    # sample rows themselves are shared rather than copied: a row is
+    # written once when it arrives and never touched again, so copying
+    # 120 000 dicts would cost more than the write it is protecting.
+    # Serialisation and I/O happen outside the lock.
+    #
+    # Measured on the same six sessions / 120 000 samples, on an x86
+    # development machine and not on a Pi 4:
+    #
+    #   lock held (snapshot)          0.6 – 0.8 ms   (was 152 – 179 ms)
+    #   write, no lock held         152   – 179   ms
+    #   extra memory for a snapshot   1.8 MiB
+    #   file written                 10.8 MiB
+    #   ingest during a write       ≤ 0.11 ms over 20 calls
+    #
+    # The write itself did not get cheaper — it was never meant to. What
+    # changed is that nothing waits for it. The 10.8 MiB is the reason
+    # the history is bounded below: on an SD card, an unbounded history
+    # rewrites more of the card the longer it is used, and the write is
+    # triggered every PERSIST_EVERY_SAMPLES readings.
+    #
+    # Everything a person does — creating, labelling, stopping, deleting,
+    # importing — still writes before the request returns. Those happen
+    # once, not per reading, and their result should be on disk when the
+    # UI says it is.
     #
     # The cost is that a crash can lose the last COALESCE_SECONDS of
     # samples rather than the last hundred. Comparable, and a recording
     # that survives a crash was never the point of this file.
 
+    def _snapshot(self) -> tuple[int, dict]:
+        """The state to write, and the revision it is. Lock held briefly."""
+        with self._lock:
+            return self._revision, {
+                session_id: {
+                    **session,
+                    "samples": list(session["samples"]),
+                    "segments": [dict(segment) for segment in session["segments"]],
+                }
+                for session_id, session in self._sessions.items()
+            }
+
+    def _touch(self) -> None:
+        """Mark the store changed. Call under `_lock`."""
+        self._revision += 1
+
     def _schedule_save(self) -> None:
         self._dirty.set()
         with self._writer_lock:
+            if self._stopping.is_set():
+                return
             if self._writer is None or not self._writer.is_alive():
                 self._writer = threading.Thread(
                     target=self._writer_loop, name="echolot-calibration-writer", daemon=True
@@ -149,31 +217,100 @@ class CalibrationStore:
                 self._writer.start()
 
     def _writer_loop(self) -> None:
-        while True:
+        while not self._stopping.is_set():
             self._dirty.wait()
+            if self._stopping.is_set():
+                return
             # Coalesce a burst of readings into one write.
             time.sleep(self.COALESCE_SECONDS)
+            # Cleared *before* the snapshot, so a change arriving during
+            # the write marks the store dirty again and is written next
+            # round rather than waiting for the sample after it.
             self._dirty.clear()
             try:
-                with self._lock:
-                    self._save()
+                self._write(*self._snapshot())
             except Exception:  # noqa: BLE001 - a failed write must not kill the writer
+                # It used to be cleared before the save, so a failed write
+                # left nothing to retry and the data waited for the next
+                # sample to arrive — which, at the end of a recording,
+                # never happens.
                 logger.exception("Kalibrierung konnte nicht gespeichert werden")
+                self._dirty.set()
+                self._stopping.wait(self.RETRY_SECONDS)
 
     def flush(self) -> None:
-        """Write now and wait for it — for shutdown and for stop()."""
+        """Write now and wait for it — for shutdown and for stop().
+
+        Deterministic: the snapshot is taken here, so everything that had
+        happened when flush() was called is on disk when it returns. A
+        write still in flight from the writer thread cannot land on top,
+        because it carries an older revision.
+        """
         self._dirty.clear()
-        with self._lock:
-            self._save()
+        self._write(*self._snapshot())
+
+    def close(self) -> None:
+        """Stop the writer and wait for it. For shutdown."""
+        self._stopping.set()
+        self._dirty.set()          # wake it so it can see the flag
+        with self._writer_lock:
+            writer = self._writer
+            self._writer = None
+        if writer is not None and writer.is_alive():
+            writer.join(timeout=self.COALESCE_SECONDS + 2.0)
+            if writer.is_alive():
+                logger.warning("Kalibrierungs-Writer hat sich nicht beendet")
+        self.flush()
+        self._stopping.clear()
+        self._dirty.clear()
+
+    def _write(self, revision: int, sessions: dict) -> None:
+        """Serialise and replace the file. No `_lock` held."""
+        with self._write_lock:
+            if revision <= self._written:
+                # Somebody newer got there first. Writing this would undo
+                # their change — a stop or a delete, most likely.
+                return
+            path = _data_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(sessions, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
+            self._written = revision
 
     def _save(self) -> None:
-        path = _data_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(self._sessions, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(path)
+        """Write the current state, synchronously. Do not hold `_lock`."""
+        self._write(*self._snapshot())
+
+    # --- retention --------------------------------------------------------
+
+    def total_samples(self) -> int:
+        with self._lock:
+            return sum(len(session["samples"]) for session in self._sessions.values())
+
+    def _check_room(self) -> None:
+        """Refuse a new session when the history is already at its bound.
+
+        Raises ValueError, which every caller already turns into a 409
+        with the message shown to the person.
+        """
+        with self._lock:
+            if len(self._sessions) >= self.MAX_SESSIONS:
+                raise ValueError(
+                    f"Es sind bereits {self.MAX_SESSIONS} Aufzeichnungen gespeichert. "
+                    "Lösche eine alte, bevor du eine neue anlegst — Echolot wirft "
+                    "keine Aufzeichnung von selbst weg."
+                )
+            total = sum(len(session["samples"]) for session in self._sessions.values())
+            if total >= self.MAX_TOTAL_SAMPLES:
+                raise ValueError(
+                    f"Die gespeicherten Aufzeichnungen umfassen bereits {total} Messwerte "
+                    f"(Grenze {self.MAX_TOTAL_SAMPLES}). Lösche oder exportiere eine alte, "
+                    "bevor du eine neue anlegst."
+                )
 
     def create(self, device_id: str, name: str = "") -> dict:
+        self._check_room()
         with self._lock:
             if any(s["status"] == "recording" for s in self._sessions.values()):
                 raise ValueError("Es läuft bereits eine Kalibrierungsaufzeichnung")
@@ -192,8 +329,12 @@ class CalibrationStore:
                 "recommendation": None,
             }
             self._sessions[session_id] = session
-            self._save()
-            return self.public(session)
+            self._touch()
+            result = self.public(session)
+        # Outside the lock: serialising the history must not park a
+        # reading that arrives while this request is being answered.
+        self._save()
+        return result
 
     def set_label(self, session_id: str, label: str) -> dict:
         if label not in LABELS - {"unlabelled"}:
@@ -206,8 +347,10 @@ class CalibrationStore:
             session["segments"][-1]["ended_at"] = now
             session["segments"].append({"label": label, "started_at": now, "ended_at": None})
             session["label"] = label
-            self._save()
-            return self.public(session)
+            self._touch()
+            result = self.public(session)
+        self._save()
+        return result
 
     def stop(self, session_id: str) -> dict:
         with self._lock:
@@ -218,11 +361,14 @@ class CalibrationStore:
                 session["ended_at"] = now
                 session["segments"][-1]["ended_at"] = now
                 session["recommendation"] = recommendation(session["samples"])
-                self._save()
-            # A finished recording is on disk before the caller is told it
-            # finished, whatever the writer thread is doing.
-            self._dirty.clear()
-            return self.public(session)
+                self._touch()
+            result = self.public(session)
+        # A finished recording is on disk before the caller is told it
+        # finished, whatever the writer thread is doing — and a write the
+        # writer already had in flight carries an older revision, so it
+        # cannot put the recording back.
+        self.flush()
+        return result
 
     def adopt(self, device_id: str, samples: list[Sample], *, label: str, name: str = "") -> dict:
         """Store a finished session built from history rather than recorded.
@@ -236,6 +382,7 @@ class CalibrationStore:
             raise ValueError(f"Unbekanntes Label '{label}'")
         if not samples:
             raise ValueError("Der Zeitraum enthält keine Messwerte")
+        self._check_room()
 
         rows = [{**sample.as_dict(), "label": label} for sample in samples[:MAX_SAMPLES_PER_SESSION]]
         started_at = min(row["t"] for row in rows)
@@ -261,17 +408,25 @@ class CalibrationStore:
                 "source": "history",
             }
             self._sessions[session_id] = session
-            self._save()
-            return self.public(session)
+            self._touch()
+            result = self.public(session)
+        self._save()
+        return result
 
     def delete(self, session_id: str) -> bool:
         with self._lock:
             removed = self._sessions.pop(session_id, None) is not None
             if removed:
-                self._save()
-            return removed
+                self._touch()
+        if removed:
+            # flush, not _save: the deletion has to be on disk before the
+            # caller is told it happened, and a stale write already in
+            # flight must not bring the session back.
+            self.flush()
+        return removed
 
     def ingest(self, device_id: str, sample: Sample) -> None:
+        save = False
         with self._lock:
             active = next(
                 (s for s in self._sessions.values() if s["device_id"] == device_id and s["status"] == "recording"),
@@ -287,15 +442,19 @@ class CalibrationStore:
                 # of the data knows it was cut off rather than ended.
                 if not active.get("sample_limit_reached"):
                     active["sample_limit_reached"] = True
+                    self._touch()
                     logger.warning(
                         "Kalibrierung %s hat das Limit von %d Messwerten erreicht",
                         active["id"], MAX_SAMPLES_PER_SESSION,
                     )
-                    self._schedule_save()
-                return
-            active["samples"].append({**sample.as_dict(), "label": active["label"]})
-        # Outside the lock: the writer thread needs it to do the work.
-        if len(active["samples"]) % PERSIST_EVERY_SAMPLES == 0:
+                    save = True
+            else:
+                active["samples"].append({**sample.as_dict(), "label": active["label"]})
+                self._touch()
+                save = len(active["samples"]) % PERSIST_EVERY_SAMPLES == 0
+        # Outside the lock, and off this thread: this runs on the asyncio
+        # path that also carries the websocket subscriptions.
+        if save:
             self._schedule_save()
 
     def list(self, device_id: str | None = None) -> list[dict]:
@@ -364,8 +523,16 @@ class CalibrationStore:
         with self._lock:
             session = self._require(session_id)
             output = io.StringIO()
+            # `source` is part of the export, not an accident of it: a
+            # reading means something different depending on which
+            # transport measured it, and a CSV that does not say is a CSV
+            # somebody will merge with another one. Rows recorded before
+            # 0.13.6 have no source and export as blank.
             writer = csv.DictWriter(
-                output, fieldnames=("t", "movement_score", "threshold", "motion", "label")
+                output,
+                fieldnames=("t", "movement_score", "threshold", "motion", "source", "label"),
+                restval="",
+                extrasaction="ignore",
             )
             writer.writeheader()
             writer.writerows(session["samples"])

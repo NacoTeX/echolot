@@ -1,5 +1,290 @@
 # Changelog
 
+## 0.13.6
+
+Ein zweites externes Review, diesmal mit einem Reproduktionsskript für
+sieben Logikbefunde. Alle sieben ließen sich am Ausgangsstand bestätigen.
+Alle acht Befunde R1 bis R8.
+
+**Ein beschädigtes Profil konnte die Auswertung aller Zonen abbrechen.**
+`profile_from_dict({"version": "broken"})` warf ValueError, weil die
+Versionskonvertierung außerhalb des `try` lag — und dieser Aufruf liegt
+auf dem gemeinsamen Auswertungsdurchlauf. Ein handverändertes oder halb
+geschriebenes Profil hätte damit jeden Raum mitgerissen. Das Profilmodell
+prüft jetzt Version, Endlichkeit und Wertebereiche und liefert *immer*
+eine Antwort: `missing`, `outdated`, `malformed` oder `usable`. Die drei
+Fehlerfälle sind getrennt, weil sie Verschiedenes von einem verlangen —
+neu kalibrieren, in die Datei sehen, oder gar nichts.
+
+**Beobachtungszeit wurde geraten statt gemessen.** Ein Messwert beweist,
+dass die Quelle in genau diesem Augenblick lebte, und sagt über jeden
+anderen Augenblick nichts. Bisher zog die Rechnung nur Lücken über 30 s
+ab und zählte alles übrige — auch die Zeit vor dem ersten und nach dem
+letzten Messwert. Fünf Messwerte über 0,4 Sekunden in der Fenstermitte
+galten damit als **60 Sekunden beobachtet**; derselbe Burst am Fensterrand
+fiel durch. Dieselbe Evidenz, zwei Antworten, entschieden davon, wo sie
+zufällig lag.
+
+Jeder Messwert deckt jetzt `MAX_SAMPLE_GAP / 2` zu beiden Seiten, und
+beobachtet ist die Vereinigung dieser Intervalle im Fenster. Zwei
+Messwerte näher beieinander als 30 s wachsen dadurch zusammen — die
+längste echte Lücke einer realen Aufnahme (18,7 s) bleibt durchgehend
+beobachtet —, ein echtes Loch bleibt ein Loch, und ein Burst deckt nur,
+was ein Burst decken kann. Gemessen: Burst in der Mitte 30,4 s statt 60,
+gleichmäßige Aufnahme unverändert 60,0 s.
+
+**Belegte Minuten wurden als Leerraum mitgezählt.** `learn_baseline`
+entfernte zuerst alle nicht als „Raum leer" markierten Messwerte und
+bildete dann Fenster — die Lücken dazwischen wurden von der Gap-Regel
+überbrückt. Eine 600-Sekunden-Reihe, in der pro Minute zwanzig Sekunden
+als „still" markiert waren, meldete 600 Sekunden Leerraum-Beobachtung;
+200 davon saß jemand im Raum. Fenster werden jetzt **innerhalb eines
+Labelabschnitts** gebildet.
+
+An der echten Aufnahme verschiebt das die Zahlen erneut: 19 Leer-Fenster
+statt 20, Leerwert 0,083 statt 0,067. Das zwanzigste Fenster überbrückte
+die `interference`-Passage in der Mitte der Aufnahme und zählte diese
+Zeit als Leerraum.
+
+**Eine Auswertungsschleife statt einer Drosselung auf Zuruf.** Die
+Zonenauswertung lief bisher dort, wo jemand danach fragte — das Dashboard,
+die Übersicht, der MQTT-Export —, und eine Drosselung sollte den Schaden
+begrenzen. Sie hatte die falsche Form: eine Änderung *innerhalb* der
+Drosselung bekam den alten Zwischenstand zurück und stieß nichts an, ein
+kurzer Impuls konnte also bis zum nächsten Zeittakt liegen bleiben. Und
+die Frischeprüfung war global, während eine Runde nur einen Teil der
+Zonen abdecken konnte: nach `refresh([A])` lieferte `refresh([A, B])`
+wieder nur A, und B fiel in der Übersicht in einen KeyError.
+
+Jetzt gibt es genau eine Hintergrundschleife: warten, bis etwas passiert,
+dann den Mindestabstand abwarten, dann auswerten. Jeder Weckruf führt zu
+einer Runde — höchstens um den Mindestabstand verspätet, nie verschluckt.
+Jede Runde deckt jede Zone ab. Eine Anfrage wertet nichts mehr aus; sie
+liest den Zwischenstand. Eine Zone, die noch keine Runde hinter sich hat,
+meldet das als „wird ausgewertet…" statt als „nicht verfügbar" — gemessen
+und nichts gefunden ist etwas anderes als noch nicht hingesehen.
+
+**Ein kurzer Bewegungsimpuls geht nicht mehr verloren.** Die Auswertung
+läuft auf ihrer eigenen Schleife und liest dabei den *aktuellen* Zustand.
+Wer durch eine Tür geht, ist wieder aus, bevor die Runde kommt — die
+Runde sah also nichts, und im Entscheidungsverlauf stand nichts davon.
+Der Live-Strom sieht den Übergang; er merkt ihn sich jetzt, und die
+Auswertung ist die eine Stelle, die ihn abholt.
+
+**NaN und Unendlich sind keine Messwerte.** Beide überleben `float()`.
+Ein NaN-Wert vergleicht sich gegen jede Schwelle als „kleiner" und ist
+damit stillschweigend nie eine Überschreitung; eine Unendlichkeit ist
+immer eine. Beide werden jetzt auf dem Live- wie auf dem Direktpfad
+verworfen. Ebenso ein Zeitstempel aus der Zukunft: der Live-Puffer wird
+relativ zum *neuesten* Messwert begrenzt, ein einziger Wert mit einem
+Stempel von morgen hätte also jeden echten Wert verdrängt und das Fenster
+leer gehalten, bis er selbst herausaltert — was er nie täte.
+
+**Reine Bewegungsmeldungen wecken die Auswertung wieder.** Seit 0.13.5
+erzeugt eine Motion-Meldung bewusst keinen Messpunkt mehr — sie wurde
+sonst als zweite Messung im selben Augenblick gezählt und blähte eine pro
+Sekunde gemessene Rate auf. Der Rücksprung lag aber vor dem
+Listeneraufruf, also weckte `motion=on` niemanden: die Zone behielt bis
+zu zehn Sekunden lang, was die Schleife zuletzt ausgerechnet hatte,
+obwohl das Gerät längst entschieden hatte. Es gibt jetzt zwei getrennte
+Kanäle — einen für Messpunkte, einen für „sieh noch mal hin". Ein
+wiederholter identischer Wert weckt weiterhin niemanden.
+
+**Der Gerätebefund wird pro Runde neu geholt.** Er war auf den neuesten
+Messwert gemerkt, und der ändert sich nicht, wenn alte Messwerte am
+*anderen* Ende des gleitenden Fensters herausfallen. Zwölf hohe
+Messwerte, die aus der letzten Minute herausgealtert waren, hielten den
+Raum belegt, bis zufällig etwas Neues eintraf — die direkte Bewertung
+sagte „frei", der Zwischenspeicher „belegt". Jede Runde leert den
+Zwischenspeicher; innerhalb einer Runde teilen sich zwei Zonen mit
+demselben Gerät weiterhin eine Auswertung, damit die Reihenfolge der
+Mitglieder die Antwort nicht ändern kann.
+
+**Gelöschte Zonen bekommen eine Löschwarteschlange.** Bisher war die
+Liste der angekündigten Zonen keine Warteschlange: `forget_zone()` kehrte
+bei getrenntem Broker sofort zurück, die Schleife setzte danach trotzdem
+„bekannt = aktuell", und beim nächsten Durchlauf war die zu entfernende
+Zone nicht mehr vorgemerkt. Ihre retained Discovery-Nachricht blieb auf
+dem Broker, die Entity blieb in Home Assistant. Abgelehnte Publishes
+gingen genauso unter. Jetzt wird eine Löschung *vor* dem ersten Versuch
+auf Platte vermerkt und erst gestrichen, wenn der Broker alle drei
+retained Topics wirklich genommen hat — über Neustarts hinweg, und ohne
+die gleichzeitig laufenden Ankündigungen zu überschreiben. Eine Zone, die
+vor dem Löschen wieder auftaucht, wird nicht gelöscht.
+
+„Wirklich genommen" heißt dabei das Wort des Brokers, nicht das des
+Clients: `publish().rc == SUCCESS` bedeutet nur, dass die Bibliothek die
+Nachricht angenommen hat, und bei QoS 0 bestätigt nie jemand, dass sie
+das Gerät verlassen hat. Eine Ankündigung heilt sich selbst — nach einem
+Reconnect wird neu angekündigt —, eine Löschung nicht. Die drei
+Löschungen gehen deshalb mit QoS 1 raus, und der Grabstein bleibt, bis
+alle drei quittiert sind. Gewartet wird darauf nie: die Prüfung läuft in
+der Auswertungsschleife, und dort zu blockieren hieße, jede Zone
+anzuhalten. Eine Löschung braucht damit in der Regel zwei Runden — wofür
+der Grabstein da ist.
+
+**Der Kalibrierungs-Writer blockierte den Lesepfad weiter.** 0.13.5 hat
+das Schreiben in einen Thread verlegt und dort aufgehört. Der Thread hielt
+denselben RLock über die ganze Serialisierung und Dateioperation, und
+`ingest()` braucht diesen Lock — aufgerufen aus dem asyncio-Pfad, auf dem
+auch die Websocket-Abonnements liegen. Ein Messwert, der während eines
+Schreibvorgangs eintraf, wartete also genauso lange wie vorher. Der
+Engpass war verschoben, nicht weg.
+
+Der Lock wird jetzt nur noch so lange gehalten, wie das Kopieren der
+Struktur dauert; serialisiert und geschrieben wird ohne ihn. Die
+Messwertzeilen werden dabei geteilt statt kopiert — eine Zeile wird beim
+Eintreffen einmal geschrieben und nie wieder angefasst. Gemessen an
+sechs Sitzungen mit 120 000 Messwerten, auf einer x86-Maschine und
+**nicht** auf einem Pi 4:
+
+| | vorher | jetzt |
+|---|---|---|
+| Lock gehalten | 152–179 ms | 0,6–0,8 ms |
+| `ingest` während eines Schreibvorgangs | wartet den ganzen Vorgang ab | ≤ 0,11 ms |
+| Zusatzspeicher pro Snapshot | — | 1,8 MiB |
+| geschriebene Datei | 10,8 MiB | 10,8 MiB |
+
+Der Schreibvorgang selbst ist nicht billiger geworden; er sollte es nie.
+Geändert hat sich, dass niemand mehr auf ihn wartet.
+
+Dazu drei Dinge, die daran hingen. Jeder Schreibvorgang trägt jetzt die
+Revision, aus der er stammt: ein bereits laufender Schreibvorgang kann
+ein Löschen oder Beenden nicht mehr rückgängig machen. Ein
+fehlgeschlagener Schreibvorgang wird nach fünf Sekunden wiederholt —
+bisher wurde die „dirty"-Markierung *vor* dem Speichern gelöscht, ein
+Fehler ließ also nichts zum Wiederholen übrig und die Daten warteten auf
+den nächsten Messwert, der am Ende einer Aufzeichnung nie kommt. Und der
+Writer wird beim Herunterfahren ausdrücklich gestoppt und abgewartet,
+statt als Daemon-Thread mit dem Prozess zu verschwinden.
+
+**Eine Grenze für die gesamte Historie.** Bisher war nur eine einzelne
+Sitzung begrenzt, während die Schreibkosten mit *allem* wachsen, was je
+aufgezeichnet wurde — 10,8 MiB pro Schreibvorgang bei 120 000 Messwerten,
+auf einer SD-Karte alle paar Sekunden. Es gibt jetzt eine Obergrenze für
+Sitzungen (100) und Messwerte insgesamt (600 000). Sie **löscht nichts**:
+eine Aufzeichnung ist jemandes Nachmittag, und sie wegzuwerfen, um Platz
+für die nächste zu schaffen, ist keine Entscheidung, die dieses Add-on
+treffen darf. Stattdessen wird eine neue Aufzeichnung abgelehnt, mit der
+Bitte, eine alte zu löschen oder zu exportieren.
+
+**Replay simuliert jetzt den Detektor, statt ihn nachzubauen.** Der
+bisherige Bericht gruppierte erst nach Label und bewertete dann jedes
+Label für sich. Als Überblick brauchbar, als Simulation nicht: die
+Gruppierung zerstört die Reihenfolge der Sitzung, jedes Fenster wurde aus
+dem Stand bewertet (`occupied_now=False`, also kam die Ausschaltschwelle
+nie zum Einsatz), und die Referenz „nur Bewegung" war `any(motion)` pro
+Minute statt des tatsächlichen Zusammenspiels aus Bewegung, Rate und
+Haltezeit.
+
+Es gibt jetzt zusätzlich einen chronologischen Durchlauf. Er schickt die
+Aufnahme vorwärts durch genau die Funktionen, die auch der Livebetrieb
+nimmt — `presence_rate.advance` für den Gerätebefund samt Gedächtnis,
+`zone_logic.evaluate` für die Zone —, mit injizierter Uhr. Damit das
+keine zwei Kopien werden, liegt der Schritt inklusive seiner
+Gedächtnisregeln jetzt an einer Stelle, die sich beide teilen. Ein Test
+fährt dieselbe Ereignisfolge einmal durch den echten Evaluator und einmal
+durch das Replay und vergleicht jeden Zustandswechsel; mit der alten
+Bewertung aus dem Stand schlägt er fehl.
+
+Der Fenstervergleich bleibt und heißt jetzt so (`window_comparison`).
+
+**Jede Sekunde der Aufnahme steht im Bericht.** `split_windows` wirft ein
+angefangenes Restfenster weg, bevor irgendetwas es zählt — eine
+zehnsekündige Aufnahme meldete deshalb null bewertete *und* null
+unbrauchbare Fenster, die Zeit fehlte einfach. Die neue Zeitbilanz nennt
+belegt, leer, Aufwärmen, Lücke, unbekannt und Rest, und die Teile
+summieren sich auf die Gesamtdauer. Zehn Sekunden Material erscheinen als
+zehn Sekunden „Aufwärmen".
+
+Dazu die Kennzahlen, die das Review verlangt: Fehlbelegungsdauer,
+Falsch-leer-Dauer sowie Eintritts- und Freigabeverzögerung als Median und
+schlechtester Fall. An der echten Zwanzig-Minuten-Aufnahme des leeren
+Raums (in-sample, also der günstigste Fall): 58 s fälschlich belegt mit
+Rate gegen 2 s nur mit Bewegung. Die Rate sieht jemanden, der still
+sitzt — und sie sieht auch öfter jemanden, der nicht da ist.
+
+**Herkunft und Einstellungen stehen im Bericht.** Sitzung und Maßstab mit
+ID, Gerät, Quelle und Zeitraum; dazu Fensterlänge, Schwelle, Haltezeit,
+Takt, Mindestabdeckung und Gedächtnisdauer. `in_sample` heißt nicht mehr
+„es wurde kein Maßstab angegeben": eine Sitzung, die als ihr eigener
+Maßstab genannt wird, ist in-sample, egal wie sie übergeben wurde — und
+eine, die sich zeitlich mit dem Bewerteten überschneidet, auch. Ein
+Maßstab von einem *anderen Gerät* wird abgelehnt, außer man nennt es
+ausdrücklich einen Übertragungsvergleich: was ein Raum leer tut, ist eine
+Eigenschaft dieses Raums und dieser Antenne.
+
+**Eine kanonische Datenquelle statt zweier, die sich überlagerten.**
+Echolot kann ein Gerät auf zwei Wegen hören: über die
+Home-Assistant-Entities und über ESPectres Direct-HTTP-Stream auf dem
+Gerät. Bisher liefen beide, **beide** speisten den
+Kalibrierungsspeicher, und die Konfidenz-Fusion las ausschließlich den
+direkten. Ein Gerät ohne Direct-API steuerte zur Fusion also nichts bei,
+während Home Assistant seine Werte die ganze Zeit lieferte — und ein
+Gerät mit Direct-API konnte dieselbe Bewegung doppelt aufzeichnen. Die
+Ereignisrate zählt pro Sekunde: doppelt zählen fügt keine Auflösung
+hinzu, es verdoppelt die Zahl.
+
+Jetzt gibt es genau eine kanonische Quelle je Gerät. Jeder Messwert
+trägt sie — auch in der CSV —, ein Messwert aus einer anderen Quelle
+wird abgelehnt statt untergemischt, und die Ablehnungen werden gezählt.
+Kalibrierung, Fusion, Live-Kurve und Export lesen diesen einen Strom.
+Welche Quelle es ist, ist eine Einstellung (`ECHOLOT_SAMPLE_SOURCE`) und
+kein Rennen zwischen den Transporten: ein Ratenprofil wird unter einer
+Quelle gelernt, und still darunter zu wechseln würde die Messung ändern,
+ohne ihre Definition zu ändern. Ein Profil merkt sich deshalb, unter
+welcher Quelle es entstand; vorhandene Profile bleiben gültig und werden
+als „Home Assistant" gelesen, weil der Live-Pfad nie etwas anderes war.
+Passt die Quelle nicht mehr, sagt es die Übersicht.
+
+**Der direkte Kollektor läuft nicht mehr von selbst — nachgesehen statt
+angenommen.** Am gepinnten ESPectre-Commit `ce23b0b6` konfiguriert ein
+ESPHome-gebautes Gerät seinen Direct-HTTP-Dienst mit
+`for_first_party_portals()`: erlaubt sind genau `https://espectre.dev`
+und zwei Geschwister-Domains, und das ESPHome-Frontend übergibt
+`allow_missing_origin = false`. Loopback-Origins sind wegkompiliert,
+solange `CONFIG_ESPECTRE_DIRECT_DEV_ORIGINS_ENABLED` nicht gesetzt ist —
+und die Kconfig, die der ESPHome-Build erreicht, deklariert dieses Symbol
+gar nicht; nur das Native-Frontend und die Micro-Firmware tun das. Jede
+Anfrage dieses Add-ons bekommt also 403, außer sie behauptet,
+espectre.dev zu sein. Das tut Echolot nicht. Der Kollektor bleibt für
+Firmware verfügbar, die ihn zulässt (`ECHOLOT_DIRECT_COLLECTOR=true`),
+nennt sonst im Log den Grund, und sein Verbindungszustand steht
+weiterhin neben den Messwerten.
+
+**Das Build-Manifest sagt jetzt, welcher Build es gemacht hat.** Bisher
+nannte es die Quellen — ESPectre-Commit, installierte ESPHome-Version,
+Board, Konfigurationshash — aber nicht, welche Echolot-Revision daraus
+ein Image gemacht hat, nicht welche Version von ESPHome überhaupt erlaubt
+gewesen wäre, und nicht, welches ESP-IDF tatsächlich hineingelinkt wurde
+(`type: esp-idf` ohne Version ist, was ESPHome diese Woche empfiehlt).
+Dazu kommen jetzt: eine eindeutige Build-ID, Echolot-Version und
+-Commit (im Image über `BUILD_REF` eingestempelt, weil ein Container
+kein Git-Checkout hat), die Anforderung wie sie in `requirements.txt`
+steht, die installierten Framework- und Toolchain-Pakete mit Version,
+und die Architektur, auf der kompiliert wurde. Zugangsdaten bleiben
+draußen wie zuvor.
+
+**CI baut jetzt echte Firmware.** `esphome config` findet einen
+YAML-Fehler in Sekunden und findet sonst nichts: es holt ESPectre nicht,
+startet keinen Compiler und kann nicht sagen, dass der gepinnte
+ESPHome-Stand und der gepinnte ESPectre-Commit sich über einen Header
+uneinig sind — genau der Fehler, der bei einem Nutzer als
+Zwanzig-Minuten-Build mit einem C++-Fehler ankommt, den er nicht
+geschrieben hat. Ein neuer Job linkt deshalb je ein Board pro
+Befehlssatz (Xtensa `esp32`, RISC-V `esp32c6`) mit allen Optionen an.
+Zwei statt sechs, weil die beiden Befehlssätze das sind, was sich
+wirklich unterscheidet — getrennte Toolchains, getrennte Compiler,
+getrennte Chip-Header.
+
+**Der Live-Pfad nennt sein Fenster jetzt, statt es abzuleiten.** Ohne
+ausdrückliches Fenster nahm `evaluate` die Spanne zwischen erstem und
+letztem Messwert — das Fenster war also, was die Daten gerade füllten,
+und vier Sekunden Messwerte galten als Vier-Sekunden-Fenster. Jetzt ist
+es `window_seconds`, endend am neuesten Messwert, und die Freigaberegel
+steht an einer Stelle: das Fenster muss zu `MIN_COVERAGE` vergangen
+*und* zu `MIN_COVERAGE` beobachtet sein.
+
 ## 0.13.5
 
 Drei Fehler aus einem externen Code-Review, alle drei in der Kette, die

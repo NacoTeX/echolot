@@ -78,6 +78,21 @@ class LoadedStream:
         return [row for row in self._rows if self._end - seconds <= row["t"] <= self._end]
 
 
+@pytest.fixture(autouse=True)
+def fresh_round():
+    """Each test is its own evaluation round.
+
+    The evaluator answers a device once per round and shares the answer,
+    and the hysteresis remembers across rounds — both deliberate, and
+    both leak between tests that all call their device "probe".
+    """
+    main._rate_state.clear()
+    main.evaluator._device_verdicts.clear()
+    yield
+    main._rate_state.clear()
+    main.evaluator._device_verdicts.clear()
+
+
 @pytest.fixture
 def profile():
     learned = presence_rate.learn_baseline(load("flat_occupied_room_empty.csv"))

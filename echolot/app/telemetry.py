@@ -10,6 +10,7 @@ the browser or crossing the Home Assistant Ingress origin.
 import asyncio
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -45,6 +46,10 @@ class Sample:
     movement_score: float | None
     threshold: float | None
     motion: bool | None
+    #: Which transport delivered this reading — see app/samples.py. None
+    #: on a reading that has not been through the bus, and on every row
+    #: recorded before 0.13.6.
+    source: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -54,9 +59,13 @@ def _number(value) -> float | None:
     if isinstance(value, bool):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    # "nan" and "inf" survive float(). A NaN score compares False against
+    # every threshold, so it is silently never a crossing; an infinity is
+    # always one. Neither is a measurement.
+    return number if math.isfinite(number) else None
 
 
 def _boolean(value) -> bool | None:
@@ -325,6 +334,13 @@ class TelemetryHub:
             if carried is not None:
                 sample = replace(sample, threshold=carried)
         self._samples.setdefault(device_id, deque(maxlen=MAX_POINTS)).append(sample)
+        # The same reading, offered to the canonical stream. It is refused
+        # unless the direct transport is the configured source, which is
+        # what stops one movement being counted twice when both
+        # collectors are running.
+        from app import samples as sample_bus
+
+        sample_bus.bus.publish(device_id, sample, source=sample_bus.SOURCE_DIRECT)
         self._status[device_id] = {
             **self._status.get(device_id, {}),
             "connected": True,
@@ -350,6 +366,20 @@ class TelemetryHub:
 
     def remove_listener(self, listener: Callable[[str, Sample], None]) -> None:
         self._listeners.discard(listener)
+
+    def status(self, device_id: str) -> dict:
+        """The direct collector's connection state for one device.
+
+        Reported next to the canonical readings even when the direct
+        transport is not the source: "why is there no direct data" has an
+        answer, and at the pinned ESPectre commit that answer is usually
+        "the device only accepts espectre.dev as an origin".
+        """
+        return dict(
+            self._status.get(
+                device_id, {"connected": False, "error": "Noch keine Direktdaten"}
+            )
+        )
 
     def snapshot(self, device_id: str, *, seconds: int = 1800) -> dict:
         samples = self._samples.get(device_id, ())

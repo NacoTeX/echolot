@@ -114,19 +114,25 @@ VERDICT_MESSAGES = {
 
 #: The direct port is probed but deliberately kept out of the verdict: the
 #: verdict answers "can Home Assistant reach this device", and only 6053
-#: settles that. Port 62587 answers a different question — whether the
-#: Calibration Lab and the live dashboard can pull samples from the device
-#: itself — so it gets its own sentence rather than muddying the first one.
+#: settles that. Port 62587 answers a different question and gets its own
+#: sentence rather than muddying the first one.
+#:
+#: Both messages used to say the Calibration Lab and the live dashboard
+#: took their samples from this port. They do not, and at the pinned
+#: ESPectre commit they could not: an ESPHome-built device allows only
+#: espectre.dev as an origin and answers this add-on with 403. The
+#: readings come from Home Assistant — see app/samples.py.
 DIRECT_MESSAGES = {
     True: (
-        "Port 62587 antwortet: das Gerät liefert Direkt-Telemetrie. "
-        "Calibration Lab und Live-Dashboard können Samples davon beziehen."
+        "Port 62587 antwortet: die Direct-API des Geräts läuft. Echolot "
+        "nutzt sie nicht — am gepinnten ESPectre-Stand lässt sie nur "
+        "espectre.dev als Herkunft zu. Messwerte kommen aus Home Assistant."
     ),
     False: (
-        "Port 62587 antwortet nicht. Calibration Lab und Live-Dashboard "
-        "bleiben damit ohne Daten — sie holen ihre Samples direkt vom Gerät, "
-        "nicht über Home Assistant. Meist wurde die Firmware ohne "
-        "`direct_api` gebaut; ein Neubau schaltet es ein."
+        "Port 62587 antwortet nicht: die Firmware wurde ohne `direct_api` "
+        "gebaut oder das Gerät blockt den Port. Für Calibration Lab und "
+        "Live-Dashboard macht das keinen Unterschied — sie lesen die "
+        "Home-Assistant-Entities."
     ),
 }
 

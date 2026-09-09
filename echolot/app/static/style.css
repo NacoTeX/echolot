@@ -938,6 +938,20 @@ button:disabled {
 .replay-reference td { font-weight: 600; }
 .replay-unavailable td { color: var(--muted); white-space: normal; }
 
+/* Zwei Durchläufe unter einer Überschrift: der chronologische und der
+   Fenstervergleich. Sie beantworten Verschiedenes und sollen nicht wie
+   eine Tabelle mit zwei Hälften aussehen. */
+.replay-heading {
+  margin: 1.1rem 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.replay-heading:first-of-type { margin-top: 0.8rem; }
+
 /* ---------- Zone timeline ---------- */
 
 .timeline-list {
