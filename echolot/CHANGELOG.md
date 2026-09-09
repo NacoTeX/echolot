@@ -4,7 +4,7 @@
 
 Ein zweites externes Review, diesmal mit einem Reproduktionsskript für
 sieben Logikbefunde. Alle sieben ließen sich am Ausgangsstand bestätigen.
-Hier die ersten zwei Blöcke; der Rest folgt in derselben Version.
+Hier R1 bis R4 und R7; der Rest folgt in derselben Version.
 
 **Ein beschädigtes Profil konnte die Auswertung aller Zonen abbrechen.**
 `profile_from_dict({"version": "broken"})` warf ValueError, weil die
@@ -45,6 +45,56 @@ An der echten Aufnahme verschiebt das die Zahlen erneut: 19 Leer-Fenster
 statt 20, Leerwert 0,083 statt 0,067. Das zwanzigste Fenster überbrückte
 die `interference`-Passage in der Mitte der Aufnahme und zählte diese
 Zeit als Leerraum.
+
+**Eine Auswertungsschleife statt einer Drosselung auf Zuruf.** Die
+Zonenauswertung lief bisher dort, wo jemand danach fragte — das Dashboard,
+die Übersicht, der MQTT-Export —, und eine Drosselung sollte den Schaden
+begrenzen. Sie hatte die falsche Form: eine Änderung *innerhalb* der
+Drosselung bekam den alten Zwischenstand zurück und stieß nichts an, ein
+kurzer Impuls konnte also bis zum nächsten Zeittakt liegen bleiben. Und
+die Frischeprüfung war global, während eine Runde nur einen Teil der
+Zonen abdecken konnte: nach `refresh([A])` lieferte `refresh([A, B])`
+wieder nur A, und B fiel in der Übersicht in einen KeyError.
+
+Jetzt gibt es genau eine Hintergrundschleife: warten, bis etwas passiert,
+dann den Mindestabstand abwarten, dann auswerten. Jeder Weckruf führt zu
+einer Runde — höchstens um den Mindestabstand verspätet, nie verschluckt.
+Jede Runde deckt jede Zone ab. Eine Anfrage wertet nichts mehr aus; sie
+liest den Zwischenstand. Eine Zone, die noch keine Runde hinter sich hat,
+meldet das als „wird ausgewertet…" statt als „nicht verfügbar" — gemessen
+und nichts gefunden ist etwas anderes als noch nicht hingesehen.
+
+**Reine Bewegungsmeldungen wecken die Auswertung wieder.** Seit 0.13.5
+erzeugt eine Motion-Meldung bewusst keinen Messpunkt mehr — sie wurde
+sonst als zweite Messung im selben Augenblick gezählt und blähte eine pro
+Sekunde gemessene Rate auf. Der Rücksprung lag aber vor dem
+Listeneraufruf, also weckte `motion=on` niemanden: die Zone behielt bis
+zu zehn Sekunden lang, was die Schleife zuletzt ausgerechnet hatte,
+obwohl das Gerät längst entschieden hatte. Es gibt jetzt zwei getrennte
+Kanäle — einen für Messpunkte, einen für „sieh noch mal hin". Ein
+wiederholter identischer Wert weckt weiterhin niemanden.
+
+**Der Gerätebefund wird pro Runde neu geholt.** Er war auf den neuesten
+Messwert gemerkt, und der ändert sich nicht, wenn alte Messwerte am
+*anderen* Ende des gleitenden Fensters herausfallen. Zwölf hohe
+Messwerte, die aus der letzten Minute herausgealtert waren, hielten den
+Raum belegt, bis zufällig etwas Neues eintraf — die direkte Bewertung
+sagte „frei", der Zwischenspeicher „belegt". Jede Runde leert den
+Zwischenspeicher; innerhalb einer Runde teilen sich zwei Zonen mit
+demselben Gerät weiterhin eine Auswertung, damit die Reihenfolge der
+Mitglieder die Antwort nicht ändern kann.
+
+**Gelöschte Zonen bekommen eine Löschwarteschlange.** Bisher war die
+Liste der angekündigten Zonen keine Warteschlange: `forget_zone()` kehrte
+bei getrenntem Broker sofort zurück, die Schleife setzte danach trotzdem
+„bekannt = aktuell", und beim nächsten Durchlauf war die zu entfernende
+Zone nicht mehr vorgemerkt. Ihre retained Discovery-Nachricht blieb auf
+dem Broker, die Entity blieb in Home Assistant. Abgelehnte Publishes
+gingen genauso unter. Jetzt wird eine Löschung *vor* dem ersten Versuch
+auf Platte vermerkt und erst gestrichen, wenn der Broker alle drei
+retained Topics wirklich genommen hat — über Neustarts hinweg, und ohne
+die gleichzeitig laufenden Ankündigungen zu überschreiben. Eine Zone, die
+vor dem Löschen wieder auftaucht, wird nicht gelöscht.
 
 **Der Live-Pfad nennt sein Fenster jetzt, statt es abzuleiten.** Ohne
 ausdrückliches Fenster nahm `evaluate` die Spanne zwischen erstem und

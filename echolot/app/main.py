@@ -55,6 +55,19 @@ async def lifespan(_app: FastAPI):
     Assistant entities, and that mirroring has to keep running whether or
     not anyone has the dashboard open.
     """
+    from app import feature_api
+
+    # The one loop that decides what every zone is doing. Everything else
+    # — the dashboard, the overview, the MQTT export — reads its
+    # snapshots, so there is exactly one clock and one state machine.
+    #
+    # Waking it on live changes is what keeps the answer within half a
+    # second of the event instead of within the idle timer. `_on_state`
+    # runs on this loop (the subscription is scheduled onto it), so
+    # setting the event straight from there is safe.
+    feature_api.live.on_any_state(evaluator.wake)
+    await evaluator.run(zones.list_zones)
+
     task = None
     if os.environ.get("ECHOLOT_MQTT_EXPORT", "true").lower() in ("0", "false", "no"):
         logger.info("MQTT export disabled by configuration")
@@ -64,6 +77,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        evaluator.stop()
         if task:
             task.cancel()
             try:
@@ -100,13 +114,11 @@ async def _run_mqtt_export() -> None:
             await asyncio.sleep(delay)
             continue
 
-        # Publish when a reading arrives, not when a timer comes round: the
-        # device reacts in a second and a ten-second export would add ten.
-        wakeup = asyncio.Event()
-        feature_api.live.on_any_change(lambda *_: wakeup.set())
-        await mqtt_bridge.publish_loop(
-            compute_all_zone_states, zones.list_zones, forget_zone_runtime, wakeup=wakeup
-        )
+        # The export publishes what the evaluator worked out, when it
+        # works it out. It used to run its own loop with its own clock and
+        # its own calls into Home Assistant, which is how a reading
+        # arriving three times a second became three rounds of requests.
+        mqtt_bridge.attach(evaluator, forget_zone_runtime)
         return
 
 
@@ -288,29 +300,95 @@ async def _read_device_state(device: devices.Device, allow_detect: bool = True) 
 #: deleted zone should not keep its hold running if the id is reused.
 _zone_runtimes: dict[str, zone_logic.ZoneRuntime] = {}
 
-#: The floor between two evaluation rounds.
+#: The floor between two evaluation rounds, in seconds.
 #:
-#: Zone state has exactly one owner now. `compute_zone_state` mutates the
+#: Zone state has exactly one owner: `compute_zone_state` mutates the
 #: zone's runtime — the motion hysteresis memory and the hold deadline —
-#: and re-reads every member from Home Assistant, and it used to be called
-#: from three places: the dashboard's poll, the overview, and the MQTT
-#: publisher. Making the publisher event-driven earlier in this same
-#: release made that worse rather than better: a reading arriving three
-#: times a second became three full rounds of Home Assistant requests a
-#: second, on top of whatever the open dashboard was already asking for.
-#:
-#: Half a second is below what anyone notices in a room and far above the
-#: rate at which readings arrive in bursts.
+#: and re-reads every member from Home Assistant. Half a second is below
+#: what anyone notices in a room and far above the rate readings arrive
+#: in bursts.
 MIN_EVALUATION_INTERVAL = 0.5
+
+#: How long the loop waits when nothing has happened. A zone counting
+#: down a hold time needs the short one — the countdown has to end
+#: without anybody watching — and an idle house does not.
+IDLE_INTERVAL = 10.0
+HOLDING_INTERVAL = 1.0
+
+#: How long a device's rate hysteresis remembers across a data outage.
+#:
+#: Somebody sitting still through a short dropout should not have to move
+#: again to be seen; somebody who left an hour ago should not still be
+#: holding the room on evidence nobody has confirmed since. Two window
+#: lengths is the compromise, and it is a decision rather than a
+#: side effect of a cache key.
+RATE_MEMORY_SECONDS = 120.0
+
+
+def _initial_zone_state() -> dict:
+    """What a zone looks like before anything has evaluated it.
+
+    A zone created a moment ago has no snapshot, and the overview used to
+    fill that hole with two keys and then read five — a KeyError and an
+    HTTP 500 for the crime of making a zone. Built from the state machine
+    itself so it cannot drift from the real shape.
+    """
+    return {
+        "available": False,
+        "members": [],
+        "pending": True,
+        **zone_logic.ZoneEvaluation(
+            state=zone_logic.CLEAR,
+            occupied=False,
+            hold_remaining=0.0,
+            raw_motion=False,
+            score=None,
+        ).as_dict(),
+    }
 
 
 class ZoneEvaluator:
-    """Owns the zone runtimes, and the latest answer for each zone."""
+    """The one background loop that decides what every zone is doing.
+
+    Everything else reads its snapshots: the dashboard, the overview, the
+    MQTT export. Three things follow from that and none of them worked
+    before this loop existed.
+
+    A request never evaluates. `state_of` was still calling `refresh`, so
+    a GET two seconds after the last round started another one — an open
+    dashboard was quietly driving the state machine and the Home
+    Assistant request rate.
+
+    A round always covers every zone. The freshness check was global
+    while a round could cover a subset, so `refresh([A])` followed by
+    `refresh([A, B])` returned only A, and B fell through the overview's
+    two-key fallback into a KeyError.
+
+    A round always re-reads the devices. The per-device rate verdict was
+    memoised on the newest reading, which does not change when old
+    readings fall off the *other* end of a rolling window: twelve high
+    readings that had aged out of the last minute kept the room occupied
+    until something new arrived.
+    """
 
     def __init__(self) -> None:
         self._snapshots: dict[str, dict] = {}
-        self._last_run = 0.0
+        #: The loop the run() task lives on, so `wake` can be called from
+        #: anywhere. FastAPI runs a plain `def` route in a worker thread,
+        #: and `asyncio.Event.set()` from another thread does not reliably
+        #: wake the selector — the event would look set and the loop would
+        #: sit in its timeout until it expired.
+        self._loop = None
+        #: Per-tick device verdicts. Cleared at the start of every round,
+        #: so two zones sharing a device get one evaluation and the same
+        #: answer, and the next round starts from the current window.
+        self._device_verdicts: dict[str, bool | None] = {}
         self._lock = asyncio.Lock()
+        self._wakeup = asyncio.Event()
+        self._task = None
+        self._listeners: list = []
+
+    # --- what other components see ---------------------------------------
 
     def forget(self, zone_id: str) -> None:
         _zone_runtimes.pop(zone_id, None)
@@ -320,44 +398,122 @@ class ZoneEvaluator:
     def snapshot(self, zone_id: str) -> dict | None:
         return self._snapshots.get(zone_id)
 
-    async def refresh(self, zone_list: list, *, force: bool = False) -> list[tuple]:
-        """Evaluate every zone, or hand back the last answer if it is fresh.
+    def state_of(self, zone) -> dict:
+        """One zone's state. A read, and only a read."""
+        return self._snapshots.get(zone.id) or _initial_zone_state()
 
-        `force` is for a caller that has nothing to fall back on — a
-        request for a zone that has never been evaluated.
+    def all_states(self, zone_list: list) -> list[tuple]:
+        return [(zone, self.state_of(zone)) for zone in zone_list]
+
+    def add_listener(self, callback) -> None:
+        """Called with [(zone, state)] after every round. The MQTT export
+        hangs on this rather than evaluating anything itself."""
+        self._listeners.append(callback)
+
+    def wake(self, *_args) -> None:
+        """Something changed; evaluate as soon as the floor allows.
+
+        Safe from any thread, and takes any arguments so it can be
+        attached straight to a device stream, whose change listeners are
+        called with the device id.
         """
+        loop = self._loop
+        if loop is None:
+            self._wakeup.set()
+            return
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            self._wakeup.set()
+            return
+        try:
+            loop.call_soon_threadsafe(self._wakeup.set)
+        except RuntimeError:
+            # The loop is shutting down; there is nothing left to wake.
+            logger.debug("Wakeup nach Loop-Ende verworfen")
+
+    # --- the loop ---------------------------------------------------------
+
+    async def run(self, list_zones) -> None:
+        if self._task is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._task = asyncio.create_task(self._loop_body(list_zones))
+
+    def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        self._loop = None
+
+    async def _loop_body(self, list_zones) -> None:
+        while True:
+            try:
+                await self.cycle(list_zones())
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a bad round must not end the loop
+                logger.exception("Zonenauswertung fehlgeschlagen")
+            await self._wait_for_work()
+
+    async def _wait_for_work(self) -> None:
+        """Sleep until something happens, then honour the floor.
+
+        The floor is applied *after* the wake rather than by refusing to
+        evaluate: a change arriving inside the throttle used to publish
+        the old snapshot and schedule nothing, so a short pulse could sit
+        there until the next timer tick. Waiting, then sleeping the floor,
+        then evaluating means every wake produces a round — late by at
+        most the floor, never dropped.
+        """
+        holding = any(
+            state.get("state") == zone_logic.HOLDING
+            for state in self._snapshots.values()
+        )
+        try:
+            await asyncio.wait_for(
+                self._wakeup.wait(),
+                timeout=HOLDING_INTERVAL if holding else IDLE_INTERVAL,
+            )
+        except asyncio.TimeoutError:
+            pass
+        self._wakeup.clear()
+        await asyncio.sleep(MIN_EVALUATION_INTERVAL)
+
+    async def cycle(self, zone_list: list) -> list[tuple]:
+        """One round: every device once, then every zone."""
         async with self._lock:
-            now = time.monotonic()
-            stale = force or (now - self._last_run) >= MIN_EVALUATION_INTERVAL
-            if stale:
-                states = await asyncio.gather(
-                    *(compute_zone_state(zone) for zone in zone_list)
-                )
-                self._last_run = now
-                # Updated, not replaced: a single-zone refresh must not
-                # throw away every other zone's answer.
-                self._snapshots.update(
-                    {zone.id: state for zone, state in zip(zone_list, states)}
-                )
-                # The one place that sees every transition, so the one
-                # place that can write down why it happened.
-                for zone, state in zip(zone_list, states):
-                    timeline.timeline.record(zone.id, zone.name, state)
-            return [
-                (zone, self._snapshots.get(zone.id))
-                for zone in zone_list
-                if self._snapshots.get(zone.id) is not None
-            ]
+            # The window has moved on even if nothing new arrived, so
+            # last round's verdicts are not answers to this round.
+            self._device_verdicts = {}
 
-    async def state_of(self, zone) -> dict:
-        """One zone's state: the snapshot, or an evaluation if there is none.
+            states = await asyncio.gather(
+                *(compute_zone_state(zone) for zone in zone_list)
+            )
+            live = {zone.id for zone in zone_list}
+            for gone in set(self._snapshots) - live:
+                self._snapshots.pop(gone, None)
+            # A device that has left every zone is not being measured any
+            # more, so its hysteresis is not about anything.
+            for forgotten in set(_rate_state) - set(self._device_verdicts):
+                _rate_state.pop(forgotten, None)
+            self._snapshots.update(
+                {zone.id: state for zone, state in zip(zone_list, states)}
+            )
+            # The one place that sees every transition, so the one place
+            # that can write down why it happened.
+            for zone, state in zip(zone_list, states):
+                timeline.timeline.record(zone.id, zone.name, state)
 
-        A dashboard polling every two seconds therefore costs nothing in
-        Home Assistant requests — it reads what the evaluator already
-        worked out. Only a zone nobody has evaluated yet pays for one.
-        """
-        await self.refresh([zone], force=zone.id not in self._snapshots)
-        return self._snapshots[zone.id]
+        result = list(zip(zone_list, states))
+        for listener in tuple(self._listeners):
+            try:
+                listener(result)
+            except Exception:  # noqa: BLE001 - one listener must not stop the rest
+                logger.exception("Zonen-Listener fehlgeschlagen")
+        return result
 
 
 evaluator = ZoneEvaluator()
@@ -396,14 +552,15 @@ async def _missing_device_state() -> dict:
 #:
 #: `presence_rate.evaluate` has two levels — a higher one to switch on and
 #: a lower one to stay on — and picks between them from `occupied_now`,
-#: which is meant to be *that device's* previous verdict. 0.13.2 passed
-#: the running OR of the zone loop instead, so the first device in every
-#: zone was always judged as if it had just been vacant and the exit level
-#: was never used: a device that had gone quiet but not silent dropped out
-#: immediately, which is the one case the two levels exist for.
+#: which is meant to be *that device's* previous verdict.
 #:
-#: Keyed by device id rather than by zone, so a device in two zones is one
-#: history and the member order cannot change any device's answer.
+#: What lives here is only the memory: the last verdict, when it was
+#: reached, and what it was reached under. The verdict itself is worked
+#: out afresh on every round, because a rolling window changes when old
+#: readings fall off its left edge and not only when new ones arrive at
+#: its right. Memoising on the newest reading held twelve high readings
+#: that had aged out of the last minute as "occupied" until something new
+#: happened to turn up.
 _rate_state: dict[str, dict] = {}
 
 
@@ -416,46 +573,65 @@ def _profile_key(profile) -> tuple:
     return (profile.crossing_threshold, profile.baseline_rate, profile.window_seconds)
 
 
-def _device_rate_verdict(device) -> bool | None:
-    """One device's rate verdict, or None when the rate cannot say.
+def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
+    """One device's rate verdict for this round, or None when it cannot say.
 
-    Memoised on the newest sample in the window: with no new reading the
-    answer cannot have changed, so the two zone-walking call sites and the
-    single-zone route all get one evaluation and one hysteresis step per
-    piece of data — not one per request.
+    Evaluated once per round and shared: the evaluator clears the
+    per-tick cache at the start of each round, so two zones holding the
+    same device get one evaluation and the same answer, and the member
+    order cannot change it.
 
     Imported lazily because app.feature_api imports app.main.
     """
     from app import feature_api, presence_rate
 
+    cached = evaluator._device_verdicts
+    if device.id in cached:
+        return cached[device.id]
+
+    now = time.monotonic() if now is None else now
     profile = presence_rate.profile_from_dict(device.presence_profile)
     stream = feature_api.live.stream(device.id)
     if profile is None or stream is None:
         _rate_state.pop(device.id, None)
+        cached[device.id] = None
         return None
 
-    window = stream.window(profile.window_seconds)
-    newest = window[-1].get("t") if window else None
     key = _profile_key(profile)
-
     state = _rate_state.get(device.id)
-    if state is not None and state["key"] != key:
+    # A rebuilt stream is a different source: its buffer starts empty and
+    # its entities may be different ones entirely, so the memory from the
+    # old one is about a different question. The stream numbers itself —
+    # `id()` would not do, because CPython hands the freed address of the
+    # old stream straight to its replacement.
+    generation = getattr(stream, "generation", None)
+    if state is not None and (
+        state["key"] != key
+        or state["generation"] != generation
+        or now - state["at"] > RATE_MEMORY_SECONDS
+    ):
         state = None
-    if state is not None and state["newest"] == newest:
-        return state["verdict"]
 
-    # The memory survives a gap in the data even though the *reported*
-    # verdict does not: a hiccup should not silently re-arm the higher
-    # enter level for someone who is still sitting in the room.
     previous = bool(state["remembered"]) if state else False
-    result = presence_rate.evaluate(profile, window, occupied_now=previous)
+    result = presence_rate.evaluate(
+        profile, stream.window(profile.window_seconds), occupied_now=previous
+    )
     verdict = bool(result["occupied"]) if result["available"] else None
-    _rate_state[device.id] = {
-        "key": key,
-        "newest": newest,
-        "verdict": verdict,
-        "remembered": previous if verdict is None else verdict,
-    }
+
+    if verdict is None:
+        # An outage reports unknown and keeps the memory for a while: a
+        # person sitting still through a dropout should not have to move
+        # again to be seen. It does expire — see RATE_MEMORY_SECONDS.
+        if state is not None:
+            _rate_state[device.id] = state
+    else:
+        _rate_state[device.id] = {
+            "key": key,
+            "generation": generation,
+            "remembered": verdict,
+            "at": now,
+        }
+    cached[device.id] = verdict
     return verdict
 
 
@@ -470,10 +646,7 @@ def _zone_rate_verdict(zone) -> bool | None:
     verdict = None
     for device_id in zone.device_ids:
         device = devices.get_device(device_id)
-        if device is None:
-            _rate_state.pop(device_id, None)
-            continue
-        if not device.presence_profile:
+        if device is None or not device.presence_profile:
             _rate_state.pop(device_id, None)
             continue
         one = _device_rate_verdict(device)
@@ -529,14 +702,9 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
     return {"available": any_available, "members": members, **verdict.as_dict()}
 
 
-async def compute_all_zone_states(zone_list: list) -> list[tuple]:
-    """Every zone's state, through the one evaluator.
-
-    Zones are evaluated concurrently inside it: walking them in sequence
-    would add up their latencies, while running them together costs about
-    as long as the slowest zone.
-    """
-    return await evaluator.refresh(zone_list)
+def all_zone_states(zone_list: list) -> list[tuple]:
+    """Every zone's latest state, read from the evaluator's snapshots."""
+    return evaluator.all_states(zone_list)
 
 
 @app.get("/api/health")
@@ -571,12 +739,16 @@ async def api_overview() -> dict:
     # report, and a status report should not be advancing the state
     # machine it is reporting on.
     zone_verdicts = {
-        zone.id: state for zone, state in await evaluator.refresh(zone_list)
+        zone.id: state for zone, state in evaluator.all_states(zone_list)
     }
 
     zone_views = []
     for zone in zone_list:
-        verdict = zone_verdicts.get(zone.id) or {"available": False, "members": []}
+        # No fallback: all_states answers for every zone, including one
+        # created a moment ago. The two-key stand-in that used to be here
+        # was read for five keys directly below — a KeyError and an HTTP
+        # 500 for the crime of making a zone.
+        verdict = zone_verdicts[zone.id]
         zone_views.append(
             {
                 "id": zone.id,
@@ -585,6 +757,9 @@ async def api_overview() -> dict:
                 "occupied": verdict["occupied"],
                 "hold_remaining": verdict["hold_remaining"],
                 "available": verdict["available"],
+                # Nothing has looked at this zone yet, which is not the
+                # same as having looked and found nothing.
+                "pending": bool(verdict.get("pending")),
                 "device_count": len(zone.device_ids),
             }
         )
@@ -1144,6 +1319,10 @@ def api_create_zone(payload: dict) -> dict:
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unbekannte Geräte-ID(s): {', '.join(unknown)}")
     zone = zones.create_zone(config)
+    # A zone appearing has no event behind it, and evaluation no longer
+    # happens on request: without this the new zone reads "wird
+    # ausgewertet" for up to a whole idle interval.
+    evaluator.wake()
     return zone.model_dump()
 
 
@@ -1175,6 +1354,8 @@ def api_update_zone(zone_id: str, payload: dict) -> dict:
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
     zones.save_zone(zone)
+    # Members and thresholds changed; the snapshot describes the old zone.
+    evaluator.wake()
     return zone.model_dump()
 
 
@@ -1182,18 +1363,21 @@ def api_update_zone(zone_id: str, payload: dict) -> dict:
 def api_delete_zone(zone_id: str) -> None:
     if not zones.delete_zone(zone_id):
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
-    # Retract the discovery message too, or the entity lingers in Home
-    # Assistant as "unavailable" forever.
-    mqtt_bridge.bridge.forget_zone(zone_id)
+    # The retained discovery message is retracted by the export's deletion
+    # queue on the next round rather than from here. Publishing it
+    # straight away worked only while the broker happened to be up, and
+    # reported success either way — which is how an entity could linger
+    # in Home Assistant as "unavailable" for good.
     forget_zone_runtime(zone_id)
+    evaluator.wake()
 
 
 @app.get("/api/zones/{zone_id}/state")
-async def api_zone_state(zone_id: str) -> dict:
+def api_zone_state(zone_id: str) -> dict:
     zone = zones.get_zone(zone_id)
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone nicht gefunden")
-    return await evaluator.state_of(zone)
+    return evaluator.state_of(zone)
 
 
 @app.get("/api/zones/{zone_id}/timeline")

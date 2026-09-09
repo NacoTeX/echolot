@@ -153,7 +153,13 @@ async function refreshZoneState(id) {
     return;
   }
 
-  if (!state.available) {
+  if (state.pending) {
+    // Die Auswertung läuft als eigene Schleife; eine gerade angelegte Zone
+    // hat noch keine Runde hinter sich. Das ist etwas anderes als
+    // "nicht verfügbar" — dort ist gemessen worden und nichts angekommen.
+    statusEl.textContent = "wird ausgewertet…";
+    statusEl.className = "status status-pending zone-status";
+  } else if (!state.available) {
     statusEl.textContent = "nicht verfügbar";
     statusEl.className = "status status-warn zone-status";
   } else if (state.state === "holding") {

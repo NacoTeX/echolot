@@ -1,13 +1,19 @@
-"""The export publishes when something happens, not when a timer says so.
+"""Evaluation happens when something happens, not when a timer says so.
 
-From the external review (P1 #7). On a pure ten-second timer a movement
-that arrives just after a tick waits most of an interval before Home
-Assistant hears about it, and a short pulse between two ticks can be
-missed entirely — the device reacts in a second and the export then adds
-ten. The live subscriptions already receive state changes as they happen.
+From the external review (P1 #7, and R1/R3 in the 0.13.5 round). On a
+pure ten-second timer a movement that arrives just after a tick waits
+most of an interval before Home Assistant hears about it, and a short
+pulse between two ticks can be missed entirely — the device reacts in a
+second and the export then adds ten. The live subscriptions already
+receive state changes as they happen.
 
 The timer stays, because two things have no event behind them: a hold
 time expiring, and a zone being added or removed.
+
+The loop moved in 0.13.6. The export used to run its own, with its own
+clock and its own calls into Home Assistant; now there is one evaluator
+and the export is a listener on it. So these are tests of
+`main.ZoneEvaluator` — the thing that actually decides when to look.
 """
 
 import asyncio
@@ -31,68 +37,78 @@ class Zone:
         self.name = name
 
 
-async def drive(wakeup, *, cycles, interval=30.0):
-    """Run the loop until it has published `cycles` times, then stop it."""
+async def drive(*, cycles, idle, poke=None, published=None):
+    """Run the evaluator until it has done `cycles` rounds, then stop it.
+
+    `idle` stands in for the ten-second timer, so a test can say whether
+    it is measuring the timer or the wake-up.
+    """
+    from app import main
+
     seen = []
 
-    async def compute(zones):
-        seen.append(len(seen))
-        return [(zone, {"occupied": True, "available": True}) for zone in zones]
+    async def compute(zone):
+        seen.append(zone.id)
+        return {"occupied": True, "available": True, "state": "occupied"}
 
-    published = []
-    original = mqtt_bridge.bridge.publish_zone
-    mqtt_bridge.bridge.publish_zone = lambda *a, **k: published.append(a)
-    task = asyncio.create_task(
-        mqtt_bridge.publish_loop(compute, lambda: [Zone()], interval=interval, wakeup=wakeup)
-    )
+    evaluator = main.ZoneEvaluator()
+    if published is not None:
+        evaluator.add_listener(published.append)
+
+    original = (main.compute_zone_state, main.IDLE_INTERVAL, main.MIN_EVALUATION_INTERVAL)
+    main.compute_zone_state = compute
+    main.IDLE_INTERVAL = idle
+    main.MIN_EVALUATION_INTERVAL = 0.001
     try:
-        for _ in range(200):
-            await asyncio.sleep(0.01)
+        await evaluator.run(lambda: [Zone()])
+        if poke is not None:
+            asyncio.create_task(poke(evaluator))
+        for _ in range(400):
+            await asyncio.sleep(0.005)
             if len(seen) >= cycles:
                 break
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        mqtt_bridge.bridge.publish_zone = original
+        evaluator.stop()
+        (
+            main.compute_zone_state,
+            main.IDLE_INTERVAL,
+            main.MIN_EVALUATION_INTERVAL,
+        ) = original
     return len(seen)
 
 
-def test_a_reading_publishes_without_waiting_for_the_timer():
-    async def scenario():
-        wakeup = asyncio.Event()
-        # An interval far longer than the test: only the event can produce
-        # a second cycle.
-        async def poke():
-            await asyncio.sleep(0.05)
-            wakeup.set()
+def test_a_reading_evaluates_without_waiting_for_the_timer():
+    """An idle interval far longer than the test: only the wake-up can
+    produce a second round."""
+    async def poke(evaluator):
+        await asyncio.sleep(0.05)
+        evaluator.wake()
 
-        asyncio.create_task(poke())
-        return await drive(wakeup, cycles=2, interval=300.0)
-
-    assert asyncio.run(scenario()) >= 2
+    assert asyncio.run(drive(cycles=2, idle=300.0, poke=poke)) >= 2
 
 
 def test_without_an_event_the_timer_is_still_the_floor():
     """Hold times expire on nobody's event."""
-    async def scenario():
-        wakeup = asyncio.Event()
-        return await drive(wakeup, cycles=2, interval=0.02)
-
-    assert asyncio.run(scenario()) >= 2
+    assert asyncio.run(drive(cycles=2, idle=0.02)) >= 2
 
 
 def test_a_change_during_a_cycle_is_not_lost():
-    """The event is cleared after the wait, not before the next cycle, so
-    something arriving mid-cycle still triggers the following one."""
-    async def scenario():
-        wakeup = asyncio.Event()
-        wakeup.set()          # already pending before the loop ever waits
-        return await drive(wakeup, cycles=2, interval=300.0)
+    """The event is cleared after the wait, not before the next round, so
+    something arriving mid-round still triggers the following one."""
+    async def poke(evaluator):
+        evaluator.wake()      # pending before the loop ever waits
 
-    assert asyncio.run(scenario()) >= 2
+    assert asyncio.run(drive(cycles=2, idle=300.0, poke=poke)) >= 2
+
+
+def test_the_export_hangs_on_the_evaluator_rather_than_its_own_clock():
+    """One loop, one clock. Two meant a reading arriving three times a
+    second became three rounds of requests into Home Assistant."""
+    published = []
+    assert asyncio.run(drive(cycles=2, idle=0.02, published=published)) >= 2
+    assert published, "der Export bekam keine Runde zu sehen"
+    zone, state = published[0][0]
+    assert zone.id == "z1" and state["occupied"] is True
 
 
 # --- the hook the export hangs on --------------------------------------
@@ -160,6 +176,104 @@ def test_devices_added_later_are_hooked_up_too():
     live.stop_all()
 
 
+# --- motion is news too (R3) -------------------------------------------
+
+
+def test_motion_alone_wakes_the_evaluation():
+    """Reproduction E: motion=on changed the cache and notified nobody.
+
+    A motion flip is not a measurement — it produces no sample, on
+    purpose, because counting it as one inflated a rate measured per
+    second. But it is exactly the kind of change the evaluation should
+    not wait ten seconds to hear about.
+    """
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    woken = []
+    live.on_any_state(woken.append)
+    device = make_device()
+    live.reconcile([device])
+
+    live.stream(device.id)._subscription.on_state(
+        device.entity_motion, {"state": "on", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    assert woken == [device.id]
+
+    live.stream(device.id)._subscription.on_state(
+        device.entity_motion, {"state": "off", "last_updated": "2026-09-08T12:00:05+00:00"}
+    )
+    assert woken == [device.id, device.id]
+    live.stop_all()
+
+
+def test_the_same_motion_value_again_is_not_news():
+    """Home Assistant re-sends a state on an attribute change. Waking on
+    that is work with nothing behind it."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    woken = []
+    live.on_any_state(woken.append)
+    device = make_device()
+    live.reconcile([device])
+
+    for stamp in ("12:00:00", "12:00:01", "12:00:02"):
+        live.stream(device.id)._subscription.on_state(
+            device.entity_motion,
+            {"state": "on", "last_updated": f"2026-09-08T{stamp}+00:00"},
+        )
+    assert woken == [device.id]
+    live.stop_all()
+
+
+def test_a_reading_wakes_the_evaluation_but_a_repeat_of_it_does_not():
+    """A duplicate score is dropped from the window, so there is nothing
+    new to look at."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    woken = []
+    live.on_any_state(woken.append)
+    device = make_device()
+    live.reconcile([device])
+
+    same = {"state": "0.42", "last_updated": "2026-09-08T12:00:00+00:00"}
+    live.stream(device.id)._subscription.on_state(device.entity_movement_score, same)
+    live.stream(device.id)._subscription.on_state(device.entity_movement_score, dict(same))
+    assert woken == [device.id]
+    live.stop_all()
+
+
+def test_a_rebuilt_stream_keeps_waking_the_evaluation():
+    """Correcting a device's entity ids rebuilds its subscription. If the
+    wake-up did not come with it, that device would silently fall back to
+    the ten-second timer — and only that one device."""
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    woken = []
+    live.on_any_state(woken.append)
+    device = make_device()
+    live.reconcile([device])
+
+    device.entity_movement_score = "sensor.korrigiert"
+    live.reconcile([device])
+    live.stream(device.id)._subscription.on_state(
+        "sensor.korrigiert", {"state": "0.9", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    assert woken == [device.id]
+    live.stop_all()
+
+
+def test_a_wake_up_listener_that_throws_does_not_stop_the_stream():
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device()
+    live.reconcile([device])
+    stream = live.stream(device.id)
+
+    seen = []
+    stream.add_change_listener(lambda _id: (_ for _ in ()).throw(RuntimeError("nope")))
+    stream.add_change_listener(seen.append)
+    stream._subscription.on_state(
+        device.entity_motion, {"state": "on", "last_updated": "2026-09-08T12:00:00+00:00"}
+    )
+    assert seen == [device.id]
+    live.stop_all()
+
+
 # --- the broker showing up late (P1 #7) --------------------------------
 
 
@@ -176,15 +290,14 @@ def test_the_export_keeps_trying_until_the_broker_exists(monkeypatch):
         if attempts["n"] < 3:
             raise mqtt_bridge.MqttUnavailable("kein Broker")
 
-    async def stub_loop(*args, **kwargs):
-        return None
-
+    attached = []
     monkeypatch.setattr(mqtt_bridge.bridge, "start", flaky_start)
-    monkeypatch.setattr(mqtt_bridge, "publish_loop", stub_loop)
+    monkeypatch.setattr(mqtt_bridge, "attach", lambda *a, **k: attached.append(a))
     monkeypatch.setattr(main, "MQTT_RETRY_BACKOFF", (0.001,))
     asyncio.run(main._run_mqtt_export())
 
     assert attempts["n"] == 3
+    assert attached, "nach dem geglückten Start muss der Export angehängt werden"
 
 
 def test_a_failed_start_is_visible_while_it_retries(monkeypatch):
@@ -207,35 +320,3 @@ def test_a_failed_start_is_visible_while_it_retries(monkeypatch):
 
     asyncio.run(scenario())
     assert "kein Broker" in (mqtt_bridge.bridge.error or "")
-
-
-def test_a_zone_deleted_while_the_add_on_was_stopped_is_un_announced(tmp_path, monkeypatch):
-    """The publish loop seeds its "known" set from disk, so the retained
-    discovery message of a zone that no longer exists is cleared on the
-    next start instead of haunting Home Assistant."""
-    monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path))
-    mqtt_bridge.remember_announced({"weg", "bleibt"})
-
-    forgotten = []
-    monkeypatch.setattr(mqtt_bridge.bridge, "forget_zone", forgotten.append)
-    monkeypatch.setattr(mqtt_bridge.bridge, "publish_zone", lambda *a, **k: None)
-
-    async def compute(zones):
-        return [(zone, {"occupied": False, "available": True}) for zone in zones]
-
-    async def scenario():
-        task = asyncio.create_task(
-            mqtt_bridge.publish_loop(compute, lambda: [Zone("bleibt")], interval=300.0)
-        )
-        for _ in range(200):
-            await asyncio.sleep(0.01)
-            if forgotten:
-                break
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    asyncio.run(scenario())
-    assert forgotten == ["weg"]

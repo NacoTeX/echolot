@@ -17,6 +17,7 @@ stretch of wall clock, and the rate is per second.
 """
 
 import asyncio
+import itertools
 import logging
 import time
 from collections import deque
@@ -31,11 +32,24 @@ logger = logging.getLogger("echolot.live_presence")
 WINDOW_SECONDS = 180.0
 
 
+#: Every stream ever opened gets its own number.
+#:
+#: A stream is rebuilt when a device's entity ids change: the buffer
+#: starts empty and the readings may come from different entities
+#: entirely, so anything remembered about the old one is an answer to a
+#: different question. Callers need to be able to tell one from the
+#: other, and `id()` cannot do it — CPython reuses an address as soon as
+#: the old object is collected, which is exactly when the replacement is
+#: allocated.
+_generations = itertools.count(1)
+
+
 class DeviceStream:
     """The live state of one device: its subscription, cache and window."""
 
     def __init__(self, device, *, subscription_factory=None, reader=None, loop=None):
         self.device_id = device.id
+        self.generation = next(_generations)
         self._entities = {
             "score": device.entity_movement_score,
             "motion": device.entity_motion,
@@ -49,6 +63,9 @@ class DeviceStream:
         self._cache: dict[str, dict] = {}
         self._samples: deque = deque()
         self._listeners: set = set()
+        #: Told that *something* changed, without a measurement attached.
+        #: See `_notify_change`.
+        self._change_listeners: set = set()
         self._reader = reader
         self._loop = loop
         factory = subscription_factory or ha_stream.StateSubscription
@@ -64,6 +81,7 @@ class DeviceStream:
     def stop(self) -> None:
         self._subscription.stop()
         self._listeners.clear()
+        self._change_listeners.clear()
 
     @property
     def entity_ids(self) -> list[str]:
@@ -91,6 +109,7 @@ class DeviceStream:
     # --- data --------------------------------------------------------------
 
     def _on_state(self, entity_id: str, state: dict) -> None:
+        previous = self._cache.get(entity_id)
         self._cache[entity_id] = state
 
         # Only the movement score is a measurement. The threshold and the
@@ -108,6 +127,13 @@ class DeviceStream:
         # alone — so a profile learned from history judged data that had
         # been counted differently.
         if entity_id != self._entities["score"]:
+            # Not a measurement — but still news. Until 0.13.5 this
+            # return was the end of it, so motion flipping on notified
+            # nobody: the zone kept whatever the evaluator last worked
+            # out until the idle timer came round, up to ten seconds
+            # after the device had already decided. Reported as R3.
+            if previous is None or previous.get("state") != state.get("state"):
+                self._notify_change()
             return
 
         sample = build_sample(
@@ -138,6 +164,25 @@ class DeviceStream:
                 listener(self.device_id, sample)
             except Exception:  # noqa: BLE001 - one bad listener must not stop the rest
                 logger.exception("Listener für %s fehlgeschlagen", self.device_id)
+        self._notify_change()
+
+    def _notify_change(self) -> None:
+        """Something about this device changed; no measurement implied.
+
+        Separate from the sample listeners on purpose. A sample listener
+        is handed a reading and is entitled to assume there is one — the
+        calibration recorder writes it down. A change listener is only
+        being told to look again, which is what the evaluator needs and
+        what motion and threshold events can honestly offer.
+
+        A duplicate score is deliberately not a change: it is dropped
+        from the window above, so there is nothing new to look at.
+        """
+        for listener in tuple(self._change_listeners):
+            try:
+                listener(self.device_id)
+            except Exception:  # noqa: BLE001 - one bad listener must not stop the rest
+                logger.exception("Change-Listener für %s fehlgeschlagen", self.device_id)
 
     def _trim(self) -> None:
         """Bound the buffer relative to the newest reading, not the clock.
@@ -168,11 +213,21 @@ class DeviceStream:
         """Whoever is attached, so a rebuilt stream can take them over."""
         return tuple(self._listeners)
 
+    @property
+    def change_listeners(self) -> tuple:
+        return tuple(self._change_listeners)
+
     def add_listener(self, listener) -> None:
         self._listeners.add(listener)
 
     def remove_listener(self, listener) -> None:
         self._listeners.discard(listener)
+
+    def add_change_listener(self, listener) -> None:
+        self._change_listeners.add(listener)
+
+    def remove_change_listener(self, listener) -> None:
+        self._change_listeners.discard(listener)
 
 
 #: How often the device list is re-read. Devices are created, built and
@@ -194,6 +249,9 @@ class LivePresence:
         #: changes. The MQTT export uses it to publish when something
         #: happens rather than when a timer next comes round.
         self._on_any_change = None
+        #: Called as `(device_id)` whenever anything about a device
+        #: changed, measurement or not. The evaluator wakes on this.
+        self._on_any_state = None
 
     def bind(self, loop) -> None:
         self._loop = loop
@@ -210,6 +268,17 @@ class LivePresence:
         self._on_any_change = callback
         for stream in self._streams.values():
             stream.add_listener(callback)
+
+    def on_any_state(self, callback) -> None:
+        """Register one `(device_id)` callback for any change at all.
+
+        Motion turning on is not a measurement and never reaches
+        `on_any_change`, but it is exactly the kind of thing the
+        evaluation should not wait ten seconds to hear about.
+        """
+        self._on_any_state = callback
+        for stream in self._streams.values():
+            stream.add_change_listener(callback)
 
     def statuses(self) -> dict:
         return {
@@ -242,6 +311,7 @@ class LivePresence:
             if (device.entity_movement_score or device.entity_motion)
         }
         carry_over: dict[str, tuple] = {}
+        carry_over_changes: dict[str, tuple] = {}
         for device_id in list(self._streams):
             if device_id not in wanted:
                 self._streams.pop(device_id).stop()
@@ -258,6 +328,7 @@ class LivePresence:
                 # live and collects nothing — the exact failure the
                 # recording exists to rule out.
                 carry_over[device_id] = tuple(existing.listeners)
+                carry_over_changes[device_id] = tuple(existing.change_listeners)
                 self._streams.pop(device_id).stop()
         for device_id, device in wanted.items():
             if device_id not in self._streams:
@@ -269,8 +340,12 @@ class LivePresence:
                 )
                 if self._on_any_change is not None:
                     stream.add_listener(self._on_any_change)
+                if self._on_any_state is not None:
+                    stream.add_change_listener(self._on_any_state)
                 for listener in carry_over.get(device_id, ()):
                     stream.add_listener(listener)
+                for listener in carry_over_changes.get(device_id, ()):
+                    stream.add_change_listener(listener)
                 self._streams[device_id] = stream
                 stream.start()
                 self._seed(stream)

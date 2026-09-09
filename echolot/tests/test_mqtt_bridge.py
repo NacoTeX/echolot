@@ -196,19 +196,28 @@ def test_an_unchanged_name_is_still_announced_only_once(bridge):
     assert discovery_count(bridge._client, "z1") == 1
 
 
-def test_announced_zones_survive_a_restart(tmp_path, monkeypatch, bridge):
-    """A zone deleted while the add-on was stopped was never
-    un-announced: its retained discovery message stayed on the broker and
-    the entity haunted Home Assistant. Nothing in memory remembered it had
-    ever been announced."""
-    monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path))
-    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
-    assert mqtt_bridge.load_announced() == {"z1"}
+def test_forget_zone_reports_whether_the_broker_took_it(bridge):
+    """The caller keeps a tombstone until this says True.
 
-    bridge.forget_zone("z1")
-    assert mqtt_bridge.load_announced() == set()
+    Reporting success for a delete that never left the machine is how a
+    retained discovery message survived every attempt to remove it: the
+    zone was struck off the announced set and nobody ever tried again.
+    """
+    bridge.publish_zone("z1", "Küche", occupied=True, available=True)
+    assert bridge.forget_zone("z1") is True
+
+    bridge.publish_zone("z2", "Flur", occupied=True, available=True)
+    bridge.connected = False
+    assert bridge.forget_zone("z2") is False
+    assert bridge.announced_ids() == {"z2"}, "eine nicht gesendete Löschung darf nichts vergessen"
+
+    bridge.connected = True
+    bridge._client.rc = mqtt.MQTT_ERR_QUEUE_SIZE
+    assert bridge.forget_zone("z2") is False
+    assert bridge.announced_ids() == {"z2"}
 
 
 def test_a_missing_store_is_not_a_broken_export(tmp_path, monkeypatch):
     monkeypatch.setenv("ECHOLOT_DATA_DIR", str(tmp_path / "gibtsnicht"))
+    assert mqtt_bridge.load_state() == (set(), set())
     assert mqtt_bridge.load_announced() == set()
