@@ -76,7 +76,11 @@ def test_the_baseline_matches_what_was_measured(profile):
     """The rate the room has to be beaten by, in crossings a second."""
     assert 0.05 < profile.baseline_rate < 0.15
     assert profile.crossing_threshold == 1e-3
-    assert profile.window_count == 20
+    # Nineteen, not twenty: windows are built inside one label segment,
+    # so the empty stretch does not continue across the interference
+    # passage in the middle of the recording. The twentieth window used
+    # to bridge it and counted that time as empty-room observation.
+    assert profile.window_count == 19
 
 
 def test_the_percentile_survives_a_baseline_that_is_mostly_silent(clean_baseline):
@@ -218,7 +222,7 @@ def test_someone_at_the_door_cannot_be_judged_from_nine_seconds(profile, next_do
 
 def test_a_contaminated_baseline_is_flagged(profile):
     assert profile.suspect_windows == 1
-    assert profile.window_count == 20
+    assert profile.window_count == 19
     assert "jemand im Raum" in (profile.warning or "")
 
 

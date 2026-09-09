@@ -1,5 +1,5 @@
 name: Echolot
-version: "0.13.5"
+version: "0.13.6"
 slug: echolot
 description: >-
   Wi-Fi CSI presence detection: build ESPectre firmware, flash it from the

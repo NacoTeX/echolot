@@ -123,7 +123,10 @@ def collect_problems(
         # nothing to rate-based presence while its card still shows a
         # profile. The measurement changed; the recalibration is real
         # work and has to be asked for.
-        if presence_rate.profile_outdated(device.presence_profile):
+        # Three different situations, and they need three different things
+        # from the person: recalibrate, look at the file, or nothing.
+        status = presence_rate.profile_status(device.presence_profile)
+        if status == presence_rate.OUTDATED:
             problems.append(
                 Problem(
                     kind="profile_outdated",
@@ -131,6 +134,19 @@ def collect_problems(
                         f"Das Präsenzprofil von „{label}“ stammt aus einer älteren "
                         "Auswertung und wird nicht mehr verwendet. Eine Leer-Aufnahme "
                         "neu übernehmen."
+                    ),
+                    tab="calibration",
+                    device_id=device.id,
+                )
+            )
+        elif status == presence_rate.MALFORMED:
+            problems.append(
+                Problem(
+                    kind="profile_malformed",
+                    message=(
+                        f"Das Präsenzprofil von „{label}“ ist beschädigt und wird "
+                        "übersprungen — die übrigen Räume laufen weiter. Eine "
+                        "Leer-Aufnahme neu übernehmen ersetzt es."
                     ),
                     tab="calibration",
                     device_id=device.id,

@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.13.6
+
+Ein zweites externes Review, diesmal mit einem Reproduktionsskript für
+sieben Logikbefunde. Alle sieben ließen sich am Ausgangsstand bestätigen.
+Hier die ersten zwei Blöcke; der Rest folgt in derselben Version.
+
+**Ein beschädigtes Profil konnte die Auswertung aller Zonen abbrechen.**
+`profile_from_dict({"version": "broken"})` warf ValueError, weil die
+Versionskonvertierung außerhalb des `try` lag — und dieser Aufruf liegt
+auf dem gemeinsamen Auswertungsdurchlauf. Ein handverändertes oder halb
+geschriebenes Profil hätte damit jeden Raum mitgerissen. Das Profilmodell
+prüft jetzt Version, Endlichkeit und Wertebereiche und liefert *immer*
+eine Antwort: `missing`, `outdated`, `malformed` oder `usable`. Die drei
+Fehlerfälle sind getrennt, weil sie Verschiedenes von einem verlangen —
+neu kalibrieren, in die Datei sehen, oder gar nichts.
+
+**Beobachtungszeit wurde geraten statt gemessen.** Ein Messwert beweist,
+dass die Quelle in genau diesem Augenblick lebte, und sagt über jeden
+anderen Augenblick nichts. Bisher zog die Rechnung nur Lücken über 30 s
+ab und zählte alles übrige — auch die Zeit vor dem ersten und nach dem
+letzten Messwert. Fünf Messwerte über 0,4 Sekunden in der Fenstermitte
+galten damit als **60 Sekunden beobachtet**; derselbe Burst am Fensterrand
+fiel durch. Dieselbe Evidenz, zwei Antworten, entschieden davon, wo sie
+zufällig lag.
+
+Jeder Messwert deckt jetzt `MAX_SAMPLE_GAP / 2` zu beiden Seiten, und
+beobachtet ist die Vereinigung dieser Intervalle im Fenster. Zwei
+Messwerte näher beieinander als 30 s wachsen dadurch zusammen — die
+längste echte Lücke einer realen Aufnahme (18,7 s) bleibt durchgehend
+beobachtet —, ein echtes Loch bleibt ein Loch, und ein Burst deckt nur,
+was ein Burst decken kann. Gemessen: Burst in der Mitte 30,4 s statt 60,
+gleichmäßige Aufnahme unverändert 60,0 s.
+
+**Belegte Minuten wurden als Leerraum mitgezählt.** `learn_baseline`
+entfernte zuerst alle nicht als „Raum leer" markierten Messwerte und
+bildete dann Fenster — die Lücken dazwischen wurden von der Gap-Regel
+überbrückt. Eine 600-Sekunden-Reihe, in der pro Minute zwanzig Sekunden
+als „still" markiert waren, meldete 600 Sekunden Leerraum-Beobachtung;
+200 davon saß jemand im Raum. Fenster werden jetzt **innerhalb eines
+Labelabschnitts** gebildet.
+
+An der echten Aufnahme verschiebt das die Zahlen erneut: 19 Leer-Fenster
+statt 20, Leerwert 0,083 statt 0,067. Das zwanzigste Fenster überbrückte
+die `interference`-Passage in der Mitte der Aufnahme und zählte diese
+Zeit als Leerraum.
+
+**Der Live-Pfad nennt sein Fenster jetzt, statt es abzuleiten.** Ohne
+ausdrückliches Fenster nahm `evaluate` die Spanne zwischen erstem und
+letztem Messwert — das Fenster war also, was die Daten gerade füllten,
+und vier Sekunden Messwerte galten als Vier-Sekunden-Fenster. Jetzt ist
+es `window_seconds`, endend am neuesten Messwert, und die Freigaberegel
+steht an einer Stelle: das Fenster muss zu `MIN_COVERAGE` vergangen
+*und* zu `MIN_COVERAGE` beobachtet sein.
+
 ## 0.13.5
 
 Drei Fehler aus einem externen Code-Review, alle drei in der Kette, die
