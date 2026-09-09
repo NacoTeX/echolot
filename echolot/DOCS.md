@@ -1106,8 +1106,9 @@ stehen getrennt auf der Karte:
 | `disconnected` | das Abonnement ist abgerissen |
 | `source_mismatch` | das Profil wurde über einen anderen Transport gelernt |
 | `band_mismatch` | das Profil wurde auf einem anderen Funkband gelernt |
+| `mode_mismatch` | das Profil wurde in einer anderen Funktopologie gelernt |
 
-Bei den letzten beiden wird nicht mehr nur gewarnt: was ein Raum leer tut, ist
+Bei den letzten dreien wird nicht mehr nur gewarnt: was ein Raum leer tut, ist
 eine Eigenschaft dieses Raums über *einen* Messweg. Der langsame Pfad
 schweigt, bis neu kalibriert wird. Der schnelle Bewegungspfad läuft
 weiter — eine Zone soll ihre Bewegungserkennung nicht verlieren, weil ein
@@ -1174,6 +1175,53 @@ auf `AUTO`, und die Migration schreibt genau das in seine Konfiguration,
 statt die neue Vorgabe anzuwenden. Ihn auf 2,4 GHz zu setzen ist ein
 Neubau samt Flashen — eine Entscheidung, die niemand einer Migration
 überlassen sollte.
+
+### Router oder Gerätepaar
+
+Ein Sensor misst heute die Funkstrecke **Access Point → Gerät**. TOMMY
+beschreibt etwas anderes: mindestens zwei Geräte je Zone, zwischen denen
+gezielt Pakete ausgetauscht werden, also eine gerichtete Strecke
+**A → B**. Beide Enden der Messstrecke lassen sich dann platzieren, statt
+nur eines.
+
+| Variante | Tatsächliche Messstrecken |
+|---|---|
+| Echolot, ein Sensor | AP → Sensor |
+| Echolot, zwei Sensoren | AP → A und AP → B — zwei Routermessungen, kombiniert |
+| Echter Paarmodus | A → B |
+
+Zwei Sensoren in einer Zone ergeben **nicht** von selbst einen A→B-Link.
+Und `csi_traffic_mode: external` ist am gepinnten Commit keiner: die
+Upstream-Dokumentation beschreibt dafür UDP-Pakete, die über den Access
+Point zugestellt werden. Ein Paket von A an die IP von B läuft also
+A → AP → B, und eine IP-Absenderadresse ist kein Nachweis des
+unmittelbaren 802.11-Senders.
+
+**Was 0.13.8 davon hat: den Datenvertrag, sonst nichts.**
+
+- `sensing_mode` am Gerät, `router` als Vorgabe — was jedes je von
+  Echolot gebaute Image tut, weshalb dafür keine Migration nötig ist.
+- `peer_link` als benannter zweiter Wert, der **nicht wählbar ist**. Er
+  hängt an einer Fähigkeit, die die Firmware melden muss:
+  `firmware_capabilities` im Build-Manifest, mit `supports_router`,
+  `supports_peer_tx`, `supports_peer_rx` und `peer_protocol_version`. Die
+  gepinnte Firmware meldet nur das erste. Die Fähigkeiten stehen **im
+  Manifest**, nicht in einer Tabelle im Add-on: ein vor einem Jahr
+  geflashtes Gerät läuft mit der Firmware von vor einem Jahr, und was
+  das Add-on heute kann, ist über sie keine Auskunft.
+- Das Profil trägt den Modus mit. Ein Routerprofil wird an einem
+  Peer-Link nicht stillschweigend übernommen.
+
+Der Weg von hier zu einem echten Link steht in
+[docs/paarmodus-hardwaretest.md](docs/paarmodus-hardwaretest.md), mit dem
+Versuch, an dem alles hängt: **Sender abschalten — der Peer-Link muss
+ausfallen, auch wenn der Router weiter Pakete schickt.** Solange das
+nicht belegt ist, gibt es keinen Schalter dafür.
+
+Ausdrücklich nicht gebaut: `LinkConfig`, `LinkSample`, ein Paar-Assistent
+oder irgendeine Oberfläche. Speicher und Bedienung für eine Funkstrecke
+zu bauen, die kein Gerät herstellen kann, erweckt genau den Eindruck, den
+das Ganze vermeiden soll.
 
 ### Wer den Zonenzustand besitzt
 

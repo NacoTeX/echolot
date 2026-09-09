@@ -580,6 +580,37 @@ _rate_state: dict[str, dict] = {}
 RATE_DISCONNECTED = "disconnected"
 RATE_SOURCE_MISMATCH = "source_mismatch"
 RATE_BAND_MISMATCH = "band_mismatch"
+RATE_MODE_MISMATCH = "mode_mismatch"
+
+#: One reason per condition a baseline was learned under, in the order
+#: they are checked. The conditions themselves live in
+#: `presence_rate.MEASUREMENT_FIELDS`; a fourth would be a row in both.
+RATE_MISMATCH_REASONS = {
+    "source": RATE_SOURCE_MISMATCH,
+    "band": RATE_BAND_MISMATCH,
+    "sensing_mode": RATE_MODE_MISMATCH,
+}
+
+
+def _measurement_now(device) -> dict[str, str]:
+    """The conditions this device is measuring under right now.
+
+    The counterpart to `presence_rate.measurement_definition`, and
+    deliberately the same keys: what a baseline recorded is compared with
+    what is true, field by field, rather than by three separate rules
+    that drift apart.
+    """
+    from app import samples
+
+    return {
+        # Which transport the readings arrive over.
+        "source": samples.bus.source,
+        # Which radio they are measured on.
+        "band": devices.effective_band(device.config),
+        # Which radio path: the access point's traffic, or a directed
+        # link between two sensors.
+        "sensing_mode": device.config.sensing_mode,
+    }
 
 
 def _device_rate_evidence(
@@ -630,26 +661,24 @@ def _device_rate_evidence(
         cached[device.id] = (None, None)
         return None, None
 
-    canonical = samples.bus.source
-    if profile.source and profile.source != canonical:
-        # Not a warning any more. The memory goes too: it was built from
-        # verdicts this profile is not entitled to have made.
-        _rate_state.pop(device.id, None)
-        cached[device.id] = (None, RATE_SOURCE_MISMATCH)
-        return None, RATE_SOURCE_MISMATCH
-
-    # The same argument one layer down, on the radio instead of the
-    # transport. 2.4 GHz and 5 GHz are two measurements of one room, and
-    # ESPectre says of the second that its detection quality is not
-    # characterised — so a baseline learned on one is not a baseline for
-    # the other. `auto` counts as its own answer rather than as a
-    # wildcard: a recording made under it cannot say which radio it was
-    # on, so it matches neither pinned band.
-    band = profile.band
-    if band and band != devices.effective_band(device.config):
-        _rate_state.pop(device.id, None)
-        cached[device.id] = (None, RATE_BAND_MISMATCH)
-        return None, RATE_BAND_MISMATCH
+    # What a room does empty is a fact about that room *under
+    # conditions*: over one transport, on one radio band, along one radio
+    # path. Change any of them and the recording describes a different
+    # measurement, so the baseline is no longer a scale for it. Each was
+    # once a separate rule; they are one comparison now, because they are
+    # one argument.
+    #
+    # Not a warning any more, and the memory goes with it: it was built
+    # from verdicts this profile was not entitled to have made. A
+    # condition the profile does not record is not a mismatch — see
+    # `measurement_definition`.
+    recorded = presence_rate.measurement_definition(profile)
+    current = _measurement_now(device)
+    for field, reason in RATE_MISMATCH_REASONS.items():
+        if recorded[field] and recorded[field] != current[field]:
+            _rate_state.pop(device.id, None)
+            cached[device.id] = (None, reason)
+            return None, reason
 
     if not connected:
         cached[device.id] = (None, RATE_DISCONNECTED)

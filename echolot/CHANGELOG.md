@@ -18,6 +18,28 @@ es kein wirkungsloser Schalter, sondern ein Konfigurationsfehler. Der
 Wert steht im Build-Manifest, geht in den Konfigurations-Fingerabdruck
 ein und wird von `esphome config` für alle drei Bänder geprüft.
 
+**Der Paarmodus bekommt seinen Datenvertrag — und sonst nichts.** Ein
+Gerät sagt jetzt, in welcher Funktopologie es misst: `sensing_mode` mit
+`router` als Vorgabe, also dem, was jedes je von Echolot gebaute Image
+tut. Der zweite Wert `peer_link` — die gerichtete Strecke A→B, die TOMMY
+beschreibt — ist benannt und **nicht wählbar**. Er hängt an einer
+Fähigkeit, die die Firmware melden muss (`supports_peer_rx`), und die
+gepinnte ESPectre-Firmware meldet sie nicht.
+
+Der Grund ist kein Vorbehalt, sondern ein Befund: `csi_traffic_mode:
+external` ist am gepinnten Commit kein Funklink. Upstream beschreibt
+dafür UDP-Pakete, die über den Access Point zugestellt werden — ein Paket
+von A an die IP von B läuft also A → AP → B, und eine IP-Absenderadresse
+ist kein Nachweis des unmittelbaren 802.11-Senders.
+
+Die Fähigkeiten stehen im Build-Manifest, nicht in einer Tabelle im
+Add-on: ein vor einem Jahr geflashtes Gerät läuft mit der Firmware von
+vor einem Jahr. Der Weg zu einem echten Link steht in
+`docs/paarmodus-hardwaretest.md`, mit dem Versuch, an dem alles hängt —
+Sender abschalten, der Link muss ausfallen, auch wenn der Router weiter
+sendet. Ausdrücklich nicht gebaut: `LinkConfig`, `LinkSample`, ein
+Paar-Assistent, irgendeine Oberfläche.
+
 **Ein Profil weiß jetzt, auf welchem Funkband es gelernt wurde.** 2,4 GHz
 und 5 GHz sind zwei Messungen desselben Raums; was der leere Raum auf dem
 einen tut, sagt nichts über das andere. Ein Profil vom anderen Band macht
@@ -25,6 +47,11 @@ die langsame Evidenz stumm — mit Begründung, wie beim Transportwechsel in
 0.13.7 —, und die Übersicht nennt beide Bänder beim Namen. `auto` gilt
 dabei als eigene Antwort und nicht als Platzhalter: unter `auto` weiß
 auch die Aufnahme nicht, auf welchem Funkband sie entstanden ist.
+
+Transport, Band und Topologie sind dieselbe Frage, dreimal gestellt:
+unter welchen Bedingungen war dieser Maßstab wahr. Sie stehen jetzt als
+**eine** Messdefinition am Profil und werden als eine verglichen — eine
+vierte Bedingung wäre eine Zeile, kein vierter Zweig.
 
 Dabei kam ein zweiter Fehler mit heraus: `update_device` prüfte den
 gespeicherten Datensatz *ohne* Migration gegen das Modell und schrieb das

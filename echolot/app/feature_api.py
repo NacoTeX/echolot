@@ -394,7 +394,16 @@ def apply_presence_rate(session_id: str) -> dict:
     # baseline learned on 2.4 GHz would keep judging a device somebody
     # later moved to 5 GHz, which is the transport mismatch of 0.13.7 one
     # layer down.
-    profile = replace(profile, band=devices.effective_band(device.config))
+    profile = replace(
+        profile,
+        band=devices.effective_band(device.config),
+        # And the radio path it was measured along. Only `router` exists
+        # today, so this records a fact rather than distinguishing two —
+        # which is the point: when a peer link does exist, a baseline
+        # learned against the access point will not silently become its
+        # scale.
+        sensing_mode=device.config.sensing_mode,
+    )
     device.presence_profile = profile.as_dict()
     devices.save_device(device)
     return {"status": "ok", "profile": device.presence_profile}

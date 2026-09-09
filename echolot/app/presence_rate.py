@@ -169,6 +169,12 @@ class RateProfile:
     #: learned under, and bumping PROFILE_VERSION would throw every one
     #: of them away to record something none of them ever measured.
     band: str | None = None
+    #: Which radio topology the room was measured in — see
+    #: `devices.MODE_ROUTER`. None on a profile learned before 0.13.8;
+    #: all of those describe the router topology, because it is the only
+    #: one any firmware Echolot ships can measure. Recorded rather than
+    #: versioned, like the two above.
+    sensing_mode: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -185,6 +191,7 @@ class RateProfile:
             "window_count": self.window_count,
             "source": self.source,
             "band": self.band,
+            "sensing_mode": self.sensing_mode,
             "warning": self.warning,
         }
 
@@ -290,6 +297,9 @@ def _parse_profile(data: dict) -> RateProfile | None:
             window_count=max(0, int(data.get("window_count") or 0)),
             source=(str(data["source"]) if data.get("source") else None),
             band=(str(data["band"]) if data.get("band") else None),
+            sensing_mode=(
+                str(data["sensing_mode"]) if data.get("sensing_mode") else None
+            ),
         )
     except (TypeError, ValueError):
         return None
@@ -565,6 +575,30 @@ def learn_baseline(
         # more useful than picking one.
         source=_single_source(empty),
     )
+
+
+#: The conditions a baseline was learned under, by name. Each one is a
+#: fact about the measurement rather than about the room: change any of
+#: them and the recording describes a different thing, so the profile is
+#: no longer a scale for it.
+#:
+#: Kept as one list because they are the same question asked three times.
+#: Adding a fourth condition — a link id, a channel — should be a row
+#: here and a row in the caller's "what is true now", not a fourth
+#: branch in the evaluation.
+MEASUREMENT_FIELDS = ("source", "band", "sensing_mode")
+
+
+def measurement_definition(profile: RateProfile) -> dict[str, str | None]:
+    """Under what conditions this baseline was true.
+
+    A value of None means the profile does not say — every profile
+    written before the field existed. Not knowing is not a mismatch: an
+    old profile is still a correct answer to the question it was learned
+    under, and discarding all of them to record something none of them
+    measured would be the worse trade.
+    """
+    return {field: getattr(profile, field) for field in MEASUREMENT_FIELDS}
 
 
 def _single_source(rows: list[dict]) -> str | None:

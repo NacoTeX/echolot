@@ -14,6 +14,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.board_registry import get_board
+from app.firmware import ESPECTRE_REF, CAPABILITIES as FIRMWARE_CAPABILITIES
 from app.devices import (
     BuildStatus,
     Device,
@@ -116,17 +117,6 @@ def reset_toolchain(board) -> bool:
     return True
 
 
-#: The ESPectre commit this Echolot release builds against.
-#:
-#: Pinned rather than tracking `main`, so a given Echolot version always
-#: produces the same firmware base. Moving it is a deliberate act: bump
-#: this, rebuild a device, and check it still senses.
-#:
-#: Since 0.13.6 CI links a real image for one board per instruction set
-#: against exactly this commit (tools/compile_firmware.py), so "pinned"
-#: now means verified as well as reproducible — for those two boards, on
-#: CI's Linux runner, and not on hardware. See DOCS.md.
-ESPECTRE_REF = "ce23b0b61b95b87a75f12681a0e576d8f3df5d1b"
 
 #: Fields that must never reach a manifest or a log.
 _SECRET_CONFIG_FIELDS = ("wifi_password",)
@@ -256,6 +246,11 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "echolot_version": addon_version(),
         "echolot_revision": addon_revision(),
         "espectre_ref": ESPECTRE_REF,
+        # What that commit measures, recorded with the image rather
+        # than looked up later. A device flashed a year ago runs the
+        # firmware of a year ago, and asking today's add-on what it
+        # can do would be asking the wrong build.
+        "firmware_capabilities": dict(FIRMWARE_CAPABILITIES),
         "esphome_version": esphome_version(),
         # The requirement as written: the installed version alone does not
         # say what the next build would have been allowed to pick.

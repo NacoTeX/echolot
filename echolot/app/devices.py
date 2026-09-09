@@ -21,6 +21,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.board_registry import Board, get_board
+from app.firmware import capabilities_for
 
 DATA_DIR = Path(os.environ.get("ECHOLOT_DATA_DIR", "/data"))
 DEVICES_DIR = DATA_DIR / "devices"
@@ -35,6 +36,18 @@ _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
 BAND_24 = "2.4GHz"
 BAND_5 = "5GHz"
 BAND_AUTO = "auto"
+
+#: Which radio topology a device measures in.
+#:
+#: `router` is what every image Echolot has ever built does: CSI taken
+#: from traffic between the access point and this device. `peer_link` is
+#: the directed A→B link between two sensors — the topology TOMMY
+#: describes — and no firmware Echolot ships provides it. It is named
+#: here so that a baseline can record which of the two it was learned
+#: under, and gated on a capability the firmware has to report, so it
+#: cannot be selected by anybody who merely wants it.
+MODE_ROUTER = "router"
+MODE_PEER_LINK = "peer_link"
 
 
 _lock = threading.Lock()
@@ -69,6 +82,10 @@ class DeviceCreate(BaseModel):
     #: idea: under `auto` a recording cannot say which radio it was made
     #: on, so it is a poor thing to learn a baseline from.
     wifi_band: Literal["2.4GHz", "5GHz", "auto"] = "2.4GHz"
+    #: Which radio topology this device measures in — see MODE_ROUTER.
+    #: `router` by default, which is also what every device stored before
+    #: 0.13.8 is doing, so no migration is needed to say so.
+    sensing_mode: Literal["router", "peer_link"] = "router"
     # Field names and ranges follow ESPectre's own schema
     # (src/cpp/runtime/runtime_sensing_schema.h), so a value that
     # validates here validates there.
@@ -121,6 +138,28 @@ class DeviceCreate(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def _validate_sensing_mode(self) -> "DeviceCreate":
+        """A topology no firmware provides is not an option.
+
+        Checked against the commit the *next build* would use, because at
+        create time there is no image yet — `available_sensing_modes`
+        asks a built device's own manifest instead. Both read the same
+        capability names, so the gate opens in one place when firmware
+        ever reports one, and nowhere before.
+        """
+        if self.sensing_mode == MODE_PEER_LINK and not capabilities_for(None)[
+            "supports_peer_rx"
+        ]:
+            raise ValueError(
+                "sensing_mode 'peer_link' verlangt einen gerichteten Funklink "
+                "zwischen zwei Sensoren. Die gepinnte ESPectre-Firmware meldet "
+                "supports_peer_rx=False — sie misst ausschließlich den Verkehr "
+                "zwischen Access Point und Gerät. Solange keine Firmware etwas "
+                "anderes meldet, gibt es diesen Modus nicht."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_band(self) -> "DeviceCreate":
         """A band the chip has no radio for is a mistake, not a preference.
 
@@ -163,6 +202,21 @@ def effective_band(config: DeviceCreate) -> str:
     stored value claim a radio the board does not have.
     """
     return config.wifi_band if get_board(config.board).dual_band else BAND_24
+
+
+def available_sensing_modes(device) -> list[str]:
+    """The topologies this device's own image can actually measure in.
+
+    Read from its build manifest, because that is what is on the chip;
+    an unbuilt device is judged by the pinned commit, which is what its
+    first build would give it. Returns a list rather than a set so the
+    order is stable wherever it is shown.
+    """
+    capabilities = capabilities_for(getattr(device, "build_manifest", None))
+    modes = [MODE_ROUTER] if capabilities["supports_router"] else []
+    if capabilities["supports_peer_rx"]:
+        modes.append(MODE_PEER_LINK)
+    return modes
 
 
 def _entity_slug(text: str) -> str:

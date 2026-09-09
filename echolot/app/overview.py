@@ -210,6 +210,26 @@ def collect_problems(
                     )
                 )
 
+            # And the radio path. AP→B and A→B are different geometry
+            # through a different part of the room; a baseline from one
+            # is not a scale for the other.
+            learned_mode = (device.presence_profile or {}).get("sensing_mode")
+            if learned_mode and learned_mode != device.config.sensing_mode:
+                problems.append(
+                    Problem(
+                        kind="profile_mode_mismatch",
+                        message=(
+                            f"Das Präsenzprofil von „{label}“ wurde im Modus "
+                            f"„{learned_mode}“ gelernt, das Gerät misst jetzt im "
+                            f"Modus „{device.config.sensing_mode}“. Das sind zwei "
+                            "verschiedene Funkstrecken — eine Leer-Aufnahme im "
+                            "aktuellen Modus neu übernehmen."
+                        ),
+                        tab="calibration",
+                        device_id=device.id,
+                    )
+                )
+
         # Costs nothing extra: the threshold is already in the state that
         # was read for the live view. It is worth saying here rather than
         # only in the per-device diagnosis, because it affects every
