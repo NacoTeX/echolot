@@ -562,6 +562,7 @@ def evaluate(
     *,
     occupied_now: bool = False,
     window: "Window | None" = None,
+    window_end: float | None = None,
 ) -> dict:
     """Is the room occupied, judged by how often it is reporting right now.
 
@@ -592,13 +593,19 @@ def evaluate(
         # The rolling window, stated rather than inferred. Taking the span
         # between the first and last reading made the window whatever the
         # data happened to fill, so a buffer holding four seconds of
-        # readings was judged as a four-second window and passed. The
-        # window is `window_seconds` ending at the newest reading; how
-        # much of it was observed is then the same question replay asks.
-        if stamps:
-            end = max(stamps)
+        # readings was judged as a four-second window and passed.
+        #
+        # `window_end` is the evaluation tick. Without it the window ends
+        # at the newest reading, so a source that stopped delivering was
+        # judged on its own last minute for as long as anything remained
+        # in the buffer — the window slid with the data instead of with
+        # the clock. Callers that have no clock (a test, an offline
+        # analysis) still get the old behaviour.
+        if stamps or window_end is not None:
+            end = window_end if window_end is not None else max(stamps)
             start = end - profile.window_seconds
-            span = min(profile.window_seconds, end - min(stamps))
+            oldest = min(stamps) if stamps else end
+            span = max(0.0, min(profile.window_seconds, end - oldest))
             observed = observed_seconds(scored, start, end)
         else:
             span = observed = 0.0
@@ -671,6 +678,7 @@ def advance(
     now: float,
     source=None,
     window: "Window | None" = None,
+    window_end: float | None = None,
     memory_seconds: float = RATE_MEMORY_SECONDS,
 ) -> tuple[bool | None, dict | None]:
     """One device's verdict, carrying its own hysteresis between calls.
@@ -701,7 +709,9 @@ def advance(
         memory = None
 
     previous = bool(memory["remembered"]) if memory else False
-    result = evaluate(profile, rows, occupied_now=previous, window=window)
+    result = evaluate(
+        profile, rows, occupied_now=previous, window=window, window_end=window_end
+    )
     verdict = bool(result["occupied"]) if result["available"] else None
     if verdict is None:
         return None, memory

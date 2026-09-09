@@ -26,6 +26,7 @@ works — see app/ha_sampler.py for why the direct transport does not.
 """
 
 import asyncio
+import itertools
 import logging
 import os
 import threading
@@ -42,6 +43,11 @@ DEFAULT_SOURCE = SOURCE_HOME_ASSISTANT
 
 #: Roughly an hour at four readings a second, per device.
 MAX_POINTS = 3_600
+
+#: Numbers the runs of readings, across every device. A counter rather
+#: than a per-device one so two devices can never share a generation and
+#: a memory can never be mistaken for the other's.
+_generations = itertools.count(1)
 
 #: Why the direct collector does not run unless somebody asks for it.
 #:
@@ -100,6 +106,13 @@ class SampleBus:
         self._max_points = max_points
         self._lock = threading.RLock()
         self._samples: dict[str, deque] = {}
+        #: device id -> which run of readings the buffer currently holds.
+        #: Bumped whenever the readings stop being a continuation of what
+        #: was there: a rebuilt subscription, a source change, a device
+        #: that was forgotten and came back. A hysteresis memory keyed on
+        #: it cannot then be carried across the break — see
+        #: `presence_rate.advance`.
+        self._generations: dict[str, int] = {}
         self._accepted: dict[str, int] = {}
         #: source -> how many readings were refused because that source is
         #: not the canonical one. Not an error; a fact worth showing.
@@ -107,6 +120,9 @@ class SampleBus:
         self._listeners: set = set()
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
         self._loop = None
+        #: The source the buffers were filled under, so a change can be
+        #: noticed rather than silently spliced into the same window.
+        self._active_source: str | None = None
 
     # --- configuration ----------------------------------------------------
 
@@ -133,7 +149,17 @@ class SampleBus:
         """
         if source not in SOURCES:
             raise ValueError(f"Unbekannte Quelle {source!r}")
-        if source != self.source:
+        canonical = self.source
+        if canonical != self._active_source:
+            # The canonical source changed under us. Everything in the
+            # buffers was measured the other way, and a window that
+            # straddles the change is two measurements added together.
+            previous, self._active_source = self._active_source, canonical
+            if previous is not None:
+                logger.info("Quelle gewechselt: %s -> %s", previous, canonical)
+                for device_id in list(self._samples):
+                    self.restart(device_id)
+        if source != canonical:
             with self._lock:
                 self._refused[source] = self._refused.get(source, 0) + 1
             return False
@@ -224,10 +250,35 @@ class SampleBus:
                 "refused_by_source": dict(self._refused),
             }
 
+    def generation(self, device_id: str) -> int:
+        """Which run of readings this device's buffer is on."""
+        with self._lock:
+            return self._generations.setdefault(device_id, next(_generations))
+
+    def restart(self, device_id: str) -> int:
+        """The readings from here are not a continuation. Drop and renumber.
+
+        Called when a subscription is rebuilt because the device's entity
+        ids changed, and whenever the canonical source changes. Until
+        0.13.6 the DeviceStream was replaced and this buffer was not, so
+        readings from the old entities stayed in the window and the
+        hysteresis carried straight across — which would matter most at
+        exactly the moment a room is switched to a different way of being
+        measured.
+        """
+        with self._lock:
+            self._samples.pop(device_id, None)
+            self._accepted.pop(device_id, None)
+            generation = next(_generations)
+            self._generations[device_id] = generation
+        logger.info("Messwertpuffer für %s neu begonnen", device_id)
+        return generation
+
     def forget(self, device_id: str) -> None:
         with self._lock:
             self._samples.pop(device_id, None)
             self._accepted.pop(device_id, None)
+            self._generations.pop(device_id, None)
             self._subscribers.pop(device_id, None)
 
     # --- watchers ---------------------------------------------------------

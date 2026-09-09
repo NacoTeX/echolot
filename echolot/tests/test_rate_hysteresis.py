@@ -19,13 +19,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+import time
+
 import pytest
 
 os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp(prefix="echolot-tests-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import main, presence_rate  # noqa: E402
+from app import main, presence_rate, samples  # noqa: E402
 from app.devices import Device, DeviceCreate  # noqa: E402
+from app.telemetry import Sample  # noqa: E402
 from app.zones import Zone  # noqa: E402
 
 PROFILE = {
@@ -39,32 +42,58 @@ PROFILE = {
 }
 
 
-def window(crossings: int, *, span: float = 60.0, samples: int = 40, start: float = 0.0):
-    """`crossings` readings above the threshold, spread over `span` seconds."""
+def window(crossings: int, *, span: float = 60.0, count: int = 40, ago: float = 0.0):
+    """`crossings` readings above the threshold, spread over `span` seconds.
+
+    Stamped against the wall clock, because that is what the canonical
+    bus windows against and what Home Assistant stamps a reading with.
+    `ago` pushes the whole stretch that many seconds into the past.
+    """
+    end = time.time() - ago
     rows = []
-    for index in range(samples):
+    for index in range(count):
         rows.append({
-            "t": start + span * index / (samples - 1),
+            "t": end - span + span * index / (count - 1),
             "movement_score": 0.5 if index < crossings else 0.0,
         })
     return rows
 
 
+def feed(device_id, rows):
+    """Put readings on the canonical bus, the way the live stream does.
+
+    The production rate reads this and nothing else since 0.13.7 — it
+    used to read the Home Assistant subscription's own buffer, so the
+    rate and everything that judges it were two different sources of
+    readings.
+
+    The buffer is emptied first so each call is a whole window rather
+    than an accumulation, but the *generation* is left alone: this is new
+    data on the same subscription, which is what a live stream produces.
+    `restart()` means the opposite — the readings from here are not a
+    continuation — and one test below uses it for exactly that.
+    """
+    samples.bus._samples.pop(device_id, None)
+    for row in rows:
+        samples.bus.publish(
+            device_id,
+            Sample(t=row["t"], movement_score=row["movement_score"],
+                   threshold=0.0, motion=False),
+            source=samples.SOURCE_HOME_ASSISTANT,
+        )
+
+
 class FakeStream:
     """A stand-in for one live subscription.
 
-    `generation` is the stream's own number: replacing the object here
-    stands for new data arriving on the same subscription, so the default
-    keeps it. A *rebuilt* subscription — the device's entity ids changed
-    — gets a different one, and that is a different source.
+    Only its connection state matters to the rate now; the readings come
+    from the bus. A stream that is not connected is proof the source is
+    not delivering, and the rate must say unknown rather than answer from
+    what is left in the buffer.
     """
 
-    def __init__(self, rows, generation=1):
-        self.rows = rows
-        self.generation = generation
-
-    def window(self, seconds, *, now=None):
-        return list(self.rows)
+    def __init__(self, connected=True):
+        self.connected = connected
 
 
 class FakeLive:
@@ -111,9 +140,12 @@ def wired(monkeypatch):
     streams: dict[str, FakeStream] = {}
     monkeypatch.setattr(main.devices, "get_device", lambda i: registry.get(i))
     monkeypatch.setattr(feature_api, "live", FakeLive(streams))
+    monkeypatch.delenv("ECHOLOT_SAMPLE_SOURCE", raising=False)
     main._rate_state.clear()
     new_round()
     yield registry, streams
+    for device_id in list(streams):
+        samples.bus.forget(device_id)
     main._rate_state.clear()
     new_round()
 
@@ -139,11 +171,13 @@ def test_a_device_that_was_active_stays_active_between_the_levels(wired):
     registry[device.id] = device
     zone = Zone(id="z", created_at=0, updated_at=0, name="Wohnzimmer", device_ids=[device.id])
 
-    streams[device.id] = FakeStream(window(30))          # well above enter
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))          # well above enter
     assert main._zone_rate_verdict(zone) is True
 
     new_round()
-    streams[device.id] = FakeStream(window(8, start=100.0))  # between the levels
+    streams[device.id] = FakeStream()
+    feed(device.id, window(8, ago=0.0))  # between the levels
     assert main._zone_rate_verdict(zone) is True, "die Ausschaltschwelle wurde nicht benutzt"
 
 
@@ -153,11 +187,13 @@ def test_a_device_that_was_idle_does_not_switch_on_between_the_levels(wired):
     registry[device.id] = device
     zone = Zone(id="z", created_at=0, updated_at=0, name="Wohnzimmer", device_ids=[device.id])
 
-    streams[device.id] = FakeStream(window(0))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(0))
     assert main._zone_rate_verdict(zone) is False
 
     new_round()
-    streams[device.id] = FakeStream(window(8, start=100.0))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(8, ago=0.0))
     assert main._zone_rate_verdict(zone) is False
 
 
@@ -168,8 +204,10 @@ def test_member_order_does_not_change_a_devices_answer(wired):
     registry, streams = wired
     quiet, active = make_device("flur"), make_device("wohnzimmer")
     registry.update({quiet.id: quiet, active.id: active})
-    streams[quiet.id] = FakeStream(window(0))
-    streams[active.id] = FakeStream(window(30))
+    streams[quiet.id] = FakeStream()
+    feed(quiet.id, window(0))
+    streams[active.id] = FakeStream()
+    feed(active.id, window(30))
 
     forwards = Zone(id="a", created_at=0, updated_at=0, name="A",
                     device_ids=[quiet.id, active.id])
@@ -189,7 +227,8 @@ def test_a_device_in_two_zones_is_evaluated_once_per_reading(wired):
     registry, streams = wired
     device = make_device()
     registry[device.id] = device
-    streams[device.id] = FakeStream(window(30))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))
 
     calls = {"n": 0}
     real = presence_rate.evaluate
@@ -217,12 +256,14 @@ def test_recalibrating_drops_the_old_history(wired):
     registry[device.id] = device
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
 
-    streams[device.id] = FakeStream(window(30))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))
     assert main._zone_rate_verdict(zone) is True
 
     new_round()
     device.presence_profile = dict(PROFILE, baseline_rate=0.5)   # far higher bar
-    streams[device.id] = FakeStream(window(8, start=100.0))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(8, ago=0.0))
     assert main._zone_rate_verdict(zone) is False
 
 
@@ -230,7 +271,8 @@ def test_a_device_without_a_profile_says_nothing(wired):
     registry, streams = wired
     device = make_device(profile=None)
     registry[device.id] = device
-    streams[device.id] = FakeStream(window(30))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
     assert main._zone_rate_verdict(zone) is None
 
@@ -239,7 +281,8 @@ def test_too_little_data_is_unknown_and_not_vacant(wired):
     registry, streams = wired
     device = make_device()
     registry[device.id] = device
-    streams[device.id] = FakeStream([])
+    streams[device.id] = FakeStream()
+    feed(device.id, [])
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
     assert main._zone_rate_verdict(zone) is None
 
@@ -252,15 +295,18 @@ def test_a_gap_in_the_data_does_not_re_arm_the_enter_level(wired):
     registry[device.id] = device
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
 
-    streams[device.id] = FakeStream(window(30))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))
     assert main._zone_rate_verdict(zone) is True
 
     new_round()
-    streams[device.id] = FakeStream([])                       # dropout
+    streams[device.id] = FakeStream()
+    feed(device.id, [])                       # dropout
     assert main._zone_rate_verdict(zone) is None
 
     new_round()
-    streams[device.id] = FakeStream(window(8, start=200.0))   # back, still quiet
+    streams[device.id] = FakeStream()
+    feed(device.id, window(8, ago=0.0))   # back, still quiet
     assert main._zone_rate_verdict(zone) is True
 
 
@@ -273,34 +319,69 @@ def test_a_rebuilt_stream_does_not_inherit_the_old_memory(wired):
     registry[device.id] = device
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
 
-    streams[device.id] = FakeStream(window(30), generation=1)
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))
     assert main._zone_rate_verdict(zone) is True
 
     new_round()
-    # Same data between the levels, but a new subscription behind it.
-    streams[device.id] = FakeStream(window(8, start=100.0), generation=2)
+    # Same data between the levels, but a rebuilt subscription behind it.
+    # `restart` is what LivePresence.reconcile calls when a device's
+    # entity ids change: the buffer holds readings from the old entities,
+    # and the memory was built from verdicts about them.
+    streams[device.id] = FakeStream()
+    samples.bus.restart(device.id)
+    feed(device.id, window(8, ago=0.0))
     assert main._zone_rate_verdict(zone) is False
 
 
-def test_every_live_stream_gets_its_own_number(wired):
+def test_every_run_of_readings_gets_its_own_number(wired):
     """`id()` used to serve as the generation, and CPython gives the
     freed address of the old stream straight to its replacement."""
-    from app import live_presence
-
     seen = set()
     for _ in range(50):
-        stream = live_presence.DeviceStream(
-            make_device(), subscription_factory=lambda *a, **k: object()
-        )
-        seen.add(stream.generation)
+        seen.add(samples.bus.restart("wohnzimmer"))
     assert len(seen) == 50
+
+
+def test_a_rebuilt_subscription_drops_the_canonical_buffer_too(wired):
+    """The stream was replaced and this buffer was not, so readings from
+    the old entities stayed in the window and the hysteresis carried
+    straight across."""
+    from app import live_presence
+
+    class FakeSubscription:
+        def __init__(self, entity_ids, on_state, *, loop=None):
+            self.entity_ids = list(entity_ids)
+            self.connected = False
+            self.error = None
+
+        def start(self):
+            self.connected = True
+
+        def stop(self):
+            self.connected = False
+
+    live = live_presence.LivePresence(subscription_factory=FakeSubscription)
+    device = make_device("flur")
+    live.reconcile([device])
+    feed(device.id, window(30))
+    before = samples.bus.generation(device.id)
+    assert samples.bus.window(device.id, 120.0)
+
+    device.entity_movement_score = "sensor.korrigiert"
+    live.reconcile([device])
+    assert samples.bus.window(device.id, 120.0) == []
+    assert samples.bus.generation(device.id) != before
+    live.stop_all()
+    samples.bus.forget(device.id)
 
 
 def test_a_deleted_device_leaves_no_state_behind(wired):
     registry, streams = wired
     device = make_device()
     registry[device.id] = device
-    streams[device.id] = FakeStream(window(30))
+    streams[device.id] = FakeStream()
+    feed(device.id, window(30))
     zone = Zone(id="z", created_at=0, updated_at=0, name="Z", device_ids=[device.id])
     assert main._zone_rate_verdict(zone) is True
 

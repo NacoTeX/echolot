@@ -35,6 +35,9 @@ class Zone:
     def __init__(self, zone_id="z1", name="Küche"):
         self.id = zone_id
         self.name = name
+        # The round is built from every member of every zone, so a stand-in
+        # needs the list even when it is empty.
+        self.device_ids = []
 
 
 async def drive(*, cycles, idle, poke=None, published=None):
@@ -47,7 +50,7 @@ async def drive(*, cycles, idle, poke=None, published=None):
 
     seen = []
 
-    async def compute(zone):
+    async def compute(zone, _snapshots=None):
         seen.append(zone.id)
         return {"occupied": True, "available": True, "state": "occupied"}
 
@@ -341,10 +344,15 @@ def test_a_short_motion_pulse_is_latched_until_the_round_reads_it():
     stream._subscription.on_state(
         device.entity_motion, {"state": "off", "last_updated": "2026-09-08T12:00:00.2+00:00"}
     )
-    assert stream.motion_pulsed() is True
+    pulse = stream.motion_pulsed()
+    assert pulse.happened is True
+    # It carries when, not just that: a bare boolean cannot tell a
+    # doorway crossing a moment ago from one that has been sitting in the
+    # latch since the connection dropped.
+    assert pulse.at is not None
     # And exactly once: two consumers would mean the one that decides
     # loses the pulse to the one that only looks.
-    assert stream.motion_pulsed() is False
+    assert stream.motion_pulsed().happened is False
     live.stop_all()
 
 
@@ -356,7 +364,8 @@ def test_no_pulse_is_reported_when_nothing_moved():
     stream._subscription.on_state(
         device.entity_motion, {"state": "off", "last_updated": "2026-09-08T12:00:00+00:00"}
     )
-    assert stream.motion_pulsed() is False
+    pulse = stream.motion_pulsed()
+    assert pulse.happened is False and pulse.at is None
     live.stop_all()
 
 

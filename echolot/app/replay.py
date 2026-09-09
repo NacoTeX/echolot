@@ -307,10 +307,17 @@ def simulate(
         verdict = None
         if use_rate:
             verdict, memory = presence_rate.advance(
-                profile, window_rows, memory, now=moment, source="replay"
+                profile, window_rows, memory, now=moment, source="replay",
+                # The same window contract as the live path: the window
+                # ends at the tick, not at the newest reading in it.
+                # Without this the two drifted apart the moment the live
+                # path started ending its window at the clock — replay
+                # judged a stretch as soon as the data filled it, live
+                # waited for the time to pass.
+                window_end=moment,
             )
             rate_state = presence_rate.evaluate(
-                profile, window_rows, occupied_now=bool(verdict)
+                profile, window_rows, occupied_now=bool(verdict), window_end=moment
             )["state"]
 
         current = ordered[index - 1] if index else None
