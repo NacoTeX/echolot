@@ -117,7 +117,6 @@ def reset_toolchain(board) -> bool:
     return True
 
 
-
 #: Fields that must never reach a manifest or a log.
 _SECRET_CONFIG_FIELDS = ("wifi_password",)
 

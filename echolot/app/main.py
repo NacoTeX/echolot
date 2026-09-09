@@ -622,8 +622,19 @@ def _device_rate_evidence(
     device get one evaluation and the same answer, and member order
     cannot change it.
 
-    Three things make it unknown rather than "vacant", and all three used
-    to be missed:
+    Three kinds of thing make it unknown rather than "vacant":
+
+    * **No profile at all.** Silent, as before — a zone where nobody has
+      calibrated behaves exactly as it did before the rate existed.
+
+    * **A profile learned under other conditions.** What a room does
+      empty is a fact about that room measured over one transport, on
+      one radio band, along one radio path. Change any of them and the
+      recording describes a different measurement, so it is no longer a
+      scale for this one. The overview warned about the first of those
+      and the evaluation went ahead anyway; now the slow path goes quiet
+      until it is recalibrated, with the condition named, and the fast
+      motion path is untouched.
 
     * **No transport.** The caller ignored `stream.connected`, so a
       subscription that had dropped kept answering from whatever was
@@ -632,16 +643,6 @@ def _device_rate_evidence(
       sound one-way inference. The hysteresis memory is kept: a dropout
       is not a recalibration, and somebody sitting still through one
       should not have to move again to be seen.
-
-    * **A profile from another transport.** What a room does empty is a
-      fact about that room measured over one path. Judging Home
-      Assistant readings against a baseline learned over the direct API
-      compares two different measurements. The overview warned about it
-      and the evaluation went ahead anyway; now the slow path goes quiet
-      until it is recalibrated, and the fast motion path is untouched.
-
-    * **No profile at all.** Silent, as before — a zone where nobody has
-      calibrated behaves exactly as it did before the rate existed.
 
     The step itself is `presence_rate.advance`, which the replay runner
     also takes, so a replay measures what the add-on actually does.
