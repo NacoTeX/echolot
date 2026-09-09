@@ -183,12 +183,20 @@ Obergrenze — derselbe Echolot-Release baute nächsten Monat also eine
 andere Firmware, und „gestern lief es noch" hörte auf, ein brauchbarer
 Satz zu sein. Jetzt ein konkreter ESPectre-Commit
 (`ce23b0b6…`) und ESPHome auf die Nebenversionsreihe begrenzt
-(`>=2026.8.2,<2026.9`).
+(`>=2026.6.5,<2026.7`).
 
 Dazu ein **Build-Manifest** pro erfolgreichem Build: ESPectre-Commit,
 ESPHome-Version, Board, ein Hash der Konfiguration **ohne** Geheimnisse,
 Prüfsumme und Größe der Firmware. Damit hat „welche Firmware ist da
 eigentlich drauf" später eine Antwort.
+
+Die Obergrenze steht bei 2026.6 und nicht beim Neuesten: **ab 2026.7
+verlangt ESPHome Python ≥ 3.12**, und dieses Add-on läuft auf dem
+Debian-Bookworm-Basisimage von Home Assistant, das 3.11 mitbringt — die
+CI ebenso. Mein erster Pin auf 2026.8.2 war damit in *beiden* Umgebungen
+nicht installierbar; die CI hat es gefangen, bevor es ein Add-on-Build
+tun konnte. Auf eine neuere Reihe zu gehen heißt zuerst das Basisimage zu
+wechseln, bewusst, und danach ein Gerät neu zu bauen und zu prüfen.
 
 *Offene Einschränkung:* „gepinnt" heißt hier reproduzierbar, nicht
 verifiziert. Dieses Repository kompiliert in der CI keine echte Firmware —
