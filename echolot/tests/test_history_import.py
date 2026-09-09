@@ -253,3 +253,18 @@ def test_the_empty_room_at_night_never_crosses():
 
     profile = presence_rate.learn_baseline(rows)
     assert profile.baseline_rate == presence_rate.MIN_BASELINE_RATE
+
+
+def test_imported_readings_name_their_transport():
+    """An imported baseline is only comparable with live readings because
+    both came over Home Assistant. That has to be on the row, or a
+    profile learned from an import can never be checked against the
+    source it is later judged with."""
+    from app import samples
+
+    scores = [
+        {"state": "0.4", "last_updated": "2026-09-08T12:00:00+00:00"},
+        {"state": "0.6", "last_updated": "2026-09-08T12:00:01+00:00"},
+    ]
+    merged = history_import.merge(scores, [], [])
+    assert merged and all(s.source == samples.SOURCE_HOME_ASSISTANT for s in merged)

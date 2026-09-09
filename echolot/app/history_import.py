@@ -24,9 +24,11 @@ their last known value, which is what a subscription plus a cache does
 anyway.
 """
 
+from dataclasses import replace
 from datetime import datetime
 
 from app import ha_client
+from app import samples as samples_module
 from app.ha_sampler import _float, _stamp, build_sample
 from app.telemetry import Sample
 
@@ -103,7 +105,12 @@ def merge(score_states, motion_states, threshold_states) -> list[Sample]:
             threshold_index += 1
         sample = build_sample(state, motion_now, threshold_now)
         if sample is not None:
-            samples.append(sample)
+            # The transport is Home Assistant, the same one the live path
+            # takes — which is what makes an imported baseline comparable
+            # with live readings at all. That it came from the recorder
+            # rather than from the live subscription is a separate fact,
+            # and the session carries it as `source: "history"`.
+            samples.append(replace(sample, source=samples_module.SOURCE_HOME_ASSISTANT))
     return samples
 
 
