@@ -4,7 +4,7 @@
 
 Ein zweites externes Review, diesmal mit einem Reproduktionsskript für
 sieben Logikbefunde. Alle sieben ließen sich am Ausgangsstand bestätigen.
-Hier R1 bis R4 und R7; der Rest folgt in derselben Version.
+Hier R1 bis R5 und R7; der Rest folgt in derselben Version.
 
 **Ein beschädigtes Profil konnte die Auswertung aller Zonen abbrechen.**
 `profile_from_dict({"version": "broken"})` warf ValueError, weil die
@@ -95,6 +95,51 @@ auf Platte vermerkt und erst gestrichen, wenn der Broker alle drei
 retained Topics wirklich genommen hat — über Neustarts hinweg, und ohne
 die gleichzeitig laufenden Ankündigungen zu überschreiben. Eine Zone, die
 vor dem Löschen wieder auftaucht, wird nicht gelöscht.
+
+**Der Kalibrierungs-Writer blockierte den Lesepfad weiter.** 0.13.5 hat
+das Schreiben in einen Thread verlegt und dort aufgehört. Der Thread hielt
+denselben RLock über die ganze Serialisierung und Dateioperation, und
+`ingest()` braucht diesen Lock — aufgerufen aus dem asyncio-Pfad, auf dem
+auch die Websocket-Abonnements liegen. Ein Messwert, der während eines
+Schreibvorgangs eintraf, wartete also genauso lange wie vorher. Der
+Engpass war verschoben, nicht weg.
+
+Der Lock wird jetzt nur noch so lange gehalten, wie das Kopieren der
+Struktur dauert; serialisiert und geschrieben wird ohne ihn. Die
+Messwertzeilen werden dabei geteilt statt kopiert — eine Zeile wird beim
+Eintreffen einmal geschrieben und nie wieder angefasst. Gemessen an
+sechs Sitzungen mit 120 000 Messwerten, auf einer x86-Maschine und
+**nicht** auf einem Pi 4:
+
+| | vorher | jetzt |
+|---|---|---|
+| Lock gehalten | 152–179 ms | 0,6–0,8 ms |
+| `ingest` während eines Schreibvorgangs | wartet den ganzen Vorgang ab | ≤ 0,11 ms |
+| Zusatzspeicher pro Snapshot | — | 1,8 MiB |
+| geschriebene Datei | 10,8 MiB | 10,8 MiB |
+
+Der Schreibvorgang selbst ist nicht billiger geworden; er sollte es nie.
+Geändert hat sich, dass niemand mehr auf ihn wartet.
+
+Dazu drei Dinge, die daran hingen. Jeder Schreibvorgang trägt jetzt die
+Revision, aus der er stammt: ein bereits laufender Schreibvorgang kann
+ein Löschen oder Beenden nicht mehr rückgängig machen. Ein
+fehlgeschlagener Schreibvorgang wird nach fünf Sekunden wiederholt —
+bisher wurde die „dirty"-Markierung *vor* dem Speichern gelöscht, ein
+Fehler ließ also nichts zum Wiederholen übrig und die Daten warteten auf
+den nächsten Messwert, der am Ende einer Aufzeichnung nie kommt. Und der
+Writer wird beim Herunterfahren ausdrücklich gestoppt und abgewartet,
+statt als Daemon-Thread mit dem Prozess zu verschwinden.
+
+**Eine Grenze für die gesamte Historie.** Bisher war nur eine einzelne
+Sitzung begrenzt, während die Schreibkosten mit *allem* wachsen, was je
+aufgezeichnet wurde — 10,8 MiB pro Schreibvorgang bei 120 000 Messwerten,
+auf einer SD-Karte alle paar Sekunden. Es gibt jetzt eine Obergrenze für
+Sitzungen (100) und Messwerte insgesamt (600 000). Sie **löscht nichts**:
+eine Aufzeichnung ist jemandes Nachmittag, und sie wegzuwerfen, um Platz
+für die nächste zu schaffen, ist keine Entscheidung, die dieses Add-on
+treffen darf. Stattdessen wird eine neue Aufzeichnung abgelehnt, mit der
+Bitte, eine alte zu löschen oder zu exportieren.
 
 **Der Live-Pfad nennt sein Fenster jetzt, statt es abzuleiten.** Ohne
 ausdrückliches Fenster nahm `evaluate` die Spanne zwischen erstem und
