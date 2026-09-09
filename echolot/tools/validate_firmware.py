@@ -38,17 +38,25 @@ def main() -> int:
     # Verschlüsselungscode"). That is the difference between this tool and
     # tools/compile_firmware.py in one line — a green tick here says the
     # YAML is well-formed, never that a compiler would accept it.
-    cases = [(key, True, True, False) for key in BOARDS]
-    cases.append(("esp32c6", False, False, False))
-    cases.append(("esp32c6", True, True, True))
+    cases = [(key, True, True, False, None) for key in BOARDS]
+    cases.append(("esp32c6", False, False, False, None))
+    cases.append(("esp32c6", True, True, True, None))
+    # The C5's three bands. ESPHome accepts `band_mode` only on this
+    # variant (only_on_variant(supported=[VARIANT_ESP32C5])), and the
+    # rendered value has to be one of its three spellings — so this is the
+    # check that "2.4GHz" in a stored config really reaches the firmware
+    # as 2.4GHZ rather than as a validation error at build time.
+    cases += [("esp32c5", True, True, False, band) for band in ("5GHz", "auto")]
 
     failures = []
-    for board, web, diag, encryption in cases:
+    for board, web, diag, encryption, band in cases:
         name = f"probe-{board}"
         if not (web and diag):
             name += "-minimal"
         if encryption:
             name += "-encrypted"
+        if band:
+            name += "-" + band.replace(".", "").replace("GHz", "g").lower()
         device = Device(
             id=name,
             created_at=0,
@@ -62,6 +70,7 @@ def main() -> int:
                 web_server=web,
                 diagnostics=diag,
                 api_encryption=encryption,
+                **({"wifi_band": band} if band else {}),
             ),
         )
         path = workdir / f"{name}.yaml"
@@ -73,7 +82,10 @@ def main() -> int:
             text=True,
             cwd=workdir,
         )
-        label = f"{board:9s} web_server={int(web)} diagnostics={int(diag)} encryption={int(encryption)}"
+        label = (
+            f"{board:9s} web_server={int(web)} diagnostics={int(diag)} "
+            f"encryption={int(encryption)} band={band or '-'}"
+        )
         if result.returncode == 0:
             print(f"  ok   {label}")
         else:

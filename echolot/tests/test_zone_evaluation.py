@@ -47,7 +47,7 @@ def counted(monkeypatch):
     """Count evaluations, and give the evaluator a clean slate."""
     calls = {"n": 0}
 
-    async def fake_compute(z):
+    async def fake_compute(z, _snapshots=None):
         calls["n"] += 1
         return {"available": True, "members": [], "state": "clear", "occupied": False}
 
@@ -128,7 +128,7 @@ def test_a_wake_up_from_a_worker_thread_arrives_at_once(monkeypatch):
 
     rounds = []
 
-    async def stamped(z):
+    async def stamped(z, _snapshots=None):
         rounds.append(clock.monotonic())
         return {"available": True, "members": [], "state": "clear", "occupied": False}
 
@@ -174,7 +174,7 @@ def test_a_zone_counting_down_a_hold_is_looked_at_more_often(counted, monkeypatc
     monkeypatch.setattr(main, "IDLE_INTERVAL", 10.0)
     monkeypatch.setattr(main, "HOLDING_INTERVAL", 0.02)
 
-    async def holding(z):
+    async def holding(z, _snapshots=None):
         counted["n"] += 1
         return {"available": True, "members": [], "state": "holding", "occupied": True}
 
@@ -201,7 +201,7 @@ def test_a_bad_round_does_not_end_the_loop(counted, monkeypatch):
     monkeypatch.setattr(main, "MIN_EVALUATION_INTERVAL", 0.001)
     monkeypatch.setattr(main, "IDLE_INTERVAL", 0.02)
 
-    async def explodes(z):
+    async def explodes(z, _snapshots=None):
         counted["n"] += 1
         raise RuntimeError("Home Assistant sagt nein")
 
@@ -224,7 +224,7 @@ def test_rounds_do_not_overlap(counted, monkeypatch):
     """Two rounds at once would each advance the same hold deadline."""
     running = {"now": 0, "most": 0}
 
-    async def slow(z):
+    async def slow(z, _snapshots=None):
         running["now"] += 1
         running["most"] = max(running["most"], running["now"])
         await asyncio.sleep(0.01)
@@ -260,7 +260,7 @@ def test_the_evaluator_writes_down_its_transitions(counted, monkeypatch):
          "trigger": "motion"},
     ])
 
-    async def changing(z):
+    async def changing(z, _snapshots=None):
         return next(states)
 
     monkeypatch.setattr(main, "compute_zone_state", changing)

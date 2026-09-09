@@ -17,6 +17,7 @@ open dashboard came to be driving the state machine.
 
 import asyncio
 import os
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -26,7 +27,8 @@ import pytest
 os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp(prefix="echolot-tests-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import main, presence_rate, zone_logic  # noqa: E402
+from app import live_presence, main, presence_rate, samples, zone_logic  # noqa: E402
+from app.telemetry import Sample  # noqa: E402
 from app.devices import Device, DeviceCreate  # noqa: E402
 from app.zones import Zone  # noqa: E402
 
@@ -42,13 +44,26 @@ PROFILE = {
 
 
 class FakeStream:
-    generation = 1
+    """Only the connection state and the motion latch come from here now;
+    the readings themselves come from the canonical bus."""
 
-    def __init__(self, rows):
-        self.rows = rows
+    def __init__(self, connected=True):
+        self.connected = connected
 
-    def window(self, seconds, *, now=None):
-        return list(self.rows)
+    def motion_pulsed(self):
+        return live_presence.MotionPulse(happened=False)
+
+
+def feed(device_id, rows):
+    """Readings on the canonical bus, stamped against the wall clock."""
+    samples.bus._samples.pop(device_id, None)
+    for row in rows:
+        samples.bus.publish(
+            device_id,
+            Sample(t=row["t"], movement_score=row["movement_score"],
+                   threshold=0.0, motion=False),
+            source=samples.SOURCE_HOME_ASSISTANT,
+        )
 
 
 class FakeLive:
@@ -92,9 +107,12 @@ def wired(monkeypatch):
     streams: dict[str, FakeStream] = {}
     monkeypatch.setattr(main.devices, "get_device", lambda i: registry.get(i))
     monkeypatch.setattr(feature_api, "live", FakeLive(streams))
+    monkeypatch.delenv("ECHOLOT_SAMPLE_SOURCE", raising=False)
     main._rate_state.clear()
     main.evaluator._device_verdicts.clear()
     yield registry, streams
+    for device_id in list(streams):
+        samples.bus.forget(device_id)
     main._rate_state.clear()
     main.evaluator._device_verdicts.clear()
 
@@ -112,13 +130,16 @@ def test_readings_falling_off_the_left_edge_change_the_answer(wired):
     registry[device.id] = device
     room = zone("z", device.id)
 
-    full = [{"t": t, "movement_score": 0.01 if t < 12 else 0.0} for t in range(61)]
-    streams[device.id] = FakeStream(full)
+    now = time.time()
+    full = [{"t": now - 60 + t, "movement_score": 0.01 if t < 12 else 0.0}
+            for t in range(61)]
+    streams[device.id] = FakeStream()
+    feed(device.id, full)
     assert main._zone_rate_verdict(room) is True
 
     main.evaluator._device_verdicts.clear()          # the next round
-    aged_out = [row for row in full if row["t"] >= 12]
-    streams[device.id] = FakeStream(aged_out)
+    aged_out = [row for row in full if row["t"] >= now - 48]
+    feed(device.id, aged_out)
 
     profile = presence_rate.profile_from_dict(PROFILE)
     direct = presence_rate.evaluate(profile, aged_out, occupied_now=True)
@@ -135,7 +156,7 @@ def evaluated(monkeypatch):
     """Record which zones each round actually computed."""
     seen: list[str] = []
 
-    async def compute(zone_):
+    async def compute(zone_, _snapshots=None):
         seen.append(zone_.id)
         return {
             "available": True,
@@ -217,7 +238,7 @@ def test_a_brand_new_zone_answers_pending_over_the_api(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "evaluator", main.ZoneEvaluator())
 
-    async def never_evaluated(z):                     # the loop never gets a turn
+    async def never_evaluated(z, _snapshots=None):                     # the loop never gets a turn
         raise AssertionError("die Zone wurde ausgewertet")
 
     monkeypatch.setattr(main, "compute_zone_state", never_evaluated)
@@ -248,12 +269,12 @@ def test_a_device_that_left_every_zone_leaves_no_hysteresis_behind(monkeypatch, 
     registry, streams = wired
     device = make_device()
     registry[device.id] = device
-    streams[device.id] = FakeStream(
-        [{"t": t, "movement_score": 0.5} for t in range(61)]
-    )
+    streams[device.id] = FakeStream()
+    now = time.time()
+    feed(device.id, [{"t": now - 60 + t, "movement_score": 0.5} for t in range(61)])
     # Only the rate path, so this test does not depend on Home Assistant
     # being reachable to read the members.
-    async def rate_only(z):
+    async def rate_only(z, _snapshots=None):
         return {
             "available": True, "members": [],
             "rate_occupied": main._zone_rate_verdict(z),

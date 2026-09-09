@@ -13,6 +13,21 @@ async function loadBoards() {
     select.innerHTML = boards
       .map((b) => `<option value="${escapeHtml(b.key)}">${escapeHtml(b.label)}${b.experimental ? " ⚠" : ""}</option>`)
       .join("");
+
+    // The band field belongs to the board, not to the form: only the
+    // ESP32-C5 has two radios, and ESPHome rejects `band_mode` outright
+    // on every other chip. Showing the control anywhere else would offer
+    // a choice the hardware cannot make — so it is hidden *and* disabled,
+    // because a disabled field is the one FormData leaves out.
+    const dualBand = new Set(boards.filter((b) => b.dual_band).map((b) => b.key));
+    const field = document.getElementById("wifi-band-field");
+    const applyBand = () => {
+      const offered = dualBand.has(select.value);
+      field.hidden = !offered;
+      field.querySelector("select").disabled = !offered;
+    };
+    select.addEventListener("change", applyBand);
+    applyBand();
   } catch (err) {
     select.innerHTML = '<option value="">Boards konnten nicht geladen werden</option>';
   }
@@ -75,6 +90,16 @@ function updateRateEstimate() {
     return;
   }
   el.textContent = `≈ ${(rate * kbPerPps).toFixed(1)} KB/s Funklast pro Gerät`;
+}
+
+// Only worth saying where there was a choice. On every other chip the
+// band is 2.4 GHz by construction, and printing it would read as a
+// setting rather than as a fact about the radio.
+const BAND_LABELS = { "2.4GHz": "2,4 GHz", "5GHz": "5 GHz", auto: "Band automatisch" };
+
+function bandSuffix(config) {
+  const label = BAND_LABELS[config.wifi_band];
+  return label && config.wifi_band !== "2.4GHz" ? ` (${escapeHtml(label)})` : "";
 }
 
 function statusLabel(status) {
@@ -264,7 +289,7 @@ function renderDevice(device, deviceCount) {
       <summary class="device-summary">
         <span class="device-summary-text">
           <span class="device-title">${escapeHtml(title)}</span>
-          <span class="device-meta">${escapeHtml(c.name)} · ${escapeHtml(c.board)} · ${escapeHtml(c.detection_algorithm)}</span>
+          <span class="device-meta">${escapeHtml(c.name)} · ${escapeHtml(c.board)}${bandSuffix(c)} · ${escapeHtml(c.detection_algorithm)}</span>
         </span>
         <span class="device-summary-state">
           ${summaryLive}

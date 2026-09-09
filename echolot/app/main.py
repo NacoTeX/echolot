@@ -17,6 +17,7 @@ import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -480,21 +481,32 @@ class ZoneEvaluator:
         await asyncio.sleep(MIN_EVALUATION_INTERVAL)
 
     async def cycle(self, zone_list: list) -> list[tuple]:
-        """One round: every device once, then every zone."""
+        """One round: every device once, then every zone.
+
+        "Every device once" is the whole point and it used not to hold
+        for the state read. `compute_zone_state` fetched Home Assistant
+        per *membership* and consumed the motion latch per *membership*,
+        so a device in two zones cost two reads and only the first zone
+        saw a short pulse. The round is built here, once, and every zone
+        reads the same snapshots.
+        """
         async with self._lock:
             # The window has moved on even if nothing new arrived, so
             # last round's verdicts are not answers to this round.
             self._device_verdicts = {}
 
+            snapshots = await read_round(
+                [device_id for zone in zone_list for device_id in zone.device_ids]
+            )
             states = await asyncio.gather(
-                *(compute_zone_state(zone) for zone in zone_list)
+                *(compute_zone_state(zone, snapshots) for zone in zone_list)
             )
             live = {zone.id for zone in zone_list}
             for gone in set(self._snapshots) - live:
                 self._snapshots.pop(gone, None)
             # A device that has left every zone is not being measured any
             # more, so its hysteresis is not about anything.
-            for forgotten in set(_rate_state) - set(self._device_verdicts):
+            for forgotten in set(_rate_state) - set(snapshots):
                 _rate_state.pop(forgotten, None)
             self._snapshots.update(
                 {zone.id: state for zone, state in zip(zone_list, states)}
@@ -561,21 +573,83 @@ async def _missing_device_state() -> dict:
 _rate_state: dict[str, dict] = {}
 
 
-def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
-    """One device's rate verdict for this round, or None when it cannot say.
+#: Why the slow, window-based evidence has nothing to say. Kept apart
+#: because they mean different things to the person reading the card:
+#: one is a dropout, one is a setup mistake, one is simply "not
+#: calibrated yet".
+RATE_DISCONNECTED = "disconnected"
+RATE_SOURCE_MISMATCH = "source_mismatch"
+RATE_BAND_MISMATCH = "band_mismatch"
+RATE_MODE_MISMATCH = "mode_mismatch"
 
-    Evaluated once per round and shared: the evaluator clears the
-    per-tick cache at the start of each round, so two zones holding the
-    same device get one evaluation and the same answer, and the member
-    order cannot change it.
+#: One reason per condition a baseline was learned under, in the order
+#: they are checked. The conditions themselves live in
+#: `presence_rate.MEASUREMENT_FIELDS`; a fourth would be a row in both.
+RATE_MISMATCH_REASONS = {
+    "source": RATE_SOURCE_MISMATCH,
+    "band": RATE_BAND_MISMATCH,
+    "sensing_mode": RATE_MODE_MISMATCH,
+}
+
+
+def _measurement_now(device) -> dict[str, str]:
+    """The conditions this device is measuring under right now.
+
+    The counterpart to `presence_rate.measurement_definition`, and
+    deliberately the same keys: what a baseline recorded is compared with
+    what is true, field by field, rather than by three separate rules
+    that drift apart.
+    """
+    from app import samples
+
+    return {
+        # Which transport the readings arrive over.
+        "source": samples.bus.source,
+        # Which radio they are measured on.
+        "band": devices.effective_band(device.config),
+        # Which radio path: the access point's traffic, or a directed
+        # link between two sensors.
+        "sensing_mode": device.config.sensing_mode,
+    }
+
+
+def _device_rate_evidence(
+    device, *, now: float | None = None, connected: bool = True
+) -> tuple[bool | None, str | None]:
+    """The slow evidence for one device, and why it is silent when it is.
+
+    Evaluated once per round and shared, so two zones holding the same
+    device get one evaluation and the same answer, and member order
+    cannot change it.
+
+    Three kinds of thing make it unknown rather than "vacant":
+
+    * **No profile at all.** Silent, as before — a zone where nobody has
+      calibrated behaves exactly as it did before the rate existed.
+
+    * **A profile learned under other conditions.** What a room does
+      empty is a fact about that room measured over one transport, on
+      one radio band, along one radio path. Change any of them and the
+      recording describes a different measurement, so it is no longer a
+      scale for this one. The overview warned about the first of those
+      and the evaluation went ahead anyway; now the slow path goes quiet
+      until it is recalibrated, with the condition named, and the fast
+      motion path is untouched.
+
+    * **No transport.** The caller ignored `stream.connected`, so a
+      subscription that had dropped kept answering from whatever was
+      still in the buffer. An open socket does not prove the ESP is
+      measuring — but a closed one does prove it is not, and that is a
+      sound one-way inference. The hysteresis memory is kept: a dropout
+      is not a recalibration, and somebody sitting still through one
+      should not have to move again to be seen.
 
     The step itself is `presence_rate.advance`, which the replay runner
-    also takes — the hysteresis memory and its expiry rules live there so
-    that a replay measures what the add-on actually does.
+    also takes, so a replay measures what the add-on actually does.
 
     Imported lazily because app.feature_api imports app.main.
     """
-    from app import feature_api, presence_rate
+    from app import presence_rate, samples
 
     cached = evaluator._device_verdicts
     if device.id in cached:
@@ -583,55 +657,225 @@ def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
 
     now = time.monotonic() if now is None else now
     profile = presence_rate.profile_from_dict(device.presence_profile)
-    stream = feature_api.live.stream(device.id)
-    if profile is None or stream is None:
+    if profile is None:
         _rate_state.pop(device.id, None)
-        cached[device.id] = None
-        return None
+        cached[device.id] = (None, None)
+        return None, None
 
-    # A rebuilt stream is a different source: its buffer starts empty and
-    # its entities may be different ones entirely, so the memory from the
-    # old one is about a different question. The stream numbers itself —
-    # `id()` would not do, because CPython hands the freed address of the
-    # old stream straight to its replacement.
+    # What a room does empty is a fact about that room *under
+    # conditions*: over one transport, on one radio band, along one radio
+    # path. Change any of them and the recording describes a different
+    # measurement, so the baseline is no longer a scale for it. Each was
+    # once a separate rule; they are one comparison now, because they are
+    # one argument.
+    #
+    # Not a warning any more, and the memory goes with it: it was built
+    # from verdicts this profile was not entitled to have made. A
+    # condition the profile does not record is not a mismatch — see
+    # `measurement_definition`.
+    recorded = presence_rate.measurement_definition(profile)
+    current = _measurement_now(device)
+    for field, reason in RATE_MISMATCH_REASONS.items():
+        if recorded[field] and recorded[field] != current[field]:
+            _rate_state.pop(device.id, None)
+            cached[device.id] = (None, reason)
+            return None, reason
+
+    if not connected:
+        cached[device.id] = (None, RATE_DISCONNECTED)
+        return None, RATE_DISCONNECTED
+
+    # The canonical stream — the one calibration, fusion and replay read.
+    # It used to read the Home Assistant subscription's own buffer
+    # directly, so the production rate and everything that judges it were
+    # two different sources of readings.
     verdict, memory = presence_rate.advance(
         profile,
-        stream.window(profile.window_seconds),
+        samples.bus.window(device.id, profile.window_seconds),
         _rate_state.get(device.id),
         now=now,
-        source=getattr(stream, "generation", None),
+        # The bus numbers its own generations, so a rebuilt subscription
+        # or a source change cannot pass its memory to the new one.
+        source=samples.bus.generation(device.id),
         memory_seconds=RATE_MEMORY_SECONDS,
+        # Two clocks, on purpose. The memory ages on the monotonic one,
+        # because a duration must not jump when the system clock is set.
+        # The window ends on the wall clock, because that is what Home
+        # Assistant stamps a reading with. Passing the monotonic tick as
+        # the window end would compare a machine uptime against an epoch.
+        window_end=time.time(),
     )
     if memory is None:
         _rate_state.pop(device.id, None)
     else:
         _rate_state[device.id] = memory
-    cached[device.id] = verdict
-    return verdict
+    cached[device.id] = (verdict, None)
+    return verdict, None
+
+
+def _device_rate_verdict(device, *, now: float | None = None) -> bool | None:
+    """Just the verdict. The reason is for the card, not the state machine."""
+    return _device_rate_evidence(device, now=now)[0]
 
 
 def _zone_rate_verdict(zone) -> bool | None:
     """What the crossing rate says about this zone, or None if it cannot say.
 
-    OR across the members, like the motion aggregation above: one device
-    seeing an elevated rate is enough. A device with no learned baseline
-    contributes nothing — not a "vacant" vote — so a zone where nobody has
-    calibrated behaves exactly as it did before.
+    OR across the members: one device seeing an elevated rate is enough,
+    and a device that cannot say contributes nothing — not a "vacant"
+    vote. The round does this from its snapshots; this is the standalone
+    path, for a caller holding only a zone.
     """
+    from app import feature_api
+
     verdict = None
     for device_id in zone.device_ids:
         device = devices.get_device(device_id)
         if device is None or not device.presence_profile:
             _rate_state.pop(device_id, None)
             continue
-        one = _device_rate_verdict(device)
+        stream = feature_api.live.stream(device_id)
+        one, _reason = _device_rate_evidence(
+            device, connected=bool(stream is not None and getattr(stream, "connected", False))
+        )
         if one is None:
             continue
         verdict = bool(verdict) or one
     return verdict
 
 
-async def compute_zone_state(zone: zones.Zone) -> dict:
+@dataclass(frozen=True)
+class DeviceRound:
+    """One device, as a single evaluation round sees it.
+
+    Built once per round and read by every zone that holds the device.
+    Before this, `compute_zone_state` read Home Assistant per *membership*
+    and consumed the motion latch per *membership*, so a device in two
+    zones cost two reads and — worse — only the zone that happened to be
+    evaluated first saw a short pulse. The second zone got False for the
+    same instant of the same device. Reported as A in the 0.13.6 review,
+    reproduced as `[True, False]`.
+
+    Frozen, because a round is a fact about a moment. A zone that could
+    edit it would be editing what the other zones see.
+    """
+
+    device_id: str
+    name: str | None
+    available: bool
+    motion: bool
+    #: Motion went on at least once since the previous round, even if it
+    #: is off again now. Carries `motion_since` so a reader can tell a
+    #: pulse from a level — and so it cannot silently stand in for a
+    #: fresh measurement.
+    motion_pulse: bool
+    motion_since: float | None
+    movement_score: float | None
+    threshold: float | None
+    #: The slow, window-based evidence. None when the rate cannot say —
+    #: and `rate_reason` says which of the several reasons it is.
+    rate_occupied: bool | None
+    rate_reason: str | None
+    #: Which transport this device is being measured over, and whether it
+    #: is currently receiving.
+    source: str | None
+    connected: bool
+    error: str | None
+
+    def as_member(self) -> dict:
+        """The row the API and the dashboard read."""
+        row = {
+            "device_id": self.device_id,
+            "name": self.name,
+            "available": self.available,
+            "motion": self.motion,
+            "movement_score": self.movement_score,
+            "threshold": self.threshold,
+            "source": self.source,
+            "connected": self.connected,
+        }
+        if self.motion_pulse:
+            row["motion_pulse"] = True
+            row["motion_since"] = self.motion_since
+        if self.rate_reason:
+            row["rate_reason"] = self.rate_reason
+        if self.error:
+            row["error"] = self.error
+        return row
+
+
+def _missing_round(device_id: str, state: dict) -> DeviceRound:
+    """A device the registry does not know any more."""
+    return DeviceRound(
+        device_id=device_id,
+        name=None,
+        available=False,
+        motion=False,
+        motion_pulse=False,
+        motion_since=None,
+        movement_score=None,
+        threshold=None,
+        rate_occupied=None,
+        rate_reason=None,
+        source=None,
+        connected=False,
+        error=state.get("error"),
+    )
+
+
+async def read_round(device_ids, *, now: float | None = None) -> dict[str, DeviceRound]:
+    """Read every distinct device once, and settle what this round sees.
+
+    Ten zones holding one device cost one Home Assistant read and one
+    pulse, not ten of each.
+    """
+    from app import feature_api, samples
+
+    wanted = list(dict.fromkeys(device_ids))
+    now = time.monotonic() if now is None else now
+    snapshots: dict[str, DeviceRound] = {}
+
+    for device_id, device, state in await _read_devices(wanted):
+        if device is None:
+            snapshots[device_id] = _missing_round(device_id, state)
+            continue
+
+        stream = feature_api.live.stream(device_id)
+        connected = bool(stream is not None and getattr(stream, "connected", False))
+
+        # Consumed exactly once, here. Every zone then reads the same
+        # answer out of this snapshot.
+        pulse = stream.motion_pulsed() if stream is not None else None
+        motion = bool(state.get("motion"))
+        available = bool(state.get("available"))
+        if pulse is not None:
+            motion = motion or pulse.happened
+            # A pulse proves the source was alive when it arrived, so it
+            # makes the device available for this round even if the REST
+            # read came back empty a moment later. It does not stand in
+            # for a *measurement*: score and threshold stay as read.
+            available = available or pulse.happened
+
+        verdict, reason = _device_rate_evidence(device, now=now, connected=connected)
+        snapshots[device_id] = DeviceRound(
+            device_id=device_id,
+            name=device.config.friendly_name or device.config.name,
+            available=available,
+            motion=motion,
+            motion_pulse=bool(pulse and pulse.happened),
+            motion_since=pulse.at if pulse and pulse.happened else None,
+            movement_score=state.get("movement_score"),
+            threshold=state.get("threshold"),
+            rate_occupied=verdict,
+            rate_reason=reason,
+            source=samples.bus.source if connected else None,
+            connected=connected,
+            error=state.get("error"),
+        )
+    return snapshots
+
+
+async def compute_zone_state(zone: zones.Zone, snapshots: dict | None = None) -> dict:
     """Aggregate a zone's members and run its presence state machine.
 
     Shared by the API route and the MQTT publisher, so what Home Assistant
@@ -640,38 +884,36 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
     means the zone sees movement — but hysteresis and hold time now sit
     between that and the published `occupied` flag (see zone_logic).
     """
-    from app import feature_api
+    if snapshots is None:
+        # Standalone — a route or a test asking about one zone. The
+        # evaluator always hands one in, and that is the path that must
+        # not read a device twice.
+        snapshots = await read_round(zone.device_ids)
 
     members = []
     raw_motion = False
     any_available = False
     best_score: float | None = None
-    for device_id, device, state in await _read_devices(zone.device_ids):
-        if device is None:
-            members.append({"device_id": device_id, "name": None, **state})
+    rate_occupied: bool | None = None
+    for device_id in zone.device_ids:
+        seen = snapshots.get(device_id)
+        if seen is None:
+            members.append({"device_id": device_id, "name": None, "available": False})
             continue
-        # A pulse shorter than the evaluation floor — somebody crossing a
-        # doorway — was on and off again before this round read the
-        # current state, so the round saw nothing and the decision
-        # history had no trace of it. The stream saw it; it latches the
-        # transition and this is the one place that consumes it.
-        stream = feature_api.live.stream(device_id)
-        if stream is not None and stream.motion_pulsed():
-            state = {**state, "motion": True, "motion_pulse": True, "available": True}
-        if state.get("available"):
+        members.append(seen.as_member())
+        if seen.available:
             any_available = True
-            if state.get("motion"):
+            if seen.motion:
                 raw_motion = True
-            score = state.get("movement_score")
-            if score is not None and (best_score is None or score > best_score):
-                best_score = score
-        members.append(
-            {
-                "device_id": device_id,
-                "name": device.config.friendly_name or device.config.name,
-                **state,
-            }
-        )
+            if seen.movement_score is not None and (
+                best_score is None or seen.movement_score > best_score
+            ):
+                best_score = seen.movement_score
+        # OR across the members, like the motion aggregation: one device
+        # seeing an elevated rate is enough, and a device that cannot say
+        # contributes nothing — not a "vacant" vote.
+        if seen.rate_occupied is not None:
+            rate_occupied = bool(rate_occupied) or seen.rate_occupied
 
     runtime = _zone_runtimes.setdefault(zone.id, zone_logic.ZoneRuntime())
     verdict = zone_logic.evaluate(
@@ -682,7 +924,7 @@ async def compute_zone_state(zone: zones.Zone) -> dict:
         exit_threshold=zone.exit_threshold,
         hold_seconds=zone.hold_seconds,
         now=time.monotonic(),
-        rate_occupied=_zone_rate_verdict(zone),
+        rate_occupied=rate_occupied,
     )
     return {"available": any_available, "members": members, **verdict.as_dict()}
 
@@ -829,6 +1071,10 @@ def list_boards() -> list[dict]:
             "label": b.label,
             "chip_family": b.chip_family,
             "experimental": b.experimental,
+            # Lets the form offer the band only where there is one to
+            # choose. Everywhere else the field would be a control with
+            # no radio behind it.
+            "dual_band": b.dual_band,
         }
         for b in BOARDS.values()
     ]

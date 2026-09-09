@@ -154,6 +154,27 @@ class RateProfile:
     #: buys is the mismatch check — the same room measured over a
     #: different transport is a different measurement.
     source: str | None = None
+    #: Which radio the room was measured on — 2.4 GHz, 5 GHz or `auto`.
+    #: None on a profile learned before 0.13.8, and on anything built for
+    #: a single-band chip, where there was never a choice.
+    #:
+    #: Stamped from the device rather than read out of the readings,
+    #: because a reading does not carry its band. That is a weaker claim
+    #: than `source` makes, and it is precisely why `auto` is worth
+    #: recording as its own answer: under `auto` not even the device
+    #: knows which radio a given minute was on.
+    #:
+    #: Recorded, not versioned, for the same reason as `source`: an
+    #: existing profile is still a correct answer to the question it was
+    #: learned under, and bumping PROFILE_VERSION would throw every one
+    #: of them away to record something none of them ever measured.
+    band: str | None = None
+    #: Which radio topology the room was measured in — see
+    #: `devices.MODE_ROUTER`. None on a profile learned before 0.13.8;
+    #: all of those describe the router topology, because it is the only
+    #: one any firmware Echolot ships can measure. Recorded rather than
+    #: versioned, like the two above.
+    sensing_mode: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -169,6 +190,8 @@ class RateProfile:
             "suspect_windows": self.suspect_windows,
             "window_count": self.window_count,
             "source": self.source,
+            "band": self.band,
+            "sensing_mode": self.sensing_mode,
             "warning": self.warning,
         }
 
@@ -273,6 +296,10 @@ def _parse_profile(data: dict) -> RateProfile | None:
             suspect_windows=max(0, int(data.get("suspect_windows") or 0)),
             window_count=max(0, int(data.get("window_count") or 0)),
             source=(str(data["source"]) if data.get("source") else None),
+            band=(str(data["band"]) if data.get("band") else None),
+            sensing_mode=(
+                str(data["sensing_mode"]) if data.get("sensing_mode") else None
+            ),
         )
     except (TypeError, ValueError):
         return None
@@ -550,6 +577,30 @@ def learn_baseline(
     )
 
 
+#: The conditions a baseline was learned under, by name. Each one is a
+#: fact about the measurement rather than about the room: change any of
+#: them and the recording describes a different thing, so the profile is
+#: no longer a scale for it.
+#:
+#: Kept as one list because they are the same question asked three times.
+#: Adding a fourth condition — a link id, a channel — should be a row
+#: here and a row in the caller's "what is true now", not a fourth
+#: branch in the evaluation.
+MEASUREMENT_FIELDS = ("source", "band", "sensing_mode")
+
+
+def measurement_definition(profile: RateProfile) -> dict[str, str | None]:
+    """Under what conditions this baseline was true.
+
+    A value of None means the profile does not say — every profile
+    written before the field existed. Not knowing is not a mismatch: an
+    old profile is still a correct answer to the question it was learned
+    under, and discarding all of them to record something none of them
+    measured would be the worse trade.
+    """
+    return {field: getattr(profile, field) for field in MEASUREMENT_FIELDS}
+
+
 def _single_source(rows: list[dict]) -> str | None:
     """The one transport these readings came from, or None."""
     seen = {row.get("source") for row in rows if row.get("source")}
@@ -562,6 +613,7 @@ def evaluate(
     *,
     occupied_now: bool = False,
     window: "Window | None" = None,
+    window_end: float | None = None,
 ) -> dict:
     """Is the room occupied, judged by how often it is reporting right now.
 
@@ -592,13 +644,19 @@ def evaluate(
         # The rolling window, stated rather than inferred. Taking the span
         # between the first and last reading made the window whatever the
         # data happened to fill, so a buffer holding four seconds of
-        # readings was judged as a four-second window and passed. The
-        # window is `window_seconds` ending at the newest reading; how
-        # much of it was observed is then the same question replay asks.
-        if stamps:
-            end = max(stamps)
+        # readings was judged as a four-second window and passed.
+        #
+        # `window_end` is the evaluation tick. Without it the window ends
+        # at the newest reading, so a source that stopped delivering was
+        # judged on its own last minute for as long as anything remained
+        # in the buffer — the window slid with the data instead of with
+        # the clock. Callers that have no clock (a test, an offline
+        # analysis) still get the old behaviour.
+        if stamps or window_end is not None:
+            end = window_end if window_end is not None else max(stamps)
             start = end - profile.window_seconds
-            span = min(profile.window_seconds, end - min(stamps))
+            oldest = min(stamps) if stamps else end
+            span = max(0.0, min(profile.window_seconds, end - oldest))
             observed = observed_seconds(scored, start, end)
         else:
             span = observed = 0.0
@@ -671,6 +729,7 @@ def advance(
     now: float,
     source=None,
     window: "Window | None" = None,
+    window_end: float | None = None,
     memory_seconds: float = RATE_MEMORY_SECONDS,
 ) -> tuple[bool | None, dict | None]:
     """One device's verdict, carrying its own hysteresis between calls.
@@ -701,7 +760,9 @@ def advance(
         memory = None
 
     previous = bool(memory["remembered"]) if memory else False
-    result = evaluate(profile, rows, occupied_now=previous, window=window)
+    result = evaluate(
+        profile, rows, occupied_now=previous, window=window, window_end=window_end
+    )
     verdict = bool(result["occupied"]) if result["available"] else None
     if verdict is None:
         return None, memory

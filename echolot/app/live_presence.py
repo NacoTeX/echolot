@@ -21,15 +21,30 @@ import itertools
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass
 
 from app import ha_client, ha_stream, samples as sample_bus
-from app.ha_sampler import build_sample, _float
+from app.ha_sampler import build_sample, _float, _stamp
 
 logger = logging.getLogger("echolot.live_presence")
 
 #: How much history to keep. Comfortably more than the sixty seconds the
 #: rate is measured over, so a window is never short of its own span.
 WINDOW_SECONDS = 180.0
+
+
+@dataclass(frozen=True)
+class MotionPulse:
+    """Motion went on between two evaluation rounds, and when.
+
+    A bare boolean said a pulse happened but not when, so a reader could
+    not tell a doorway crossing a moment ago from one that had been
+    sitting in the latch since the connection dropped — and the mere
+    existence of a pulse would then mark a dead source as healthy.
+    """
+
+    happened: bool
+    at: float | None = None
 
 
 #: Every stream ever opened gets its own number.
@@ -66,9 +81,9 @@ class DeviceStream:
         #: Told that *something* changed, without a measurement attached.
         #: See `_notify_change`.
         self._change_listeners: set = set()
-        #: Motion went on at least once since somebody last asked.
+        #: When motion last went on, if that has not been consumed yet.
         #: See `motion_pulsed`.
-        self._motion_pulse = False
+        self._motion_pulse_at: float | None = None
         self._reader = reader
         self._loop = loop
         factory = subscription_factory or ha_stream.StateSubscription
@@ -135,7 +150,12 @@ class DeviceStream:
             # than the floor — someone crossing a doorway — was on and off
             # again before the round, so the round saw nothing and the
             # decision history had no trace of it at all.
-            self._motion_pulse = True
+            #
+            # The instant is kept with it. A bare True says a pulse
+            # happened but not when, and a reader cannot then tell a
+            # doorway crossing a moment ago from one that has been
+            # sitting in the latch since the connection dropped.
+            self._motion_pulse_at = _stamp(state) or time.time()
 
         if entity_id != self._entities["score"]:
             # Not a measurement — but still news. Until 0.13.5 this
@@ -144,6 +164,23 @@ class DeviceStream:
             # out until the idle timer came round, up to ten seconds
             # after the device had already decided. Reported as R3.
             if previous is None or previous.get("state") != state.get("state"):
+                # Written down as an event, not as a sample. A motion
+                # flip between two score readings was seen by the live
+                # latch and by nothing else, so a recording could not
+                # reproduce it and replay could not either — the two ran
+                # the same decision function over different inputs.
+                #
+                # Deliberately not a measurement: the crossing rate is
+                # events per second of observed time, and letting a
+                # motion flip into that count would inflate the very
+                # number these events exist to explain.
+                if entity_id == self._entities["motion"]:
+                    sample_bus.bus.publish_event(
+                        self.device_id,
+                        sample_bus.EVENT_MOTION,
+                        state.get("state") == "on",
+                        at=_stamp(state) or time.time(),
+                    )
                 self._notify_change()
             return
 
@@ -230,15 +267,16 @@ class DeviceStream:
         """Whoever is attached, so a rebuilt stream can take them over."""
         return tuple(self._listeners)
 
-    def motion_pulsed(self) -> bool:
-        """Did motion go on since this was last asked? Clears the flag.
+    def motion_pulsed(self) -> "MotionPulse":
+        """Did motion go on since this was last asked? Clears the latch.
 
-        Exactly one caller may consume it — the zone evaluation — or the
-        pulse would be reported to whoever asked first and lost for the
-        one that decides.
+        Exactly one caller may consume it — the round builder in
+        app/main.py — or the pulse would be reported to whoever asked
+        first and lost for the one that decides. Every zone then reads
+        the same answer out of that round's snapshot.
         """
-        pulsed, self._motion_pulse = self._motion_pulse, False
-        return pulsed
+        at, self._motion_pulse_at = self._motion_pulse_at, None
+        return MotionPulse(happened=at is not None, at=at)
 
     @property
     def change_listeners(self) -> tuple:
@@ -357,6 +395,11 @@ class LivePresence:
                 carry_over[device_id] = tuple(existing.listeners)
                 carry_over_changes[device_id] = tuple(existing.change_listeners)
                 self._streams.pop(device_id).stop()
+                # The canonical buffer holds readings from the *old*
+                # entities. Replacing the stream and leaving them there
+                # let a window straddle the change and the hysteresis
+                # carry across it.
+                sample_bus.bus.restart(device_id)
         for device_id, device in wanted.items():
             if device_id not in self._streams:
                 stream = DeviceStream(

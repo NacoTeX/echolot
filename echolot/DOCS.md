@@ -29,7 +29,9 @@ Phase 5 polish (traffic estimation, presets, zone export).
 1. Open the add-on's web UI and switch to the **Devices** tab.
 2. Fill in the form: a device name, board, Wi-Fi network, and (optionally)
    the ESPectre detection algorithm/threshold. Wi-Fi credentials are baked
-   into that device's compiled firmware.
+   into that device's compiled firmware. On an ESP32-C5 the form also asks
+   which **Wi-Fi band** to use; 2.4 GHz is the default and the only one
+   ESPectre has characterised — see „Auf welchem Funkband gemessen wird".
 3. Click **Build firmware**. This renders an ESPHome YAML for the device
    and runs `esphome compile` in the container — the first build per board
    downloads the ESP-IDF toolchain, so it can take several minutes;
@@ -1052,6 +1054,174 @@ einmal statt zehnmal, und niemand wartet mehr darauf. Eine
 append-orientierte Aufzeichnung oder SQLite wäre die eigentliche Antwort;
 das steht aus, samt Migration mit Sicherung. Und ein Absturz kostet jetzt
 die letzten zwei Sekunden statt der letzten hundert Messwerte.
+
+### Was zwischen zwei Messwerten passiert
+
+Zwei Ströme je Gerät, absichtlich getrennt.
+
+**Messwerte** beantworten „wie oft hat dieser Raum in der letzten Minute
+überschritten". **Ereignisse** beantworten „was ist passiert": eine
+Bewegungsflanke, ein Quellenwechsel, ein neu begonnener Puffer.
+
+Der Grund für die Trennung ist arithmetisch. Die Überschreitungsrate
+zählt Ereignisse pro *beobachteter Sekunde*. Eine Bewegungsflanke in
+diese Summe zu legen würde genau die Zahl aufblähen, die sie erklären
+soll — und der Messwertzähler einer Aufnahme, den man zwischen Aufnahmen
+vergleicht, würde sich verschieben, weil eine neue Zeilenart daneben
+eingeführt wurde.
+
+Der Grund für den Ereignisstrom ist eine Lücke: ein reines on→off der
+Bewegung zwischen zwei Score-Ereignissen sah bis 0.13.6 nur der
+Live-Zwischenspeicher. In der Aufzeichnung stand nichts davon, das
+Replay konnte den Impuls nicht rekonstruieren, und dass Live und Replay
+dieselbe Entscheidungsfunktion aufrufen, hieß dann nur, dass sie sie über
+verschiedene Eingaben laufen ließen.
+
+Im Replay plant ein Bewegungsereignis einen eigenen Blickzeitpunkt — die
+Live-Schleife wacht dafür ja auch auf. Ein Bericht nennt außerdem, **ob**
+Ereignisse aufgezeichnet wurden: eine Aufnahme von vor 0.13.7 hat keine,
+und daraus soll niemand schließen müssen, dass nichts passiert ist.
+
+### Eine Runde, ein Gerät
+
+Die Auswertungsschleife baut je Runde ein unveränderliches Snapshot pro
+Gerät: Zustand, Messwerte, seit der letzten Runde eingegangene Impulse,
+Rate-Evidenz, Verfügbarkeit und Quelle. Jede Zone liest daraus.
+
+Vorher las `compute_zone_state` Home Assistant **pro Mitgliedschaft** und
+holte den Bewegungsimpuls **pro Mitgliedschaft** aus dem
+Zwischenspeicher. Ein Gerät in zwei Zonen kostete zwei Abfragen, und weil
+der Impuls beim Lesen verbraucht wird, sah nur die zuerst ausgewertete
+Zone ihn. Zehn Zonen mit demselben Gerät kosten jetzt eine Abfrage.
+
+Das Snapshot ist eingefroren: eine Zone, die es ändern könnte, würde
+ändern, was die anderen sehen.
+
+**Die langsame Evidenz kann drei Gründe haben zu schweigen**, und sie
+stehen getrennt auf der Karte:
+
+| | |
+| --- | --- |
+| kein Profil | nicht kalibriert — verhält sich wie vor der Rate |
+| `disconnected` | das Abonnement ist abgerissen |
+| `source_mismatch` | das Profil wurde über einen anderen Transport gelernt |
+| `band_mismatch` | das Profil wurde auf einem anderen Funkband gelernt |
+| `mode_mismatch` | das Profil wurde in einer anderen Funktopologie gelernt |
+
+Bei den letzten dreien wird nicht mehr nur gewarnt: was ein Raum leer tut, ist
+eine Eigenschaft dieses Raums über *einen* Messweg. Der langsame Pfad
+schweigt, bis neu kalibriert wird. Der schnelle Bewegungspfad läuft
+weiter — eine Zone soll ihre Bewegungserkennung nicht verlieren, weil ein
+Maßstab über den falschen Weg gelernt wurde.
+
+### Auf welchem Funkband gemessen wird
+
+Nur der ESP32-C5 hat zwei Funkbänder. Alle anderen hier unterstützten
+Chips funken auf 2,4 GHz, und ESPectres ESPHome-Komponente gibt für jede
+andere Variante ein festes `2g` zurück.
+
+Beim C5 leitet sie ihre `wifi_band_policy` aus ESPHomes eigenem
+`wifi.band_mode` ab:
+
+```python
+def _runtime_wifi_band_policy():
+    if get_esp32_variant() != esp32_const.VARIANT_ESP32C5:
+        return "2g"
+    band_mode = str(CORE.config[CONF_WIFI].get(CONF_BAND_MODE, "AUTO"))
+    return _WIFI_BAND_POLICY_BY_MODE[band_mode]
+```
+
+Bis 0.13.7 setzte Echolots Template diesen Schlüssel nicht. Das ist kein
+„keine Meinung": ESPHomes Vorgabe für den C5 ist `AUTO`, ein von Echolot
+gebauter C5 assoziierte also dort, wo der Router ihn hinschickte — und
+konnte auf einem Band messen, über das ESPectres SETUP.md selbst sagt:
+*„Detection quality on 5 GHz is not characterized yet."*
+
+Jetzt ist das Band eine Wahl mit 2,4 GHz als Vorgabe. Ein Feld, das nur
+beim C5 erscheint: ESPHome nimmt `band_mode` ausschließlich für diese
+Variante an (`only_on_variant(supported=[VARIANT_ESP32C5])`), überall
+sonst wäre die Zeile kein wirkungsloser Schalter, sondern ein
+Konfigurationsfehler. `esphome config` prüft in CI alle drei Werte.
+
+**Das Band gehört zur Messdefinition.** 2,4 GHz und 5 GHz sind zwei
+Messungen desselben Raums; was der leere Raum auf dem einen tut, sagt
+nichts über das andere. Ein Profil trägt deshalb das Band, auf dem es
+gelernt wurde, und ein Profil vom anderen Band macht die langsame Evidenz
+stumm — dieselbe Mechanik wie beim Transportwechsel, eine Ebene tiefer.
+
+Die Angabe ist schwächer als die Quellenangabe daneben, und das ist
+absichtlich so notiert: ein Messwert trägt sein Funkband nicht mit sich,
+das Band wird beim Übernehmen vom Gerät gestempelt. Genau deshalb zählt
+`auto` als eigene Antwort und nicht als Platzhalter — unter `auto` weiß
+auch die Aufnahme nicht, auf welchem Band sie entstanden ist, und ist
+damit für keines der beiden ein Maßstab.
+
+Profile ohne Bandangabe — alles vor 0.13.8 — zählen weiter wie bisher.
+Sie sind eine richtige Antwort auf die Frage, unter der sie gelernt
+wurden; `PROFILE_VERSION` zu erhöhen hieße, jedes von ihnen für ein
+Merkmal wegzuwerfen, das keines je gemessen hat.
+
+**Was das Band nicht ist: nachträglich änderbar.** Es wird in ein Image
+gebacken, gehört also zu derselben Klasse wie Board und SSID, und Echolot
+kennt keinen Zustand „die Konfiguration ist der geflashten Firmware
+davongelaufen". `DeviceUpdate` trägt deshalb überhaupt keine
+Firmware-Felder, und dieses auch nicht. Praktisch heißt das: die
+Band-Prüfung oben greift heute bei wiederhergestellten oder von Hand
+bearbeiteten Daten, und das Band am Profil wird notiert, damit eine
+*spätere* Bandänderung keinen alten Maßstab stillschweigend weiterbenutzt.
+
+**Was schon geflasht ist, bleibt.** Ein vor 0.13.8 angelegter C5 läuft
+auf `AUTO`, und die Migration schreibt genau das in seine Konfiguration,
+statt die neue Vorgabe anzuwenden. Ihn auf 2,4 GHz zu setzen ist ein
+Neubau samt Flashen — eine Entscheidung, die niemand einer Migration
+überlassen sollte.
+
+### Router oder Gerätepaar
+
+Ein Sensor misst heute die Funkstrecke **Access Point → Gerät**. TOMMY
+beschreibt etwas anderes: mindestens zwei Geräte je Zone, zwischen denen
+gezielt Pakete ausgetauscht werden, also eine gerichtete Strecke
+**A → B**. Beide Enden der Messstrecke lassen sich dann platzieren, statt
+nur eines.
+
+| Variante | Tatsächliche Messstrecken |
+|---|---|
+| Echolot, ein Sensor | AP → Sensor |
+| Echolot, zwei Sensoren | AP → A und AP → B — zwei Routermessungen, kombiniert |
+| Echter Paarmodus | A → B |
+
+Zwei Sensoren in einer Zone ergeben **nicht** von selbst einen A→B-Link.
+Und `csi_traffic_mode: external` ist am gepinnten Commit keiner: die
+Upstream-Dokumentation beschreibt dafür UDP-Pakete, die über den Access
+Point zugestellt werden. Ein Paket von A an die IP von B läuft also
+A → AP → B, und eine IP-Absenderadresse ist kein Nachweis des
+unmittelbaren 802.11-Senders.
+
+**Was 0.13.8 davon hat: den Datenvertrag, sonst nichts.**
+
+- `sensing_mode` am Gerät, `router` als Vorgabe — was jedes je von
+  Echolot gebaute Image tut, weshalb dafür keine Migration nötig ist.
+- `peer_link` als benannter zweiter Wert, der **nicht wählbar ist**. Er
+  hängt an einer Fähigkeit, die die Firmware melden muss:
+  `firmware_capabilities` im Build-Manifest, mit `supports_router`,
+  `supports_peer_tx`, `supports_peer_rx` und `peer_protocol_version`. Die
+  gepinnte Firmware meldet nur das erste. Die Fähigkeiten stehen **im
+  Manifest**, nicht in einer Tabelle im Add-on: ein vor einem Jahr
+  geflashtes Gerät läuft mit der Firmware von vor einem Jahr, und was
+  das Add-on heute kann, ist über sie keine Auskunft.
+- Das Profil trägt den Modus mit. Ein Routerprofil wird an einem
+  Peer-Link nicht stillschweigend übernommen.
+
+Der Weg von hier zu einem echten Link steht in
+[docs/paarmodus-hardwaretest.md](docs/paarmodus-hardwaretest.md), mit dem
+Versuch, an dem alles hängt: **Sender abschalten — der Peer-Link muss
+ausfallen, auch wenn der Router weiter Pakete schickt.** Solange das
+nicht belegt ist, gibt es keinen Schalter dafür.
+
+Ausdrücklich nicht gebaut: `LinkConfig`, `LinkSample`, ein Paar-Assistent
+oder irgendeine Oberfläche. Speicher und Bedienung für eine Funkstrecke
+zu bauen, die kein Gerät herstellen kann, erweckt genau den Eindruck, den
+das Ganze vermeiden soll.
 
 ### Wer den Zonenzustand besitzt
 

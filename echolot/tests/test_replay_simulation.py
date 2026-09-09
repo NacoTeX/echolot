@@ -33,7 +33,8 @@ import pytest
 os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp(prefix="echolot-tests-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import main, presence_rate, replay  # noqa: E402
+from app import live_presence, main, presence_rate, replay, samples  # noqa: E402
+from app.telemetry import Sample  # noqa: E402
 from app.devices import Device, DeviceCreate  # noqa: E402
 from app.zones import Zone  # noqa: E402
 
@@ -91,17 +92,20 @@ class Clock:
 
 
 class ReplayStream:
-    """A live stream fed from a recording, cut off at the virtual clock."""
+    """A live subscription that is up.
 
-    generation = 1
+    The readings themselves reach the rate through the canonical bus, the
+    same channel calibration and replay read — that is the point of the
+    parity test. Only the connection state comes from here, and the
+    motion latch, which this recording never uses: its motion is a level
+    on every row, not a pulse between rounds.
+    """
 
-    def __init__(self, rows, clock):
-        self.rows = rows
-        self.clock = clock
+    connected = True
+    error = None
 
-    def window(self, seconds, *, now=None):
-        moment = self.clock.now if now is None else now
-        return [r for r in self.rows if moment - seconds <= r["t"] <= moment]
+    def motion_pulsed(self):
+        return live_presence.MotionPulse(happened=False)
 
 
 def live_transitions(rows, *, hold_seconds, monkeypatch):
@@ -117,7 +121,27 @@ def live_transitions(rows, *, hold_seconds, monkeypatch):
         entity_movement_score="sensor.probe_score",
     )
     device.presence_profile = PROFILE.as_dict()
-    stream = ReplayStream(rows, clock)
+    stream = ReplayStream()
+
+    # The bus windows against the wall clock, so it gets the same virtual
+    # one. Readings are published as the clock reaches them: a live
+    # buffer never holds the future, and `window()` has no upper bound
+    # because in production it does not need one.
+    monkeypatch.setattr(samples, "time", clock)
+    samples.bus.forget("probe")
+    pending = iter(sorted(rows, key=lambda row: row["t"]))
+    upcoming = next(pending, None)
+
+    def deliver_until(moment):
+        nonlocal upcoming
+        while upcoming is not None and upcoming["t"] <= moment:
+            samples.bus.publish(
+                "probe",
+                Sample(t=upcoming["t"], movement_score=upcoming["movement_score"],
+                       threshold=None, motion=upcoming["motion"]),
+                source=samples.SOURCE_HOME_ASSISTANT,
+            )
+            upcoming = next(pending, None)
 
     monkeypatch.setattr(main, "time", clock)
     monkeypatch.setattr(main.devices, "get_device", lambda i: device if i == "probe" else None)
@@ -133,7 +157,7 @@ def live_transitions(rows, *, hold_seconds, monkeypatch):
 
     # The zone's own member read comes from Home Assistant in production;
     # here it comes from the same recording, at the same instant.
-    async def members(zone_):
+    async def members(zone_, _snapshots=None):
         current = [r for r in rows if r["t"] <= clock.now]
         newest = current[-1] if current else None
         runtime = main._zone_runtimes.setdefault(zone_.id, main.zone_logic.ZoneRuntime())
@@ -150,12 +174,23 @@ def live_transitions(rows, *, hold_seconds, monkeypatch):
         return {"available": True, "members": [], **verdict.as_dict()}
 
     monkeypatch.setattr(main, "compute_zone_state", members)
+
+    # The round still runs — it is what prunes the hysteresis of devices
+    # that have left every zone, so a round that sees no devices wipes
+    # the memory this test is about. Only the Home Assistant read is
+    # replaced; `members` takes the motion and score from the recording.
+    async def read_state(_device, allow_detect=True):
+        return {"available": True, "motion": False,
+                "movement_score": None, "threshold": None}
+
+    monkeypatch.setattr(main, "_read_device_state", read_state)
     main._zone_runtimes.pop("z", None)
 
     changes = []
     previous = None
     for moment in replay._steps(rows, replay.DEFAULT_TICK_SECONDS):
         clock.now = moment
+        deliver_until(moment)
         asyncio.run(evaluator.cycle([zone]))
         state = evaluator.snapshot("z")["state"]
         if state != previous:
@@ -163,6 +198,7 @@ def live_transitions(rows, *, hold_seconds, monkeypatch):
             previous = state
     main._rate_state.clear()
     main._zone_runtimes.pop("z", None)
+    samples.bus.forget("probe")
     return changes
 
 

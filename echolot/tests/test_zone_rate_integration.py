@@ -9,6 +9,7 @@ couch and from the same room empty.
 
 import csv
 import os
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 os.environ.setdefault("ECHOLOT_DATA_DIR", tempfile.mkdtemp(prefix="echolot-tests-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import devices as dev_mod, feature_api, live_presence, main, presence_rate  # noqa: E402
+from app import devices as dev_mod, feature_api, live_presence, main, presence_rate, samples  # noqa: E402
 from app.devices import BuildStatus, Device, DeviceCreate  # noqa: E402
 from app.telemetry import Sample  # noqa: E402
 
@@ -60,22 +61,11 @@ def make_device(profile: dict | None) -> Device:
     return device
 
 
-class LoadedStream:
-    """A live stream already holding a stretch of recorded readings.
+class LiveStream:
+    """A subscription that is up. The readings come from the bus."""
 
-    `ends_at` picks which moment of the recording is "now", because a
-    recording is not uniform: the last minute of the couch session reads
-    as empty, and that is a real limit worth testing rather than avoiding.
-    """
-
-    def __init__(self, rows, ends_at=None):
-        self._rows = rows
-        self._end = ends_at if ends_at is not None else max(r["t"] for r in rows)
-        self.connected = True
-        self.error = None
-
-    def window(self, seconds, now=None):
-        return [row for row in self._rows if self._end - seconds <= row["t"] <= self._end]
+    connected = True
+    error = None
 
 
 @pytest.fixture(autouse=True)
@@ -89,6 +79,7 @@ def fresh_round():
     main._rate_state.clear()
     main.evaluator._device_verdicts.clear()
     yield
+    samples.bus.forget("probe")
     main._rate_state.clear()
     main.evaluator._device_verdicts.clear()
 
@@ -101,12 +92,36 @@ def profile():
 
 
 def wire(monkeypatch, device, rows, ends_at=None):
+    """Replay a recorded stretch onto the canonical bus, ending now.
+
+    `ends_at` picks which moment of the recording is "now", because a
+    recording is not uniform: the last minute of the couch session reads
+    as empty, and that is a real limit worth testing rather than
+    avoiding. The rows are shifted so that moment lands on the wall
+    clock, which is what the rate's window now ends at — before 0.13.7 it
+    ended at the newest reading, so a source that had stopped delivering
+    kept being judged on its own last minute.
+    """
     monkeypatch.setattr(dev_mod, "get_device", lambda did: device if did == device.id else None)
     monkeypatch.setattr(main.devices, "get_device", dev_mod.get_device)
+    monkeypatch.delenv("ECHOLOT_SAMPLE_SOURCE", raising=False)
+
+    end = ends_at if ends_at is not None else max(r["t"] for r in rows)
+    offset = time.time() - end
+    samples.bus._samples.pop(device.id, None)
+    for row in rows:
+        if row["t"] > end:
+            continue
+        samples.bus.publish(
+            device.id,
+            Sample(t=row["t"] + offset, movement_score=row["movement_score"],
+                   threshold=None, motion=False),
+            source=samples.SOURCE_HOME_ASSISTANT,
+        )
 
     class Live:
         def stream(self, device_id):
-            return LoadedStream(rows, ends_at) if device_id == device.id else None
+            return LiveStream() if device_id == device.id else None
 
     monkeypatch.setattr(feature_api, "live", Live())
 
@@ -181,10 +196,25 @@ def test_one_calibrated_member_is_enough(monkeypatch, profile):
 
     rows = load("couch_still.csv")
     end = minutes_in(rows, 1.0)
+    offset = time.time() - end
+    for device_id in (calibrated.id, bare.id):
+        samples.bus._samples.pop(device_id, None)
+        for row in rows:
+            if row["t"] > end:
+                continue
+            samples.bus.publish(
+                device_id,
+                Sample(t=row["t"] + offset, movement_score=row["movement_score"],
+                       threshold=None, motion=False),
+                source=samples.SOURCE_HOME_ASSISTANT,
+            )
 
     class Live:
         def stream(self, device_id):
-            return LoadedStream(rows, end)
+            return LiveStream()
 
     monkeypatch.setattr(feature_api, "live", Live())
-    assert main._zone_rate_verdict(Zone([bare.id, calibrated.id])) is True
+    try:
+        assert main._zone_rate_verdict(Zone([bare.id, calibrated.id])) is True
+    finally:
+        samples.bus.forget(bare.id)

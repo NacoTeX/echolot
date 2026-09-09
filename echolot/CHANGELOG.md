@@ -1,5 +1,140 @@
 # Changelog
 
+## 0.13.8
+
+**Der ESP32-C5 misst jetzt auf dem Band, das jemand gewählt hat.** Das
+Firmware-Template setzte kein `band_mode:`. Bei jedem anderen Chip ist
+das folgenlos — ESPectre liefert für jede andere Variante ein festes
+`2g` —, beim C5 nicht: ESPHomes Vorgabe für diese Variante ist `AUTO`,
+also assoziierte ein von Echolot gebauter C5 dort, wo der Router ihn
+hinschickte. Über die Erkennungsqualität auf dem zweiten Band schreibt
+ESPectre in seiner eigenen SETUP.md: *„Detection quality on 5 GHz is not
+characterized yet."*
+
+Neu ist eine Feldwahl **WLAN-Band** mit 2,4 GHz als Vorgabe, angeboten
+nur beim C5 — ESPHome nimmt `band_mode` ausschließlich für diese Variante
+an (`only_on_variant(supported=[VARIANT_ESP32C5])`), überall sonst wäre
+es kein wirkungsloser Schalter, sondern ein Konfigurationsfehler. Der
+Wert steht im Build-Manifest, geht in den Konfigurations-Fingerabdruck
+ein und wird von `esphome config` für alle drei Bänder geprüft.
+
+**Der Paarmodus bekommt seinen Datenvertrag — und sonst nichts.** Ein
+Gerät sagt jetzt, in welcher Funktopologie es misst: `sensing_mode` mit
+`router` als Vorgabe, also dem, was jedes je von Echolot gebaute Image
+tut. Der zweite Wert `peer_link` — die gerichtete Strecke A→B, die TOMMY
+beschreibt — ist benannt und **nicht wählbar**. Er hängt an einer
+Fähigkeit, die die Firmware melden muss (`supports_peer_rx`), und die
+gepinnte ESPectre-Firmware meldet sie nicht.
+
+Der Grund ist kein Vorbehalt, sondern ein Befund: `csi_traffic_mode:
+external` ist am gepinnten Commit kein Funklink. Upstream beschreibt
+dafür UDP-Pakete, die über den Access Point zugestellt werden — ein Paket
+von A an die IP von B läuft also A → AP → B, und eine IP-Absenderadresse
+ist kein Nachweis des unmittelbaren 802.11-Senders.
+
+Die Fähigkeiten stehen im Build-Manifest, nicht in einer Tabelle im
+Add-on: ein vor einem Jahr geflashtes Gerät läuft mit der Firmware von
+vor einem Jahr. Der Weg zu einem echten Link steht in
+`docs/paarmodus-hardwaretest.md`, mit dem Versuch, an dem alles hängt —
+Sender abschalten, der Link muss ausfallen, auch wenn der Router weiter
+sendet. Ausdrücklich nicht gebaut: `LinkConfig`, `LinkSample`, ein
+Paar-Assistent, irgendeine Oberfläche.
+
+**Ein Profil weiß jetzt, auf welchem Funkband es gelernt wurde.** 2,4 GHz
+und 5 GHz sind zwei Messungen desselben Raums; was der leere Raum auf dem
+einen tut, sagt nichts über das andere. Ein Profil vom anderen Band macht
+die langsame Evidenz stumm — mit Begründung, wie beim Transportwechsel in
+0.13.7 —, und die Übersicht nennt beide Bänder beim Namen. `auto` gilt
+dabei als eigene Antwort und nicht als Platzhalter: unter `auto` weiß
+auch die Aufnahme nicht, auf welchem Funkband sie entstanden ist.
+
+Transport, Band und Topologie sind dieselbe Frage, dreimal gestellt:
+unter welchen Bedingungen war dieser Maßstab wahr. Sie stehen jetzt als
+**eine** Messdefinition am Profil und werden als eine verglichen — eine
+vierte Bedingung wäre eine Zeile, kein vierter Zweig.
+
+Dabei kam ein zweiter Fehler mit heraus: `update_device` prüfte den
+gespeicherten Datensatz *ohne* Migration gegen das Modell und schrieb das
+Ergebnis zurück — die Migration hielt also nur, bis irgendetwas anderes
+den Datensatz anfasste, etwa die Adresse, die die Entity-Auflösung von
+sich aus schreibt. Der Schreibpfad läuft jetzt durch dieselbe Migration
+wie die Lesepfade.
+
+Was schon geflasht ist, bleibt, wie es ist: ein vor 0.13.8 angelegter C5
+läuft auf `AUTO`, und genau das wird in seine Konfiguration
+geschrieben. Ihn auf 2,4 GHz zu setzen wäre ein Neubau, und diese
+Entscheidung gehört nicht in eine Migration. Profile ohne Bandangabe
+zählen weiter wie bisher — sie sind eine richtige Antwort auf die Frage,
+unter der sie gelernt wurden.
+
+## 0.13.7
+
+Ein Nachreview zu 0.13.6 mit vier verbliebenen Befunden. Alle vier ließen
+sich am gemergten Stand mit dem beiliegenden Skript bestätigen, alle vier
+sind jetzt Regressionstests — und jeder ist gegen den unkorrigierten Code
+gegengeprüft.
+
+**Ein Impuls erreichte bei geteilten Geräten nur eine Zone.** „Jedes Gerät
+einmal pro Runde" galt für die Rate und nicht für den Zustandsabruf:
+`compute_zone_state` fragte Home Assistant **pro Mitgliedschaft** ab und
+holte den Bewegungsimpuls **pro Mitgliedschaft** aus dem Zwischenspeicher.
+Ein Gerät in zwei Zonen kostete also zwei Abfragen — und nur die zuerst
+ausgewertete Zone sah einen kurzen Impuls. Die Reproduktion des Reviews
+lieferte `[True, False]` für dasselbe Gerät im selben Augenblick.
+
+Die Runde wird jetzt einmal gebaut, als unveränderliches Geräte-Snapshot,
+und jede Zone liest dieselben Werte. Zehn Zonen mit einem Gerät kosten
+eine Abfrage. Der Impuls trägt seinen Zeitpunkt mit: ohne ihn kann
+niemand einen Türdurchgang von gerade eben von einem unterscheiden, der
+seit dem Verbindungsabbruch im Zwischenspeicher liegt — und dann würde
+allein seine Existenz eine tote Quelle als gesund ausweisen.
+
+**Ein abgerissener Transport war keine Evidenz.** Die Rate ignorierte
+`stream.connected`, ein abgebrochenes Abonnement antwortete also weiter
+aus dem, was noch im Puffer lag. Eine offene Verbindung beweist nicht,
+dass der ESP misst — eine geschlossene beweist, dass er es nicht tut, und
+das ist ein tragfähiger Schluss in genau dieser einen Richtung. Die
+Evidenz wird unbekannt, mit Begründung, und das Hysterese-Gedächtnis
+bleibt: ein Aussetzer ist keine Neukalibrierung.
+
+**Das Fenster endet jetzt am Auswertungstakt** statt am neuesten
+Messwert. Es rutschte mit den Daten statt mit der Uhr, eine Quelle, die
+aufgehört hatte zu liefern, wurde also an ihrer eigenen letzten Minute
+gemessen, solange noch etwas im Puffer stand. Das Replay bekommt
+denselben Parameter — sonst wären die beiden genau an dieser Stelle
+auseinandergelaufen, und der Vergleichstest hat das auch prompt gezeigt.
+
+**Die produktive Rate liest jetzt denselben Kanal wie alle anderen.** Sie
+las den Puffer des Home-Assistant-Abonnements, während Kalibrierung,
+Fusion und Replay den kanonischen Bus lesen: zwei Quellen für dieselbe
+Frage. Ein Profil, das über einen Transport gelernt wurde, bewertet keine
+Serie eines anderen mehr — bisher stand darüber nur ein Hinweis in der
+Übersicht und die Bewertung lief trotzdem. Der langsame Pfad schweigt mit
+Begründung, bis neu kalibriert wird; der schnelle Bewegungspfad bleibt
+unangetastet. Der Bus nummeriert seine Messreihen je Gerät, und ein neu
+aufgebautes Abonnement oder ein Quellenwechsel beginnt den Puffer neu,
+statt ein Fenster über den Bruch hinweg laufen zu lassen.
+
+**Was zwischen zwei Messwerten passiert, wird jetzt aufgeschrieben.** Ein
+reines on→off der Bewegung zwischen zwei Score-Ereignissen sah der
+Live-Zwischenspeicher — und sonst nichts. In der Aufzeichnung stand
+davon nichts, das Replay konnte es nicht rekonstruieren, und dass beide
+dieselbe Entscheidungsfunktion aufrufen, hieß nur, dass sie sie über
+verschiedene Eingaben laufen ließen.
+
+Es gibt jetzt einen geordneten Ereignisstrom neben den Zahlen: Bewegung,
+Quellenwechsel, Pufferneubeginn. Er wird mit aufgezeichnet, das Replay
+liest ihn, und ein Bewegungsereignis plant im Replay einen eigenen
+Blickzeitpunkt — die Live-Schleife wacht dafür ja auch auf. Diese
+Ereignisse sind **nie Messwerte**: die Überschreitungsrate zählt
+Ereignisse pro beobachteter Sekunde, und eine Bewegungsflanke in dieser
+Summe würde genau die Zahl aufblähen, die sie erklären soll. Der
+Messwertzähler einer Aufnahme ändert sich dadurch um nichts.
+
+Ein Bericht sagt außerdem, **ob** Ereignisse aufgezeichnet wurden. Eine
+Aufnahme von vor 0.13.7 hat keine, und niemand soll daraus schließen
+müssen, dass nichts passiert ist.
+
 ## 0.13.6
 
 Ein zweites externes Review, diesmal mit einem Reproduktionsskript für

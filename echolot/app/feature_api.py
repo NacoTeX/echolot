@@ -6,6 +6,7 @@ device/zone application module.
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -354,6 +355,7 @@ def replay_calibration(
             baseline_samples=baseline_samples,
             transfer=transfer,
             hold_seconds=max(0.0, hold_seconds),
+            events=calibration.store.events(session_id) or [],
         )
     except replay.BaselineRefused as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
@@ -385,6 +387,23 @@ def apply_presence_rate(session_id: str) -> dict:
     device = devices.get_device(session["device_id"])
     if device is None:
         raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    # Which radio this was measured on. It comes from the device rather
+    # than from the readings, because a reading does not carry its band —
+    # a weaker claim than `source`, and the reason `auto` is recorded as
+    # its own answer instead of being resolved to a band. Without it a
+    # baseline learned on 2.4 GHz would keep judging a device somebody
+    # later moved to 5 GHz, which is the transport mismatch of 0.13.7 one
+    # layer down.
+    profile = replace(
+        profile,
+        band=devices.effective_band(device.config),
+        # And the radio path it was measured along. Only `router` exists
+        # today, so this records a fact rather than distinguishing two —
+        # which is the point: when a peer link does exist, a baseline
+        # learned against the access point will not silently become its
+        # scale.
+        sensing_mode=device.config.sensing_mode,
+    )
     device.presence_profile = profile.as_dict()
     devices.save_device(device)
     return {"status": "ok", "profile": device.presence_profile}

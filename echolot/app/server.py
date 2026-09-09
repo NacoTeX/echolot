@@ -47,6 +47,10 @@ async def lifespan(application):
     # crossing rate is events per second, so counting it twice does not
     # add detail, it doubles the number.
     samples.bus.add_listener(calibration.store.ingest)
+    # Alongside the numbers, what happened between them. A recording that
+    # holds only the score series cannot reproduce a motion flip, and
+    # replay then runs the same decision function over different inputs.
+    samples.bus.add_event_listener(calibration.store.ingest_event)
     if samples.direct_collector_enabled():
         await telemetry.hub.start(devices.list_devices)
     else:
@@ -66,6 +70,7 @@ async def lifespan(application):
         calibration.store.close()
         feature_api.live.stop_all()
         samples.bus.remove_listener(calibration.store.ingest)
+        samples.bus.remove_event_listener(calibration.store.ingest_event)
         await telemetry.hub.stop()
 
 
