@@ -479,8 +479,14 @@ gepinnte ESPectre-Commit sich über einen Header uneinig sind — genau der
 Fehler, der bei einem Nutzer als Zwanzig-Minuten-Build mit einem
 C++-Fehler ankommt, den er nicht geschrieben hat.
 
-Je ein Board pro Befehlssatz — Xtensa `esp32`, RISC-V `esp32c6` — mit
-allen Optionen an. Zwei statt sechs, weil die beiden Befehlssätze das
+Je ein Board pro Befehlssatz — Xtensa `esp32`, RISC-V `esp32c6` — in der
+Konfiguration, die auch ausgeliefert wird: Weboberfläche, Diagnose und
+Direct-API an, API-Verschlüsselung aus. Letzteres nicht aus Bequemlichkeit
+— sie *validiert*, aber sie *linkt nicht* (siehe „Der
+Verschlüsselungscode"), und ein Job, der scheitern muss, ist kein Job.
+Genau diese Lücke hat der Compile-Job bei seinem ersten echten Lauf
+gezeigt: die Konfigurationsprüfung war für die verschlüsselte Variante
+die ganze Zeit grün. Zwei statt sechs, weil die beiden Befehlssätze das
 sind, was sich wirklich unterscheidet: getrennte Toolchain-Downloads,
 getrennte Compiler, getrennte Chip-Header. ESP32-C3/C5/C6 unterscheiden
 sich untereinander auf eine Weise, die `esphome config` bereits abdeckt.
