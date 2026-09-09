@@ -459,6 +459,45 @@ those 2 GB each time and getting a fresh chance at an interrupted
 download. Budget the space accordingly on small installations; the
 official ESPHome add-on stores its cache the same way.
 
+### Was CI von der Firmware prüft
+
+Zwei getrennte Fragen, zwei Jobs.
+
+**Konfiguration** (`tools/validate_firmware.py`): rendert die Vorlage für
+*jedes* Board plus die Varianten, deren Zweige sonst nie durchlaufen
+werden, und lässt `esphome config` darüber laufen. Drei Fehler kamen so in
+Releases, weil die erzeugte YAML nur gelesen und nie geprüft wurde:
+`ota: platform: esp32` (gibt es nicht), `cpu_frequency: 240MHz` auf Chips,
+die niedriger enden, und ein fehlender `esp32_ble_server`, der den
+BLE-Kanal dauerhaft abschaltete. Das dauert Sekunden und läuft bei jeder
+Änderung.
+
+**Kompilierung** (`tools/compile_firmware.py`, seit 0.13.6): linkt ein
+echtes Image. `esphome config` holt ESPectre nicht, startet keinen
+Compiler und kann nicht sagen, dass der gepinnte ESPHome-Stand und der
+gepinnte ESPectre-Commit sich über einen Header uneinig sind — genau der
+Fehler, der bei einem Nutzer als Zwanzig-Minuten-Build mit einem
+C++-Fehler ankommt, den er nicht geschrieben hat.
+
+Je ein Board pro Befehlssatz — Xtensa `esp32`, RISC-V `esp32c6` — mit
+allen Optionen an. Zwei statt sechs, weil die beiden Befehlssätze das
+sind, was sich wirklich unterscheidet: getrennte Toolchain-Downloads,
+getrennte Compiler, getrennte Chip-Header. ESP32-C3/C5/C6 unterscheiden
+sich untereinander auf eine Weise, die `esphome config` bereits abdeckt.
+
+Der Job läuft bei Pushes auf `main` und bei Pull Requests mit dem Label
+`firmware`, nicht bei jedem Commit: ein kalter Build lädt rund 2 GB je
+Befehlssatz. Der PlatformIO-Cache wird auf beide Pins verschlüsselt —
+ESPHome-Anforderung und ESPectre-Commit —, sodass ein Bump von einem der
+beiden von vorn baut statt gegen ein altes Framework zu linken.
+
+Lokal genauso aufrufbar:
+
+```bash
+python echolot/tools/compile_firmware.py            # beide Boards
+python echolot/tools/compile_firmware.py esp32c6    # nur eines
+```
+
 ### Dashboard
 
 The **Dashboard** tab shows every device and zone as a tile. Each device

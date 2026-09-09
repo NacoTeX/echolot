@@ -115,8 +115,10 @@ def reset_toolchain(board) -> bool:
 #: produces the same firmware base. Moving it is a deliberate act: bump
 #: this, rebuild a device, and check it still senses.
 #:
-#: Honest limitation: this repository cannot compile firmware in CI yet,
-#: so "pinned" here means reproducible, not verified. See DOCS.md.
+#: Since 0.13.6 CI links a real image for one board per instruction set
+#: against exactly this commit (tools/compile_firmware.py), so "pinned"
+#: now means verified as well as reproducible — for those two boards, on
+#: CI's Linux runner, and not on hardware. See DOCS.md.
 ESPECTRE_REF = "ce23b0b61b95b87a75f12681a0e576d8f3df5d1b"
 
 #: Fields that must never reach a manifest or a log.
