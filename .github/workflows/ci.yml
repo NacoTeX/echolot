@@ -81,15 +81,22 @@ jobs:
         run: node echolot/tools/test_flash_watch.js
 
   firmware-compile:
-    name: Firmware links for Xtensa and RISC-V
+    name: Firmware links on real toolchains
     runs-on: ubuntu-latest
     # `esphome config` catches a YAML mistake in seconds and catches
     # nothing else. It does not fetch ESPectre, it does not run a
     # compiler, and it cannot tell you that the pinned ESPHome and the
     # pinned ESPectre commit disagree about a header — which is the
     # failure that reaches a user as a twenty-minute build ending in a
-    # C++ error they did not write. So one board per instruction set is
-    # actually linked.
+    # C++ error they did not write. So real images are linked.
+    #
+    # One board per instruction set was the rule until 0.13.8, on the
+    # grounds that the RISC-V chips differ in ways `esphome config`
+    # already covers. The C5 broke that: it is the only dual-band chip
+    # here, so it is the only one whose generated `wifi:` block carries a
+    # `band_mode:` at all, and it is the newest of them in ESP-IDF. A
+    # config that validates says nothing about whether that variant
+    # links.
     #
     # Only when something that can change the firmware changed: a cold
     # build downloads about 2 GB of ESP-IDF and toolchain per
@@ -105,6 +112,11 @@ jobs:
             arch: xtensa
           - board: esp32c6
             arch: riscv
+          # Dual-band, and the only board whose config renders a
+          # `band_mode:`. Shares the RISC-V toolchain with the C6 but not
+          # the chip headers, so it gets its own cache entry below.
+          - board: esp32c5
+            arch: riscv
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -114,11 +126,15 @@ jobs:
       # scratch instead of linking against a stale framework — which is
       # the whole point of testing the new ESPHome pin against exactly
       # this ESPectre commit.
+      #
+      # Per board, not per instruction set: two RISC-V legs sharing one
+      # key would race to save the same cache, and the loser would go on
+      # restoring a cache built for the other chip's headers.
       - name: Cache the toolchain and framework
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ matrix.arch }}-${{ hashFiles('echolot/app/requirements.txt', 'echolot/app/builder.py') }}
+          key: pio-${{ matrix.board }}-${{ hashFiles('echolot/app/requirements.txt', 'echolot/app/builder.py', 'echolot/app/firmware.py') }}
       - name: Install dependencies
         run: pip install -r echolot/app/requirements.txt
       - name: Compile ${{ matrix.board }}

@@ -7,16 +7,21 @@ cannot tell you that the pinned ESPHome and the pinned ESPectre commit
 disagree about a header — which is the failure that reaches a user as a
 twenty-minute build that ends in a C++ error they did not write.
 
-So this links a real image. Two boards rather than six, because the two
-instruction sets are what actually differ: the Xtensa and the RISC-V
+So this links real images. Three boards rather than six: the two
+instruction sets are most of what differs — the Xtensa and the RISC-V
 toolchains are separate downloads, separate compilers and separate sets
-of chip headers, while ESP32-C3/C5/C6 differ from each other in ways
+of chip headers — and the C3 and C6 differ from each other in ways
 `esphome config` already covers.
+
+The C5 is the exception, added in 0.13.8. It is the only dual-band chip
+here, so it is the only one whose generated `wifi:` block carries a
+`band_mode:` at all, and it is the newest of them in ESP-IDF. A config
+that validates says nothing about whether that variant links.
 
 Run from anywhere:
 
-    python echolot/tools/compile_firmware.py            # esp32 and esp32c6
-    python echolot/tools/compile_firmware.py esp32c6    # just one
+    python echolot/tools/compile_firmware.py            # all three
+    python echolot/tools/compile_firmware.py esp32c5    # just one
 
 It is slow on a cold cache — ESP-IDF and a toolchain are around 2 GB per
 instruction set — and that is the price of knowing.
@@ -31,8 +36,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-#: One per instruction set. `chip_family` in the board registry says which.
-DEFAULT_BOARDS = ("esp32", "esp32c6")
+#: One per instruction set, plus the C5 for the reason in the module
+#: docstring. `chip_family` in the board registry says which is which.
+DEFAULT_BOARDS = ("esp32", "esp32c6", "esp32c5")
 
 #: A cold build downloads a toolchain and compiles ESP-IDF from scratch.
 TIMEOUT_SECONDS = 3600

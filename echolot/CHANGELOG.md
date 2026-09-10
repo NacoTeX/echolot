@@ -40,6 +40,14 @@ Sender abschalten, der Link muss ausfallen, auch wenn der Router weiter
 sendet. Ausdrücklich nicht gebaut: `LinkConfig`, `LinkSample`, ein
 Paar-Assistent, irgendeine Oberfläche.
 
+**Der C5 wird jetzt in CI wirklich gelinkt.** Bis 0.13.7 baute der
+Compile-Job je ein Board pro Befehlssatz, mit der Begründung, dass sich
+die RISC-V-Chips untereinander auf eine Weise unterscheiden, die
+`esphome config` bereits abdeckt. Für den C5 stimmt das seit dieser
+Version nicht mehr: er ist der einzige, dessen erzeugter `wifi:`-Block
+ein `band_mode:` trägt, und der jüngste von ihnen in ESP-IDF. Der
+PlatformIO-Cache läuft deshalb jetzt pro Board statt pro Befehlssatz.
+
 **Ein Profil weiß jetzt, auf welchem Funkband es gelernt wurde.** 2,4 GHz
 und 5 GHz sind zwei Messungen desselben Raums; was der leere Raum auf dem
 einen tut, sagt nichts über das andere. Ein Profil vom anderen Band macht
