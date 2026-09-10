@@ -1117,6 +1117,26 @@ def api_update_device(device_id: str, payload: dict) -> dict:
     return device.public()
 
 
+@app.patch("/api/devices/{device_id}/config")
+def api_reconfigure_device(device_id: str, payload: dict) -> dict:
+    """Change firmware options on an existing device.
+
+    Separate from PATCH on the device itself, because the consequence is
+    different: those fields take effect at once, these need a rebuild and
+    a flash before the chip knows about them. `firmware_behind_config`
+    in the response says whether that is now outstanding.
+    """
+    try:
+        device = devices.reconfigure(device_id, payload)
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    if device is None:
+        raise HTTPException(status_code=404, detail="Gerät nicht gefunden")
+    return device.public()
+
+
 @app.delete("/api/devices/{device_id}", status_code=204)
 def api_delete_device(device_id: str) -> None:
     if not devices.delete_device(device_id):

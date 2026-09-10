@@ -249,6 +249,24 @@ def collect_problems(
                     )
                 )
 
+        # The config moved and the chip did not. Not an error — the
+        # device works, it just works the way it was last flashed — but
+        # somebody changed a setting and is entitled to know it has not
+        # arrived yet.
+        if device.firmware_behind_config:
+            problems.append(
+                Problem(
+                    kind="firmware_behind_config",
+                    message=(
+                        f"„{label}“ wurde umkonfiguriert, aber noch nicht neu "
+                        "gebaut. Auf dem Gerät läuft weiter das zuletzt "
+                        "geflashte Image — Firmware neu bauen und übertragen."
+                    ),
+                    tab="devices",
+                    device_id=device.id,
+                )
+            )
+
         if device.ota_error:
             problems.append(
                 Problem(

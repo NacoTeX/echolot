@@ -19,7 +19,8 @@ async function loadBoards() {
     // on every other chip. Showing the control anywhere else would offer
     // a choice the hardware cannot make — so it is hidden *and* disabled,
     // because a disabled field is the one FormData leaves out.
-    const dualBand = new Set(boards.filter((b) => b.dual_band).map((b) => b.key));
+    dualBandBoards = new Set(boards.filter((b) => b.dual_band).map((b) => b.key));
+    const dualBand = dualBandBoards;
     const field = document.getElementById("wifi-band-field");
     const applyBand = () => {
       const offered = dualBand.has(select.value);
@@ -34,6 +35,11 @@ async function loadBoards() {
 }
 
 let kbPerPps = 0.09; // vom Backend überschrieben
+
+// Which boards offer a band at all. Filled by loadBoards(); until then
+// empty, which is the safe direction — the field stays hidden rather
+// than offering a radio the chip may not have.
+let dualBandBoards = new Set();
 
 // Voreinstellungen ersparen es, vier Parameter mit nicht offensichtlichen
 // Wechselwirkungen von Hand zu treffen.
@@ -165,6 +171,16 @@ function renderDevice(device, deviceCount) {
     ? `<p class="status status-err">${escapeHtml(device.build_error)}</p>`
     : "";
 
+  // Not an error — the device works, it just works the way it was last
+  // flashed. But somebody changed a setting and is entitled to know it
+  // has not arrived on the chip yet.
+  const staleLine = device.firmware_behind_config
+    ? `<p class="stale-line status status-warn">
+         Umkonfiguriert, aber noch nicht neu gebaut — auf dem Gerät läuft
+         weiter das zuletzt geflashte Image.
+       </p>`
+    : "";
+
   // Only offered after a failure the backend traced to the toolchain: the
   // button throws away a ~2 GB download, so it must not read as a routine
   // "try this" next to every build.
@@ -276,6 +292,81 @@ function renderDevice(device, deviceCount) {
          </div>`)
     : "";
 
+  // Editable at any point in a device's life, built or not. Changing one
+  // of these used to mean deleting the device and making a new one — and
+  // losing its entity ids, its learned profile and its recordings to
+  // change one number.
+  const configEditor = section("Firmware-Optionen ändern", `
+     <div class="config-editor">
+       <p class="hint">
+         Diese Werte stecken im Image. Nach dem Speichern muss die Firmware
+         neu gebaut und übertragen werden, sonst läuft auf dem Gerät weiter
+         die alte. Gerätename und Board lassen sich nicht ändern — dafür ist
+         ein neues Gerät der ehrliche Weg.
+       </p>
+       <label>Anzeigename
+         <input class="cfg" data-field="friendly_name" value="${escapeHtml(c.friendly_name || "")}">
+       </label>
+       <label>WLAN-Name (SSID)
+         <input class="cfg" data-field="wifi_ssid" maxlength="32" value="${escapeHtml(c.wifi_ssid || "")}">
+       </label>
+       <label>WLAN-Passwort
+         <input class="cfg" data-field="wifi_password" type="password" maxlength="64"
+                placeholder="unverändert lassen">
+       </label>
+       ${dualBandBoards.has(c.board) ? `
+       <label>WLAN-Band
+         <select class="cfg" data-field="wifi_band">
+           ${["2.4GHz", "5GHz", "auto"].map((b) => `
+             <option value="${b}"${c.wifi_band === b ? " selected" : ""}>${escapeHtml(BAND_LABELS[b] || b)}</option>`).join("")}
+         </select>
+         <span class="field-hint">
+           Gemessen ist bisher nur 2,4 GHz. Ein Bandwechsel entwertet ein
+           gelerntes Profil — es beschreibt dann eine andere Messung.
+         </span>
+       </label>` : ""}
+       <label>Erkennungsprofil
+         <select class="cfg" data-field="detection_algorithm">
+           <option value="lightweight"${c.detection_algorithm === "lightweight" ? " selected" : ""}>Lightweight</option>
+           <option value="high_accuracy"${c.detection_algorithm === "high_accuracy" ? " selected" : ""}>High Accuracy</option>
+         </select>
+       </label>
+       <label>Paketrate (Pakete/s)
+         <input class="cfg" data-field="csi_target_pps" type="number" min="1" max="500" value="${Number(c.csi_target_pps)}">
+       </label>
+       <label>Auswerteintervall (ms)
+         <input class="cfg" data-field="evaluation_interval_ms" type="number" min="10" max="10000" value="${Number(c.evaluation_interval_ms)}">
+       </label>
+       <label>Log-Level
+         <select class="cfg" data-field="log_level">
+           ${["NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"].map((l) => `
+             <option value="${l}"${c.log_level === l ? " selected" : ""}>${l}</option>`).join("")}
+         </select>
+       </label>
+       <label class="checkbox-field">
+         <input type="checkbox" class="cfg" data-field="web_server"${c.web_server ? " checked" : ""}>
+         <span>Statusseite auf dem Gerät</span>
+       </label>
+       <label class="checkbox-field">
+         <input type="checkbox" class="cfg" data-field="diagnostics"${c.diagnostics ? " checked" : ""}>
+         <span>Diagnose-Sensoren</span>
+       </label>
+       <label class="checkbox-field">
+         <input type="checkbox" class="cfg" data-field="direct_api"${c.direct_api ? " checked" : ""}>
+         <span>Direkte Telemetrie (Port 62587)</span>
+       </label>
+       <label class="checkbox-field">
+         <input type="checkbox" class="cfg" data-field="api_encryption"${c.api_encryption ? " checked" : ""}>
+         <span>API-Verschlüsselung
+           <span class="field-hint">
+             Baut derzeit nicht — siehe „Der Verschlüsselungscode“ in der Doku.
+           </span>
+         </span>
+       </label>
+       <button type="button" class="save-config-btn">Firmware-Optionen speichern</button>
+       <p class="config-result status" hidden></p>
+     </div>`);
+
   // The summary carries the two things worth scanning a list for: what the
   // build is doing, and — once built — whether the room is occupied.
   const summaryLive = built
@@ -299,6 +390,7 @@ function renderDevice(device, deviceCount) {
       <div class="device-body">
         ${errorLine}
         ${otaLine}
+        ${staleLine}
         <div class="device-actions">
           <button class="build-btn${built ? " btn-secondary" : ""}" ${canBuild ? "" : "disabled"}>${built ? "Neu bauen" : "Firmware bauen"}</button>
           ${repairBlock}
@@ -307,6 +399,7 @@ function renderDevice(device, deviceCount) {
         </div>
         ${liveBlock}
         ${detailSections}
+        ${configEditor}
         ${logBlock}
       </div>
     </details>`;
@@ -537,6 +630,9 @@ async function loadDevices() {
     const saveEntitiesBtn = el.querySelector(".save-entities-btn");
     if (saveEntitiesBtn) saveEntitiesBtn.addEventListener("click", () => saveEntityIds(id, el));
 
+    const saveConfigBtn = el.querySelector(".save-config-btn");
+    if (saveConfigBtn) saveConfigBtn.addEventListener("click", () => saveConfig(id, el));
+
     const addressInput = el.querySelector(".address-input");
     if (addressInput) {
       addressInput.addEventListener("change", () =>
@@ -693,6 +789,81 @@ async function saveEntityIds(id, cardEl) {
   } catch (err) {
     // Best-effort — the entity editor has no dedicated error slot; a failed
     // save just leaves the live state as before.
+  }
+}
+
+// The "your change has not reached the chip yet" line, added or removed
+// without redrawing the card around it.
+function markStale(cardEl, stale) {
+  const existing = cardEl.querySelector(".stale-line");
+  if (!stale) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return;
+  const body = cardEl.querySelector(".device-body");
+  const line = document.createElement("p");
+  line.className = "stale-line status status-warn";
+  line.textContent =
+    "Umkonfiguriert, aber noch nicht neu gebaut — auf dem Gerät läuft weiter "
+    + "das zuletzt geflashte Image.";
+  body.insertBefore(line, body.firstElementChild);
+}
+
+async function saveConfig(id, cardEl) {
+  const out = cardEl.querySelector(".config-result");
+  const button = cardEl.querySelector(".save-config-btn");
+  const patch = {};
+  for (const field of cardEl.querySelectorAll(".cfg")) {
+    const name = field.dataset.field;
+    if (field.type === "checkbox") {
+      patch[name] = field.checked;
+    } else if (field.type === "number") {
+      patch[name] = Number(field.value);
+    } else if (name === "wifi_password") {
+      // Empty means "leave it alone": the API never hands the real one
+      // back, so sending the placeholder would overwrite a working
+      // password with asterisks.
+      if (field.value) patch[name] = field.value;
+    } else {
+      patch[name] = field.value;
+    }
+  }
+
+  button.disabled = true;
+  out.hidden = false;
+  out.className = "config-result status status-pending";
+  out.textContent = "Wird gespeichert…";
+  try {
+    const res = await fetch(`api/devices/${id}/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      out.className = "config-result status status-err";
+      out.textContent = Array.isArray(body.detail)
+        ? body.detail.map((d) => d.msg).join(" · ")
+        : body.detail || "Speichern fehlgeschlagen";
+      return;
+    }
+    out.className = "config-result status status-ok";
+    out.textContent = "Gespeichert. Jetzt neu bauen und übertragen.";
+    // Deliberately not a full reload: re-rendering the list replaces this
+    // card, which collapses the section that was just used and throws
+    // away the confirmation with it. Only two things on screen can have
+    // changed, so both are updated in place.
+    markStale(cardEl, body.firmware_behind_config);
+    const meta = cardEl.querySelector(".device-meta");
+    if (meta && body.config) {
+      meta.textContent = `${body.config.name} · ${body.config.board}${bandSuffix(body.config)} · ${body.config.detection_algorithm}`;
+    }
+  } catch (err) {
+    out.className = "config-result status status-err";
+    out.textContent = "Backend nicht erreichbar";
+  } finally {
+    button.disabled = false;
   }
 }
 

@@ -2,6 +2,32 @@
 
 ## 0.13.9
 
+**Firmware-Optionen lassen sich ändern, ohne das Gerät wegzuwerfen.** Bis
+hierhin war jedes Firmware-Feld bei der Anlage endgültig: eine andere
+Paketrate hieß Gerät löschen und neu anlegen — und damit seine ID, seine
+Entity-IDs in Home Assistant, sein gelerntes Profil, seine Aufnahmen und
+seine Zugangsdaten verlieren, um eine Zahl zu ändern.
+
+Der Patch wird in die gespeicherte Konfiguration gemischt und läuft durch
+`DeviceCreate`, also durch dieselben Regeln wie beim Anlegen statt durch
+eine zweite Abschrift davon. Abgelehnt wird auf einer Kopie, das
+gespeicherte Gerät bleibt in dem Fall unangetastet. Knotenname und Board
+bleiben unveränderlich — der eine trägt jede Entity-ID und den
+OTA-Hostnamen, das andere ist schlicht andere Hardware.
+
+Dazu die zweite Hälfte derselben Lücke: **Konfiguration und geflashtes
+Image können jetzt auseinanderlaufen, also sagt das jemand.** Der
+Fingerabdruck im Build-Manifest wird gegen den aktuellen verglichen;
+`firmware_behind_config` steht am Gerät, auf der Karte und in der
+Übersicht. Auch der Anzeigename zählt dazu — das Template rendert ihn in
+die ESPHome-Konfiguration, und Home Assistant leitet daraus jede
+Entity-ID ab. Das war eine Annahme von mir, die beim Nachsehen im
+Template nicht standhielt.
+
+Damit trägt nebenbei die Messdefinition von 0.13.8: die Bandprüfung am
+Profil war eine Absicherung für wiederhergestellte Daten, weil sich kein
+Band ändern ließ. Jetzt lässt es sich ändern.
+
 **Paarmodus Stufe 2, die Software-Hälfte.** Ohne Hardware lässt sich kein
 Funklink belegen — aber vier Dinge lassen sich am Quelltext nachlesen,
 und sie ändern den Plan:

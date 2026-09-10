@@ -6,6 +6,7 @@ keeps this phase free of a database dependency).
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -48,6 +49,19 @@ BAND_AUTO = "auto"
 #: cannot be selected by anybody who merely wants it.
 MODE_ROUTER = "router"
 MODE_PEER_LINK = "peer_link"
+
+#: Config fields that must never reach a manifest, a log or a hash.
+_SECRET_CONFIG_FIELDS = ("wifi_password",)
+
+#: Firmware fields nobody may change on an existing device.
+#:
+#: `name` is what Home Assistant builds every entity id from, and what
+#: the OTA hostname resolves to; renaming here would orphan the entities
+#: the zones point at without saying so. `board` is another chip, so
+#: another image — and a baseline learned on the old one describes
+#: different hardware. Both are reasons to make a new device, which keeps
+#: the old one's recordings until somebody deletes it deliberately.
+IMMUTABLE_CONFIG_FIELDS = ("name", "board")
 
 
 _lock = threading.Lock()
@@ -176,6 +190,15 @@ class DeviceCreate(BaseModel):
                 "auf 2,4 GHz."
             )
         return self
+
+
+def config_fingerprint(device) -> str:
+    """A short hash of what would be built, with the secrets left out."""
+    payload = device.config.model_dump()
+    for field in _SECRET_CONFIG_FIELDS:
+        payload.pop(field, None)
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def get_board_safely(key) -> Board:
@@ -352,6 +375,27 @@ class Device(BaseModel):
     #: reached one device at a time and on purpose.
     _SECRET_FIELDS = ("api_encryption_key", "ota_password")
 
+    @property
+    def firmware_behind_config(self) -> bool:
+        """Whether the flashed image was built from a different config.
+
+        Only answerable for a device that has been built: an unbuilt one
+        has nothing for the config to be ahead of, and calling it stale
+        would put a warning on every new device. A manifest from before
+        the hash existed says nothing either, and a warning nobody can
+        clear is worse than none.
+
+        The comparison is the fingerprint, so it ignores exactly what the
+        fingerprint ignores: the Wi-Fi password, and nothing else. Even
+        the display name counts — the template renders `friendly_name:`
+        into the ESPHome config, and Home Assistant derives the device
+        name, and with it every entity id, from what the firmware
+        reports. A rename that is never flashed is a rename that never
+        happens.
+        """
+        recorded = (self.build_manifest or {}).get("config_hash")
+        return bool(recorded) and recorded != config_fingerprint(self)
+
     def public(self) -> dict:
         """Serialize without anything secret.
 
@@ -368,6 +412,7 @@ class Device(BaseModel):
         # Enough for the UI to know there is something to show, without
         # showing it.
         data["has_credentials"] = bool(self.api_encryption_key)
+        data["firmware_behind_config"] = self.firmware_behind_config
         data["firmware_size"] = self.firmware_size()
         return data
 
@@ -385,6 +430,56 @@ class Device(BaseModel):
                 self.config.friendly_name = value
             else:
                 setattr(self, field, value)
+
+
+def reconfigure(device_id: str, changes: dict) -> "Device | None":
+    """Change firmware options on an existing device, keeping the device.
+
+    Deleting and recreating used to be the only way to change one number,
+    and it cost the device's id, its Home Assistant entity ids, its
+    learned profile, its recordings and its credentials.
+
+    The patch is merged into the stored config and the result goes
+    through `DeviceCreate` — the whole model, not a second copy of some
+    of its rules. So a band the board has no radio for, a password too
+    short for WPA and a packet rate outside ESPectre's range are all
+    refused here for the same reason and with the same message as at
+    creation.
+
+    Returns None when the device is gone. Raises ValueError for anything
+    the config would not accept; the stored device is left alone in that
+    case, because the merge happens on a copy.
+    """
+    unknown = set(changes) - set(DeviceCreate.model_fields)
+    if unknown:
+        raise ValueError(f"Unbekannte Konfigurationsfelder: {', '.join(sorted(unknown))}")
+
+    frozen = set(changes) & set(IMMUTABLE_CONFIG_FIELDS)
+    if frozen:
+        raise ValueError(
+            f"{', '.join(sorted(frozen))} lässt sich an einem bestehenden Gerät "
+            "nicht ändern — dafür ist ein neues Gerät der ehrliche Weg. Der "
+            "Knotenname trägt jede Entity-ID in Home Assistant und den "
+            "OTA-Hostnamen, und ein anderes Board ist andere Hardware, über die "
+            "ein gelerntes Profil nichts sagt."
+        )
+
+    with _lock:
+        index = _read_index()
+        stored = index.get(device_id)
+        if stored is None:
+            return None
+        record = dict(stored)
+        raw = dict(record.get("config") or {})
+        _migrate_config(raw)
+        # Validated before anything is written, so a refusal leaves the
+        # stored device exactly as it was.
+        record["config"] = DeviceCreate.model_validate({**raw, **changes}).model_dump()
+        record["updated_at"] = time.time()
+        device = Device.model_validate(record)
+        index[device_id] = device.model_dump()
+        _write_index(index)
+        return device
 
 
 def _read_index() -> dict[str, dict]:

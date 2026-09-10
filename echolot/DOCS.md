@@ -1233,6 +1233,53 @@ oder irgendeine Oberfläche. Speicher und Bedienung für eine Funkstrecke
 zu bauen, die kein Gerät herstellen kann, erweckt genau den Eindruck, den
 das Ganze vermeiden soll.
 
+### Firmware-Optionen ändern, ohne das Gerät wegzuwerfen
+
+Bis 0.13.9 war jedes Firmware-Feld bei der Geräteanlage endgültig. Eine
+andere Paketrate hieß: Gerät löschen, neu anlegen — und damit seine ID,
+seine Home-Assistant-Entity-IDs, sein gelerntes Profil, seine Aufnahmen
+und seine Zugangsdaten verlieren, um eine Zahl zu ändern.
+
+`PATCH /api/devices/{id}/config` ändert sie an Ort und Stelle. Der Patch
+wird in die gespeicherte Konfiguration gemischt, und das Ergebnis läuft
+durch **`DeviceCreate`** — das ganze Modell, keine zweite Abschrift
+einzelner Regeln. Ein Band, für das das Board kein Funkmodul hat, ein zu
+kurzes WPA-Passwort und eine Paketrate außerhalb von ESPectres Bereich
+werden hier also aus demselben Grund und mit derselben Meldung
+abgelehnt wie beim Anlegen. Wird etwas abgelehnt, bleibt das gespeicherte
+Gerät unangetastet, weil die Mischung auf einer Kopie passiert.
+
+**Zwei Felder bleiben unveränderlich.** Der Knotenname trägt jede
+Entity-ID in Home Assistant und den OTA-Hostnamen; ihn hier zu ändern
+würde die Entities verwaisen lassen, auf die Zonen zeigen. Und ein
+anderes Board ist andere Hardware, über die ein gelerntes Profil nichts
+sagt. Für beides ist ein neues Gerät der ehrliche Weg — das alte behält
+seine Aufnahmen, bis jemand es absichtlich löscht.
+
+**Die Konfiguration kann der Firmware jetzt davonlaufen**, also sagt das
+jemand. Das Build-Manifest trägt seit 0.13.5 einen Fingerabdruck der
+Konfiguration, aus der das Image gebaut wurde; stimmt er nicht mehr mit
+dem aktuellen überein, steht `firmware_behind_config` am Gerät, auf der
+Karte und in der Übersicht.
+
+Nur für gebaute Geräte: ein ungebautes hat nichts, wovon die
+Konfiguration vorauseilen könnte, und ein Manifest von vor dem
+Fingerabdruck sagt ebenfalls nichts — eine Warnung, die niemand
+wegbekommt, ist schlimmer als keine.
+
+Verglichen wird der Fingerabdruck, also ignoriert der Vergleich genau
+das, was der Fingerabdruck ignoriert: das WLAN-Passwort, sonst nichts.
+**Auch der Anzeigename zählt** — das Template rendert `friendly_name:` in
+die ESPHome-Konfiguration, und Home Assistant leitet daraus den
+Gerätenamen und jede Entity-ID ab. Eine Umbenennung, die nie geflasht
+wird, ist eine Umbenennung, die nie passiert. Das war eine Annahme von
+mir, die beim Nachsehen im Template nicht standhielt.
+
+Nebenwirkung, und eine erwünschte: die Messdefinition am Profil (siehe
+„Auf welchem Funkband gemessen wird") war bis hierhin eine Absicherung
+für wiederhergestellte Daten, weil sich kein Band ändern ließ. Jetzt
+lässt es sich ändern, und die Prüfung trägt.
+
 ### Wer den Zonenzustand besitzt
 
 Genau eine Komponente. `compute_zone_state` verändert den Zonen-Runtime —
