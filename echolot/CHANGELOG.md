@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.13.9
+
+**Aufzeichnungen liegen jetzt in SQLite.** Sie lagen in einer JSON-Datei,
+und jeder Schreibvorgang serialisierte die *gesamte* Historie: 171 ms bei
+sechs Sitzungen mit 120.000 Messwerten, und `json.dumps` gibt den GIL
+nicht frei, das sind also 171 ms, in denen der Interpreter nichts anderes
+tut. 0.13.5 holte das vom heißen Pfad — die richtige Antwort auf „der
+Event-Loop steht" und gar keine auf „ein Schreibvorgang kostet die ganze
+Historie".
+
+Ein Messwert ist jetzt ein `INSERT`. Dieselbe Messung, dieselbe Maschine:
+
+| ein Speichervorgang mit 100 neuen Messwerten | ohne Bestand | mit 41.000 Messwerten |
+| --- | --- | --- |
+| JSON | 0,49 ms | 66,5 ms |
+| SQLite | 0,35 ms | 0,33 ms |
+
+Der heiße Pfad kostet 7,2 µs pro Messwert. Im Speicher bleiben die
+Metadaten und die Messwerte der laufenden Aufzeichnung, von der es
+bauartbedingt höchstens eine gibt.
+
+**Die Migration läuft einmal und wirft nichts weg** — die alte Datei wird
+übernommen und dann umbenannt statt gelöscht. Eine Migration, die ihre
+eigene Eingabe zerstört, ist keine, der man trauen sollte.
+
+Eine Falle, gefunden beim Ausführen: `INSERT OR REPLACE` auf die
+Sitzungszeile löst `ON DELETE CASCADE` aus und nimmt sämtliche Messwerte
+mit. Eine Aufzeichnung zu beenden schrieb also ihre Metadaten und leerte
+sie in derselben Anweisung. Jetzt ein echtes Upsert, mit fünf Tests, die
+fehlschlagen, wenn jemand es zurückdreht.
+
+**Der Verlaufsimport schafft jetzt acht Stunden statt anderthalb.** Die
+90 Minuten waren eine Folge des Dateiformats, nicht der Sache.
+
+**Firmware-Optionen lassen sich ändern, ohne das Gerät wegzuwerfen.** Bis
+hierhin war jedes Firmware-Feld bei der Anlage endgültig: eine andere
+Paketrate hieß Gerät löschen und neu anlegen — und damit seine ID, seine
+Entity-IDs in Home Assistant, sein gelerntes Profil, seine Aufnahmen und
+seine Zugangsdaten verlieren, um eine Zahl zu ändern.
+
+Der Patch wird in die gespeicherte Konfiguration gemischt und läuft durch
+`DeviceCreate`, also durch dieselben Regeln wie beim Anlegen statt durch
+eine zweite Abschrift davon. Abgelehnt wird auf einer Kopie, das
+gespeicherte Gerät bleibt in dem Fall unangetastet. Knotenname und Board
+bleiben unveränderlich — der eine trägt jede Entity-ID und den
+OTA-Hostnamen, das andere ist schlicht andere Hardware.
+
+Dazu die zweite Hälfte derselben Lücke: **Konfiguration und geflashtes
+Image können jetzt auseinanderlaufen, also sagt das jemand.** Der
+Fingerabdruck im Build-Manifest wird gegen den aktuellen verglichen;
+`firmware_behind_config` steht am Gerät, auf der Karte und in der
+Übersicht. Auch der Anzeigename zählt dazu — das Template rendert ihn in
+die ESPHome-Konfiguration, und Home Assistant leitet daraus jede
+Entity-ID ab. Das war eine Annahme von mir, die beim Nachsehen im
+Template nicht standhielt.
+
+Damit trägt nebenbei die Messdefinition von 0.13.8: die Bandprüfung am
+Profil war eine Absicherung für wiederhergestellte Daten, weil sich kein
+Band ändern ließ. Jetzt lässt es sich ändern.
+
+**Paarmodus Stufe 2, die Software-Hälfte.** Ohne Hardware lässt sich kein
+Funklink belegen — aber vier Dinge lassen sich am Quelltext nachlesen,
+und sie ändern den Plan:
+
+1. Ein echter A→B-Link ist **ESP-NOW-Broadcast auf festem Kanal ohne
+   AP-Assoziation**, wie in Espressifs eigenem Beispielpaar. Nicht UDP
+   über den Router.
+2. **ESPectre kann solche Frames nicht auswerten.** Sein Frame-Filter am
+   gepinnten Commit parst LLC/SNAP → IPv4 → ICMP/UDP/TCP; ein
+   ESP-NOW-Action-Frame hat davon nichts und fällt durch.
+3. **ESP-IDF hat genau einen CSI-Callback.** Solange ESPectre ihn hält,
+   bekommt daneben niemand CSI. Zusammen mit (2): Routermessung und
+   Paarlink laufen nicht gleichzeitig auf einem Chip — ein Paargerät ist
+   eine andere Firmware, kein Betriebsmodus.
+4. Ein Paargerät auf festem Kanal und ein Home-Assistant-Uplink über
+   denselben Chip vertragen sich nur, solange der Router den Kanal nicht
+   wechselt.
+
+Dazu ein Empfänger-Patch (38 Zeilen gegen `espressif/esp-csi` bei
+`8633d67`) und `tools/peer_link_report.py`. Der Patch existiert, weil der
+Abschalttest sonst **nicht falsifizierbar** wäre: Espressifs Beispiel
+verwirft alles außer Peer-Frames, Stille am Ende einer Aufnahme heißt
+also „Link tot" oder „Board neu gestartet" oder „Kabel raus", und alle
+drei sehen gleich aus. Der Patch zählt Peer- und Fremd-Frames und meldet
+sie einmal pro Sekunde — **aus einer eigenen Task**, denn wenn der Peer
+aus ist und der Raum still, läuft gar kein CSI-Callback, und genau dann
+wird der Beweis gebraucht.
+
+Das Werkzeug urteilt entsprechend vierwertig: bestanden, nicht
+durchgeführt, unentschieden, nicht auswertbar. „Unentschieden" und
+„durchgefallen" verlangen verschiedene Reparaturen.
+
+Auf Hardware ist nach wie vor nichts belegt. Der Aufbau steht in
+`experiments/peer-link/`, wird nicht ins Add-on-Image kopiert und
+verspricht nichts.
+
 ## 0.13.8
 
 **Der ESP32-C5 misst jetzt auf dem Band, das jemand gewählt hat.** Das

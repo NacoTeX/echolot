@@ -32,11 +32,22 @@ from app import samples as samples_module
 from app.ha_sampler import _float, _stamp, build_sample
 from app.telemetry import Sample
 
-#: The recorder can hand back a great deal at once, and every sample is
-#: held in memory and then written to disk as JSON. Ninety minutes at the
-#: busiest observed rate is about 17 000 readings, comfortably inside
-#: CalibrationStore's own ceiling.
-MAX_RANGE_SECONDS = 90 * 60
+#: The recorder can hand back a great deal at once, and the whole period
+#: is merged in memory before it is stored.
+#:
+#: Ninety minutes until 0.13.9, because the store then wrote every
+#: recording as one JSON file and a long import made every later save
+#: more expensive. That reason is gone — a recording is rows in a
+#: database now — so the ceiling is what memory and patience allow
+#: rather than what the file format did. Eight hours at the busiest
+#: observed rate is roughly 90 000 readings, which the store holds and
+#: `adopt` writes in one transaction.
+#:
+#: Still bounded, and deliberately: an unbounded range is a way to ask
+#: Home Assistant's recorder for more than it can answer, and the
+#: refusal should come from here with an explanation rather than from a
+#: timeout somewhere else.
+MAX_RANGE_SECONDS = 8 * 60 * 60
 
 #: Below this there is nothing worth importing, and the caller has almost
 #: certainly mistyped a date.
@@ -58,7 +69,7 @@ def check_range(start: datetime, end: datetime) -> float:
         )
     if span > MAX_RANGE_SECONDS:
         raise RangeRejected(
-            f"Der Zeitraum ist zu lang — höchstens {MAX_RANGE_SECONDS // 60} Minuten "
+            f"Der Zeitraum ist zu lang — höchstens {MAX_RANGE_SECONDS // 3600} Stunden "
             "auf einmal"
         )
     return span

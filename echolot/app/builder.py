@@ -18,6 +18,7 @@ from app.firmware import ESPECTRE_REF, CAPABILITIES as FIRMWARE_CAPABILITIES
 from app.devices import (
     BuildStatus,
     Device,
+    config_fingerprint,
     config_path,
     device_dir,
     effective_band,
@@ -117,10 +118,6 @@ def reset_toolchain(board) -> bool:
     return True
 
 
-#: Fields that must never reach a manifest or a log.
-_SECRET_CONFIG_FIELDS = ("wifi_password",)
-
-
 def esphome_version() -> str:
     try:
         from importlib.metadata import version
@@ -216,15 +213,6 @@ def framework_base(build_dir: Path | None = None) -> dict:
     return base
 
 
-def config_fingerprint(device: Device) -> str:
-    """A short hash of what was built, with the secrets left out."""
-    payload = device.config.model_dump()
-    for field in _SECRET_CONFIG_FIELDS:
-        payload.pop(field, None)
-    encoded = json.dumps(payload, sort_keys=True, default=str).encode()
-    return hashlib.sha256(encoded).hexdigest()[:16]
-
-
 def build_manifest(device: Device, firmware: Path | None) -> dict:
     """What this artefact was made of, so a later question has an answer.
 
@@ -235,8 +223,9 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
     id, and records the framework and toolchain packages that were
     actually installed when the image was linked.
 
-    Credentials never appear here — see `_SECRET_CONFIG_FIELDS` and the
-    fingerprint below, which hashes the config with them removed.
+    Credentials never appear here — see `devices._SECRET_CONFIG_FIELDS`
+    and `devices.config_fingerprint`, which hashes the config with them
+    removed.
     """
     manifest = {
         # A single build, nameable in a bug report. Two images built from
