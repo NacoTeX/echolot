@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.13.9
+
+**Paarmodus Stufe 2, die Software-Hälfte.** Ohne Hardware lässt sich kein
+Funklink belegen — aber vier Dinge lassen sich am Quelltext nachlesen,
+und sie ändern den Plan:
+
+1. Ein echter A→B-Link ist **ESP-NOW-Broadcast auf festem Kanal ohne
+   AP-Assoziation**, wie in Espressifs eigenem Beispielpaar. Nicht UDP
+   über den Router.
+2. **ESPectre kann solche Frames nicht auswerten.** Sein Frame-Filter am
+   gepinnten Commit parst LLC/SNAP → IPv4 → ICMP/UDP/TCP; ein
+   ESP-NOW-Action-Frame hat davon nichts und fällt durch.
+3. **ESP-IDF hat genau einen CSI-Callback.** Solange ESPectre ihn hält,
+   bekommt daneben niemand CSI. Zusammen mit (2): Routermessung und
+   Paarlink laufen nicht gleichzeitig auf einem Chip — ein Paargerät ist
+   eine andere Firmware, kein Betriebsmodus.
+4. Ein Paargerät auf festem Kanal und ein Home-Assistant-Uplink über
+   denselben Chip vertragen sich nur, solange der Router den Kanal nicht
+   wechselt.
+
+Dazu ein Empfänger-Patch (38 Zeilen gegen `espressif/esp-csi` bei
+`8633d67`) und `tools/peer_link_report.py`. Der Patch existiert, weil der
+Abschalttest sonst **nicht falsifizierbar** wäre: Espressifs Beispiel
+verwirft alles außer Peer-Frames, Stille am Ende einer Aufnahme heißt
+also „Link tot" oder „Board neu gestartet" oder „Kabel raus", und alle
+drei sehen gleich aus. Der Patch zählt Peer- und Fremd-Frames und meldet
+sie einmal pro Sekunde — **aus einer eigenen Task**, denn wenn der Peer
+aus ist und der Raum still, läuft gar kein CSI-Callback, und genau dann
+wird der Beweis gebraucht.
+
+Das Werkzeug urteilt entsprechend vierwertig: bestanden, nicht
+durchgeführt, unentschieden, nicht auswertbar. „Unentschieden" und
+„durchgefallen" verlangen verschiedene Reparaturen.
+
+Auf Hardware ist nach wie vor nichts belegt. Der Aufbau steht in
+`experiments/peer-link/`, wird nicht ins Add-on-Image kopiert und
+verspricht nichts.
+
 ## 0.13.8
 
 **Der ESP32-C5 misst jetzt auf dem Band, das jemand gewählt hat.** Das

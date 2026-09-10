@@ -12,6 +12,12 @@ die Messdefinition am Profil. `peer_link` ist nicht wählbar, weil keine
 Firmware `supports_peer_rx` meldet. **Kein Schritt hier darf als
 erledigt gelten, weil er beschrieben ist.**
 
+> **Stand 0.13.9:** Die Software-Hälfte von Stufe 2 ist gebaut und liegt
+> in [`experiments/peer-link/`](../experiments/peer-link/README.md) — vier
+> Befunde aus dem Quelltext, der Empfänger-Patch, der den Abschalttest
+> überhaupt falsifizierbar macht, und `tools/peer_link_report.py`, das
+> eine Aufnahme zum Urteil macht. Auf Hardware ist davon nichts belegt.
+
 ## Warum überhaupt ein Nachweis nötig ist
 
 `csi_traffic_mode: external` ist am gepinnten ESPectre-Commit
@@ -77,6 +83,14 @@ Detektor läuft. Zuordnung über den echten 802.11-Sender, nicht über eine
 IP.
 
 ### 2.4 Der Abschalttest
+
+> Durchführung und Auswertung stehen jetzt ausformuliert in
+> [`experiments/peer-link/README.md`](../experiments/peer-link/README.md).
+> Kurz: das Beispiel verwirft alles außer Peer-Frames, deshalb ist Stille
+> am Ende einer Aufnahme nicht von einem abgestürzten Empfänger zu
+> unterscheiden. Der Patch dort lässt den Empfänger einmal pro Sekunde
+> mitzählen, aus einer eigenen Task — sonst schweigt auch der Herzschlag,
+> sobald es nichts zu hören gibt.
 
 Der einzige Versuch, der den Link wirklich beweist:
 
@@ -179,6 +193,10 @@ Aufstellungsoption beschrieben — nicht als bessere.
 
 ## Was Echolot dafür schon mitbringt
 
+- Den Versuchsaufbau samt Auswertung:
+  [`experiments/peer-link/`](../experiments/peer-link/README.md) und
+  `tools/peer_link_report.py`. Das Urteil ist vierwertig — „unentschieden"
+  und „durchgefallen" verlangen verschiedene Reparaturen.
 - `sensing_mode` am Gerät, mit `router` als Vorgabe und `peer_link`
   hinter einer Fähigkeitsprüfung.
 - `firmware_capabilities` im Build-Manifest: `supports_router`,

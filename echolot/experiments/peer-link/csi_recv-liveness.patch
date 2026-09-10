@@ -1,0 +1,71 @@
+diff --git a/examples/get-started/csi_recv/main/app_main.c b/examples/get-started/csi_recv/main/app_main.c
+index 4932cd2..b37ef39 100644
+--- a/examples/get-started/csi_recv/main/app_main.c
++++ b/examples/get-started/csi_recv/main/app_main.c
+@@ -25,6 +25,9 @@
+ #include "esp_netif.h"
+ #include "esp_now.h"
+ #include "esp_csi_gain_ctrl.h"
++#include "esp_timer.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
+ 
+ #define CONFIG_LESS_INTERFERENCE_CHANNEL   11
+ #if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C61 || (CONFIG_IDF_TARGET_ESP32C6 && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0))
+@@ -56,6 +59,36 @@
+ static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
+ static const char *TAG = "csi_recv";
+ 
++/**
++ * Frames seen since the last CSI_STAT line, split by whether the 802.11
++ * transmitter was the peer. Written from the CSI callback, read and
++ * cleared from the liveness task, so both go through GCC atomics.
++ */
++static volatile uint32_t s_peer_frames = 0;
++static volatile uint32_t s_other_frames = 0;
++
++/**
++ * One line a second saying "I am alive, and this is what I heard".
++ *
++ * A separate task on purpose, not a print from the CSI callback. When
++ * the peer is switched off *and* the room happens to be quiet, no
++ * callback runs at all — and that is exactly the moment the shutdown
++ * test needs evidence that the receiver is still there. A heartbeat that
++ * stops when there is nothing to hear cannot tell a dead link from a
++ * dead board.
++ */
++static void csi_stat_task(void *arg)
++{
++    (void)arg;
++    for (;;) {
++        vTaskDelay(pdMS_TO_TICKS(1000));
++        const uint32_t peer = __atomic_exchange_n(&s_peer_frames, 0, __ATOMIC_RELAXED);
++        const uint32_t other = __atomic_exchange_n(&s_other_frames, 0, __ATOMIC_RELAXED);
++        ets_printf("CSI_STAT,%lld,%lu,%lu\n", esp_timer_get_time() / 1000,
++                   (unsigned long)peer, (unsigned long)other);
++    }
++}
++
+ static void wifi_init()
+ {
+     ESP_ERROR_CHECK(esp_event_loop_create_default());
+@@ -142,9 +175,12 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
+     }
+ 
+     if (memcmp(info->mac, CONFIG_CSI_SEND_MAC, 6)) {
++        __atomic_fetch_add(&s_other_frames, 1, __ATOMIC_RELAXED);
+         return;
+     }
+ 
++    __atomic_fetch_add(&s_peer_frames, 1, __ATOMIC_RELAXED);
++
+     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
+     static int s_count = 0;
+     float compensate_gain = 1.0f;
+@@ -294,4 +330,6 @@ void app_main()
+     wifi_esp_now_init(peer);
+ 
+     wifi_csi_init();
++
++    xTaskCreate(csi_stat_task, "csi_stat", 3072, NULL, 1, NULL);
+ }
