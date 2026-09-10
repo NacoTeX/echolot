@@ -2,6 +2,38 @@
 
 ## 0.13.9
 
+**Aufzeichnungen liegen jetzt in SQLite.** Sie lagen in einer JSON-Datei,
+und jeder Schreibvorgang serialisierte die *gesamte* Historie: 171 ms bei
+sechs Sitzungen mit 120.000 Messwerten, und `json.dumps` gibt den GIL
+nicht frei, das sind also 171 ms, in denen der Interpreter nichts anderes
+tut. 0.13.5 holte das vom heißen Pfad — die richtige Antwort auf „der
+Event-Loop steht" und gar keine auf „ein Schreibvorgang kostet die ganze
+Historie".
+
+Ein Messwert ist jetzt ein `INSERT`. Dieselbe Messung, dieselbe Maschine:
+
+| ein Speichervorgang mit 100 neuen Messwerten | ohne Bestand | mit 41.000 Messwerten |
+| --- | --- | --- |
+| JSON | 0,49 ms | 66,5 ms |
+| SQLite | 0,35 ms | 0,33 ms |
+
+Der heiße Pfad kostet 7,2 µs pro Messwert. Im Speicher bleiben die
+Metadaten und die Messwerte der laufenden Aufzeichnung, von der es
+bauartbedingt höchstens eine gibt.
+
+**Die Migration läuft einmal und wirft nichts weg** — die alte Datei wird
+übernommen und dann umbenannt statt gelöscht. Eine Migration, die ihre
+eigene Eingabe zerstört, ist keine, der man trauen sollte.
+
+Eine Falle, gefunden beim Ausführen: `INSERT OR REPLACE` auf die
+Sitzungszeile löst `ON DELETE CASCADE` aus und nimmt sämtliche Messwerte
+mit. Eine Aufzeichnung zu beenden schrieb also ihre Metadaten und leerte
+sie in derselben Anweisung. Jetzt ein echtes Upsert, mit fünf Tests, die
+fehlschlagen, wenn jemand es zurückdreht.
+
+**Der Verlaufsimport schafft jetzt acht Stunden statt anderthalb.** Die
+90 Minuten waren eine Folge des Dateiformats, nicht der Sache.
+
 **Firmware-Optionen lassen sich ändern, ohne das Gerät wegzuwerfen.** Bis
 hierhin war jedes Firmware-Feld bei der Anlage endgültig: eine andere
 Paketrate hieß Gerät löschen und neu anlegen — und damit seine ID, seine

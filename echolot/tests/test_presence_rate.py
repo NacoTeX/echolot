@@ -355,7 +355,10 @@ def test_the_route_reproduces_the_analysis(tmp_path, monkeypatch):
 
     session = store.create("probe", name="Analyse")
     with store._lock:  # noqa: SLF001 - loading a recorded session, not a live one
-        store._sessions[session["id"]]["samples"] = [
+        # The rows of the *recording* session, which is where they live
+        # now — the store keeps only that one session's readings in
+        # memory and everything else in the database.
+        store._active_samples = [
             {**row, "threshold": 0.5, "motion": False}
             for row in load("flat_occupied_room_empty.csv") + load("couch_still.csv")
         ]

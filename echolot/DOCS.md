@@ -963,9 +963,16 @@ laufende Aufzeichnung endet, und die Sitzung wird fertig geschrieben
 statt gestartet und gestoppt. Sie trägt `source: "history"`, damit später
 niemand sie für etwas hält, das jemand durchgesessen hat.
 
-Grenzen: höchstens 90 Minuten pro Import (ein Zeitraum wird vollständig
-im Speicher zusammengeführt und als JSON abgelegt), mindestens 30
-Sekunden, und der Recorder muss den Zeitraum noch haben.
+Grenzen: höchstens **acht Stunden** pro Import (ein Zeitraum wird
+vollständig im Speicher zusammengeführt), mindestens 30 Sekunden, und der
+Recorder muss den Zeitraum noch haben.
+
+Bis 0.13.8 waren es 90 Minuten, weil eine Aufzeichnung damals eine
+JSON-Datei war und ein langer Import jeden späteren Schreibvorgang teurer
+machte. Dieser Grund ist weg. Begrenzt bleibt es trotzdem: ein
+unbegrenzter Zeitraum ist eine Art, den Recorder um mehr zu bitten, als er
+beantworten kann, und die Absage soll von hier kommen und nicht als
+Zeitüberschreitung irgendwo weiter unten.
 
 **Was sich damit messen ließ.** Dreizehn Minuten Wohnzimmer um vier Uhr
 morgens, durch denselben Detektor: **22 von 22 Fenstern exakt null
@@ -1041,29 +1048,69 @@ gerade hält, steht in `trigger`: `motion`, `rate` oder nichts.
 
 ### Wo geschrieben wird, und wo nicht
 
-Kalibrierungsdaten liegen als eine JSON-Datei. Jeder Schreibvorgang
-serialisiert die **gesamte** Historie und ersetzt die Datei — an diesem
-Code gemessen, sechs Sitzungen mit zusammen 120.000 Messwerten: 171 ms.
-Das ist für eine Gerätekartei völlig in Ordnung und für eine wachsende
-Messreihe nicht.
+Kalibrierungsdaten liegen seit 0.13.9 in SQLite. Davor war es eine
+JSON-Datei, und jeder Schreibvorgang serialisierte die **gesamte**
+Historie und ersetzte sie — an diesem Code gemessen, sechs Sitzungen mit
+zusammen 120.000 Messwerten: 171 ms. Für eine Gerätekartei völlig in
+Ordnung, für eine wachsende Messreihe nicht.
 
 Bis 0.13.5 passierte das alle hundert Messwerte direkt in `ingest`, und
 `ingest` läuft auf demselben Event-Loop wie die Websocket-Abonnements.
-Jetzt markiert der heiße Pfad den Speicher nur als geändert, ein einzelner
-Writer-Thread schreibt, und ein Schwall wird zu einem Schreibvorgang
-zusammengefasst: **1673 ms → 7 ms** für tausend Messwerte im aufrufenden
-Pfad.
+0.13.5 holte es vom heißen Pfad: der markiert den Speicher nur noch als
+geändert, ein einzelner Writer-Thread schreibt, ein Schwall wird zu einem
+Schreibvorgang zusammengefasst — **1673 ms → 7 ms** für tausend Messwerte
+im aufrufenden Pfad. Das war die richtige Antwort auf „der Event-Loop
+steht" und gar keine auf „ein Schreibvorgang kostet die ganze Historie".
+Und `json.dumps` gibt den GIL nicht frei, hielt den Interpreter also
+weiterhin rund 171 ms an — nur eben einmal statt zehnmal.
 
-Alles andere schreibt weiterhin synchron — anlegen, markieren, beenden,
-löschen, importieren sind Benutzeraktionen, deren Ergebnis auf der Platte
-sein soll, wenn die Antwort zurückgeht.
+Jetzt ist ein Messwert ein `INSERT`: er kostet, was hinzukam, nicht was je
+aufgezeichnet wurde. Dieselbe Messung, dieselbe Maschine, einmal gegen den
+alten und einmal gegen den neuen Speicher:
 
-**Was das nicht löst:** `json.dumps` gibt den GIL nicht frei. Ein
-Schreibvorgang hält den Interpreter weiterhin rund 171 ms an — nur eben
-einmal statt zehnmal, und niemand wartet mehr darauf. Eine
-append-orientierte Aufzeichnung oder SQLite wäre die eigentliche Antwort;
-das steht aus, samt Migration mit Sicherung. Und ein Absturz kostet jetzt
-die letzten zwei Sekunden statt der letzten hundert Messwerte.
+| ein Speichervorgang mit 100 neuen Messwerten | ohne Bestand | mit 41.000 Messwerten | Faktor |
+| --- | --- | --- | --- |
+| JSON (bis 0.13.8) | 0,49 ms | 66,5 ms | **136×** |
+| SQLite (ab 0.13.9) | 0,35 ms | 0,33 ms | **1,0×** |
+
+Mit 121.100 Messwerten im Bestand liegt der Median bei 0,3 ms. Der heiße
+Pfad kostet 7,2 µs pro Messwert, und `sqlite3` gibt den GIL frei, während
+die Anweisung läuft.
+
+**Was im Speicher bleibt:** die Metadaten der Sitzungen — höchstens ein
+paar hundert Zeilen — und die Messwerte der *laufenden* Aufzeichnung, von
+der es bauartbedingt höchstens eine gibt (`create` lehnt eine zweite ab).
+Genau die fragt alle paar Sekunden jemand ab, solange die Aufzeichnung
+läuft; sie dafür jedes Mal aus der Datenbank zu holen, hätte eine Kosten
+gegen die andere getauscht. Alles Übrige wird bei Bedarf geladen.
+
+**Was weiterhin gebündelt wird:** Zeilen werden in Stapeln angehängt, nicht
+eine Anweisung pro Messwert — hundert Messwerte pro Sekunde sollen auf
+einer SD-Karte nicht hundert Transaktionen pro Sekunde werden. Ein Absturz
+kostet damit wie bisher die letzten zwei Sekunden einer Aufzeichnung.
+Alles, was ein Mensch tut — anlegen, markieren, beenden, löschen,
+importieren — steht auf der Platte, bevor die Antwort zurückgeht.
+
+**Die Migration läuft einmal und wirft nichts weg.** Die alte JSON-Datei
+wird gelesen, übernommen und dann in `calibration_sessions.json.migrated`
+umbenannt statt gelöscht: das sind die Aufnahmen von jemandem, und eine
+Migration, die ihre eigene Eingabe zerstört, ist keine, der man trauen
+sollte. Eine unlesbare alte Datei ist ein verdorbener Nachmittag und keine
+Boot-Schleife — das Add-on startet und protokolliert es.
+
+**Eine Falle, gefunden beim Ausführen und nicht beim Lesen:**
+`INSERT OR REPLACE` auf die Sitzungszeile löscht die kollidierende Zeile,
+bevor es die neue einfügt — und das löst `ON DELETE CASCADE` aus und nimmt
+sämtliche Messwerte der Sitzung mit. Eine Aufzeichnung zu beenden schrieb
+also ihre Metadaten und leerte sie in derselben Anweisung; der CSV-Export
+kam als Kopfzeile zurück. Es ist jetzt ein echtes Upsert, und fünf Tests
+schlagen fehl, wenn jemand es zurückdreht.
+
+**Die Obergrenze der Historie ist geblieben, aber nicht mehr aus demselben
+Grund.** Sie existierte, weil Schreiben O(ganze Historie) kostete; jetzt
+ist es die Platte, die auf einer Home-Assistant-Box oft eine SD-Karte ist.
+Erreichen der Grenze lehnt neues Material ab, statt altes zu löschen: eine
+Aufzeichnung ist jemandes Nachmittag.
 
 ### Was zwischen zwei Messwerten passiert
 

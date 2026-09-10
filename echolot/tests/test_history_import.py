@@ -110,16 +110,24 @@ def test_a_range_of_seconds_is_refused():
         history_import.check_range(now, now + timedelta(seconds=5))
 
 
-def test_a_range_of_hours_is_refused_before_anything_is_fetched():
+def test_a_range_of_days_is_refused_before_anything_is_fetched():
+    """Still bounded after 0.13.9 raised it: an unbounded range is a way
+    to ask the recorder for more than it can answer, and the refusal
+    should come from here with a reason rather than from a timeout
+    somewhere further down."""
     now = datetime.now(timezone.utc)
     with pytest.raises(history_import.RangeRejected) as err:
-        history_import.check_range(now, now + timedelta(hours=4))
-    assert "90" in str(err.value)
+        history_import.check_range(now, now + timedelta(days=2))
+    assert "8" in str(err.value)
 
 
-def test_an_hour_is_accepted():
+def test_half_a_day_is_accepted_now(monkeypatch):
+    """Ninety minutes was the ceiling while a recording was one JSON file
+    that got rewritten on every save. It is rows in a database now, so
+    the limit is memory and patience — which is a different number."""
     now = datetime.now(timezone.utc)
     assert history_import.check_range(now, now + timedelta(hours=1)) == 3600
+    assert history_import.check_range(now, now + timedelta(hours=6)) == 6 * 3600
 
 
 # --- the query Home Assistant actually receives -------------------------

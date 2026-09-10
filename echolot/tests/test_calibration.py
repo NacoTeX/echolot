@@ -77,8 +77,13 @@ def test_a_restart_marks_an_open_recording_as_interrupted(store, tmp_path):
     reloaded = calibration.CalibrationStore()
     assert reloaded.get(session["id"])["status"] == "interrupted"
 
-    persisted = json.loads((tmp_path / "calibration_sessions.json").read_text())
-    assert persisted[session["id"]]["ended_at"] is not None
+    # And it is written down, not merely decided in memory: a third store
+    # reads the same thing without the second one having marked it again.
+    # Asserted through the store rather than by reading the file, because
+    # the file is now a database and its shape is not the promise here.
+    again = calibration.CalibrationStore()
+    assert again.get(session["id"])["status"] == "interrupted"
+    assert again.get(session["id"])["ended_at"] is not None
 
 
 def test_csv_export_contains_labels_and_measurements(store):
