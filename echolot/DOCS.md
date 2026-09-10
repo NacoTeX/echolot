@@ -481,17 +481,27 @@ gepinnte ESPectre-Commit sich über einen Header uneinig sind — genau der
 Fehler, der bei einem Nutzer als Zwanzig-Minuten-Build mit einem
 C++-Fehler ankommt, den er nicht geschrieben hat.
 
-Je ein Board pro Befehlssatz — Xtensa `esp32`, RISC-V `esp32c6` — in der
+Drei Boards — Xtensa `esp32`, RISC-V `esp32c6` und `esp32c5` — in der
 Konfiguration, die auch ausgeliefert wird: Weboberfläche, Diagnose und
 Direct-API an, API-Verschlüsselung aus. Letzteres nicht aus Bequemlichkeit
 — sie *validiert*, aber sie *linkt nicht* (siehe „Der
 Verschlüsselungscode"), und ein Job, der scheitern muss, ist kein Job.
 Genau diese Lücke hat der Compile-Job bei seinem ersten echten Lauf
 gezeigt: die Konfigurationsprüfung war für die verschlüsselte Variante
-die ganze Zeit grün. Zwei statt sechs, weil die beiden Befehlssätze das
-sind, was sich wirklich unterscheidet: getrennte Toolchain-Downloads,
-getrennte Compiler, getrennte Chip-Header. ESP32-C3/C5/C6 unterscheiden
-sich untereinander auf eine Weise, die `esphome config` bereits abdeckt.
+die ganze Zeit grün. Drei statt sechs, weil die beiden Befehlssätze das
+meiste davon sind, was sich wirklich unterscheidet: getrennte
+Toolchain-Downloads, getrennte Compiler, getrennte Chip-Header. C3 und C6
+unterscheiden sich untereinander auf eine Weise, die `esphome config`
+bereits abdeckt.
+
+Der C5 ist die Ausnahme, seit 0.13.8. Er ist der einzige Zweiband-Chip
+hier, also der einzige, dessen erzeugter `wifi:`-Block überhaupt ein
+`band_mode:` trägt, und der jüngste von ihnen in ESP-IDF. Dass eine
+Konfiguration validiert, sagt über diese Variante nichts. Der Cache läuft
+seither pro Board statt pro Befehlssatz — zwei RISC-V-Läufe mit
+demselben Schlüssel würden sich um dieselbe Cache-Ablage streiten, und
+der Verlierer bekäme fortan einen Cache mit den Headern des anderen
+Chips.
 
 Der Job läuft bei Pushes auf `main` und bei Pull Requests mit dem Label
 `firmware`, nicht bei jedem Commit: ein kalter Build lädt rund 2 GB je
@@ -504,8 +514,8 @@ beiden von vorn baut statt gegen ein altes Framework zu linken.
 Lokal genauso aufrufbar:
 
 ```bash
-python echolot/tools/compile_firmware.py            # beide Boards
-python echolot/tools/compile_firmware.py esp32c6    # nur eines
+python echolot/tools/compile_firmware.py            # alle drei
+python echolot/tools/compile_firmware.py esp32c5    # nur eines
 ```
 
 ### Dashboard
