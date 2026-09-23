@@ -44,9 +44,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r echolot/app/requirements.txt
       # Renders the real template for every board in the registry and runs
-      # `esphome config` over each. Three shipped bugs came from firmware
-      # YAML that was never validated: ota.esp32, cpu_frequency on the C3,
-      # and a missing esp32_ble_server that silently disabled BLE.
+      # `esphome config` over each, which also validates the schema of the
+      # echolot_ld2460 component. Shipped bugs have come from firmware YAML
+      # that was never validated: ota.esp32, cpu_frequency on the C3.
       - name: Validate generated firmware configs
         run: python echolot/tools/validate_firmware.py
 
@@ -70,8 +70,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      # The dashboard is four plain scripts with no build step, so nothing
-      # else would notice a syntax error before it reached the browser.
+      # The UI is plain scripts with no build step, so nothing else would
+      # notice a syntax error before it reached the browser.
       - name: Parse every script
         run: |
           for f in echolot/app/static/*.js; do node --check "$f"; done
@@ -84,19 +84,13 @@ jobs:
     name: Firmware links on real toolchains
     runs-on: ubuntu-latest
     # `esphome config` catches a YAML mistake in seconds and catches
-    # nothing else. It does not fetch ESPectre, it does not run a
-    # compiler, and it cannot tell you that the pinned ESPHome and the
-    # pinned ESPectre commit disagree about a header — which is the
-    # failure that reaches a user as a twenty-minute build ending in a
-    # C++ error they did not write. So real images are linked.
-    #
-    # One board per instruction set was the rule until 0.13.8, on the
-    # grounds that the RISC-V chips differ in ways `esphome config`
-    # already covers. The C5 broke that: it is the only dual-band chip
-    # here, so it is the only one whose generated `wifi:` block carries a
-    # `band_mode:` at all, and it is the newest of them in ESP-IDF. A
-    # config that validates says nothing about whether that variant
-    # links.
+    # nothing else. It does not run a compiler, and it cannot tell you
+    # that the pinned ESPHome and Echolot's own echolot_ld2460 component
+    # disagree about a header — the failure that reaches a user as a
+    # twenty-minute build ending in a C++ error they did not write. So
+    # real images are linked: the classic ESP32 for Xtensa, and the C5 —
+    # the board the radar runs on, the only dual-band chip and the only
+    # one whose `wifi:` block renders a `band_mode:` — for RISC-V.
     #
     # Only when something that can change the firmware changed: a cold
     # build downloads about 2 GB of ESP-IDF and toolchain per
@@ -110,44 +104,23 @@ jobs:
         include:
           - board: esp32
             arch: xtensa
-          - board: esp32c6
-            arch: riscv
-          # Dual-band, and the only board whose config renders a
-          # `band_mode:`. Shares the RISC-V toolchain with the C6 but not
-          # the chip headers, so it gets its own cache entry below.
           - board: esp32c5
             arch: riscv
-          # Radar nodes: a different firmware on the same chips — no
-          # ESPectre, Echolot's own echolot_ld2460 component, and API
-          # encryption on, which no ESPectre build can link. The C5 is
-          # the board the radar runs on; the classic ESP32 is the other
-          # instruction set.
-          - board: esp32c5
-            arch: riscv
-            sensor: ld2460
-          - board: esp32
-            arch: xtensa
-            sensor: ld2460
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Keyed on the two pins, so bumping either one rebuilds from
-      # scratch instead of linking against a stale framework — which is
-      # the whole point of testing the new ESPHome pin against exactly
-      # this ESPectre commit.
-      #
-      # Per board, not per instruction set: two RISC-V legs sharing one
-      # key would race to save the same cache, and the loser would go on
-      # restoring a cache built for the other chip's headers.
+      # Per board: two legs sharing one key would race to save the same
+      # cache. Keyed on what goes into the image, so a change to the
+      # ESPHome pin or the component rebuilds from scratch.
       - name: Cache the toolchain and framework
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ matrix.board }}-${{ matrix.sensor || 'espectre' }}-${{ hashFiles('echolot/app/requirements.txt', 'echolot/app/builder.py', 'echolot/app/firmware.py', 'echolot/app/esphome_components/**') }}
+          key: pio-${{ matrix.board }}-radar-${{ hashFiles('echolot/app/requirements.txt', 'echolot/app/builder.py', 'echolot/app/esphome_components/**') }}
       - name: Install dependencies
         run: pip install -r echolot/app/requirements.txt
-      - name: Compile ${{ matrix.board }} ${{ matrix.sensor || 'espectre' }}
-        run: python echolot/tools/compile_firmware.py ${{ matrix.board }}${{ matrix.sensor && format(':{0}', matrix.sensor) || '' }}
+      - name: Compile ${{ matrix.board }}
+        run: python echolot/tools/compile_firmware.py ${{ matrix.board }}
         timeout-minutes: 60

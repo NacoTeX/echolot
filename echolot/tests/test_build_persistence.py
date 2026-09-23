@@ -44,12 +44,12 @@ def make(device_id="probe", **kwargs) -> Device:
 
 def test_a_field_update_leaves_everything_else_alone(registry):
     """The regression, in one line: the build's stale copy of the device
-    must not decide what the entity ids are."""
+    must not decide what the address and the display name are."""
     stale = make()
-    # ... meanwhile, someone corrects the entity id and applies a profile
+    # ... meanwhile, someone enters the IP address and renames the device
     live = devices.get_device("probe")
-    live.entity_movement_score = "sensor.wohnzimmer_movement_score"
-    live.presence_profile = {"baseline_rate": 0.084}
+    live.address = "192.168.1.50"
+    live.config.friendly_name = "Wohnzimmer"
     devices.save_device(live)
 
     # ... and only now does the build finish, holding `stale`.
@@ -57,8 +57,8 @@ def test_a_field_update_leaves_everything_else_alone(registry):
                                     firmware_bin="firmware.factory.bin")
 
     assert updated.status == BuildStatus.SUCCESS
-    assert updated.entity_movement_score == "sensor.wohnzimmer_movement_score"
-    assert updated.presence_profile == {"baseline_rate": 0.084}
+    assert updated.address == "192.168.1.50"
+    assert updated.config.friendly_name == "Wohnzimmer"
 
 
 def test_saving_the_whole_object_is_what_loses_the_change(registry):
@@ -66,12 +66,12 @@ def test_saving_the_whole_object_is_what_loses_the_change(registry):
     does not have to be taken on trust."""
     stale = make()
     live = devices.get_device("probe")
-    live.entity_movement_score = "sensor.wohnzimmer_movement_score"
+    live.address = "192.168.1.50"
     devices.save_device(live)
 
     stale.status = BuildStatus.SUCCESS
     devices.save_device(stale)
-    assert devices.get_device("probe").entity_movement_score is None
+    assert devices.get_device("probe").address is None
 
 
 def test_a_deleted_device_is_not_recreated_by_a_finishing_build(registry):

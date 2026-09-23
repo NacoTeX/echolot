@@ -16,7 +16,7 @@ ENV LANG=C.UTF-8 \
     ECHOLOT_BUILD_REVISION=${BUILD_REF} \
     ECHOLOT_BUILD_ARCH=${BUILD_ARCH}
 
-# ESPHome (used to compile per-device firmware in later phases) has a heavy
+# ESPHome (used to compile the per-device firmware) has a heavy
 # native build chain, so we install it into a venv on top of the HA Debian
 # base image rather than Alpine, where prebuilt wheels are far more reliable.
 RUN apt-get update \
@@ -46,5 +46,5 @@ WORKDIR /opt/echolot
 
 LABEL \
     io.hass.name="Echolot" \
-    io.hass.description="Self-hosted presence detection hub: HLK-LD2460 radar and Wi-Fi CSI" \
+    io.hass.description="Room presence with HLK-LD2460 radar: floor plans, zones, Home Assistant entities" \
     io.hass.type="addon"

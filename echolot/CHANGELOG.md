@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.0.0
+
+**Echolot ist ein Radar-Produkt.** Die WLAN-CSI-Erkennung über ESPectre ist
+entfernt — Kalibrierung, Überschreitungsrate, Replay, Fusion, das alte
+Dashboard und die Gerätezonen. An ihre Stelle tritt, was der
+„wohnzimmer-radar“-Prototyp angefangen hat: Räume auf einem Grundriss, auf
+dem das HLK-LD2460 seine Ziele live zeigt, und Zonen als Flächen.
+
+**Neue Oberfläche**, gebaut wie die Raum-Apps von mmWave-Sensoren und fürs
+iPad gedacht: Seitenleiste mit den Räumen und ihrer Personenzahl, die Karte
+als Seite, ein Inspektor daneben; auf dem Handy eine Leiste unten und
+Bottom-Sheets. Hell und dunkel.
+
+- **Übersicht** — eine Kachel je Raum mit Mini-Karte, Live-Punkten und den
+  belegten Zonen; darüber die drei Schritte bis zum ersten Raum.
+- **Raum** — Karte in Metern mit Raster, Möbeln, Sensor und geplantem
+  Sichtbereich. Punkte gleiten von Meldung zu Meldung und ziehen eine kurze
+  Spur; Ziele, die nicht zählen, sind hohl. Zonen leuchten auf und tragen
+  ihre Zahl. Ohne aktuelle Messung sagt die Karte, warum.
+- **Raum einrichten** — Rechteck- und Freiform-Zonen zeichnen, Ecken
+  ziehen, einfügen und entfernen, Möbel aus einer Palette setzen, drehen und
+  in der Größe ändern, den Sensor ziehen und am Griff drehen, Grundrissbild
+  mit Deckkraft, Einrasten, Rückgängig/Wiederholen, Tastenkürzel. Speichern
+  mit Revisionsprüfung: zwei Editoren überschreiben sich nicht still.
+- **Sensoren** — Anlegen, Bauen, USB-Flash, Update über WLAN, Zugangsdaten,
+  Einstellungen und Live-Zustand der Verbindung in einem Sheet.
+
+**Zonen aus Positionen.** Echolot hält zu jedem Sensor eine eigene
+verschlüsselte Verbindung über die native ESPHome-API und liest die
+Frame-Zeile des Bausteins. Jedes Ziel wird in Raumkoordinaten umgerechnet
+(Position, Blickrichtung, optionale Spiegelung — das Vorzeichen der X-Achse
+ist nicht dokumentiert), hinter der Wand oder in einer Ausschlusszone
+verworfen und sonst für den Raum und jede Erkennungszone gezählt, in der es
+liegt. Belegt heißt: ein Ziel darin, oder die Abwesenheitsverzögerung läuft
+noch. **Ohne aktuelle Meldung ist ein Raum nicht verfügbar, nie leer** —
+auch in Home Assistant.
+
+**In Home Assistant** je Raum ein Gerät mit *Anwesenheit* und *Personen*,
+je Erkennungszone ein weiteres Paar, über MQTT-Discovery. Gelöschte Räume
+und Zonen gehen über eine Löschwarteschlange, die bis zur Bestätigung des
+Brokers auf der Platte steht.
+
+**Nichts geht verloren.**
+
+- *CSI-Geräte* bleiben in `devices.json` unverändert stehen und erscheinen
+  unter „Aus früheren Versionen“. **Auf Radar umstellen** behält Kennung,
+  Knotennamen, WLAN, API-Schlüssel, OTA- und Notfall-WLAN-Passwort; der
+  alte Eintrag wird vorher als `csi_record.json` gesichert. Die neue
+  Firmware lässt sich danach per WLAN aufspielen.
+- *Radar-Sensoren aus 0.14* gelten nicht als veraltet, obwohl ihr
+  Fingerabdruck noch die CSI-Felder enthielt: Echolot erkennt beide Formen.
+  Geprüft gegen Werte, die mit dem Code von 0.14.0 berechnet wurden.
+- *CSI-Zonen in Home Assistant* werden entfernt — nichts füllt sie mehr, und
+  ein Belegt-Sensor ohne Werte wäre schlimmer als keiner. Der Verlauf im
+  Recorder bleibt. Aufnahmen des Calibration Labs bleiben in `/data`.
+
+**Behoben:** Die Zonenauswertung legte ihr Wecksignal beim Import an und
+band es damit an die erste Event-Loop, die es berührte. Jetzt entsteht es
+beim Start.
+
+**Weggefallen:** `homeassistant_api` im Add-on-Manifest (Echolot liest
+nichts mehr aus Home Assistants Zustandsmaschine), die CSI-Werkzeuge
+(`peer_link_report.py`, das Paarmodus-Experiment), die CI-Builds der
+ESPectre-Firmware. CI linkt jetzt die Radar-Firmware für ESP32 und ESP32-C5.
+
+**Getestet:** 209 Tests, darunter Geometrie in Python und im Browser gegen
+dieselben Fälle, Zonenauswertung, MQTT-Export samt Löschwarteschlange, die
+Live-Verbindung gegen eine nachgebaute API, HTTP-Routen und die Umstellung
+alter Geräte. Jede der geprüften Regeln wurde einmal ausgebaut, um zu
+sehen, dass ihr Test dann scheitert. Die Oberfläche wurde im
+Headless-Browser durchgeklickt: Raum anlegen, Zonen zeichnen, Möbel
+schieben, Sensor drehen, speichern, Sensor anlegen, CSI-Gerät umstellen.
+
+**Offen, nur mit Hardware klärbar:** ob das LD2460 im leeren Raum
+verstummt, das Vorzeichen der X-Achse, der Aufbau der `06`/`0B`-Quittungen
+— und ob Karte und Zonen mit einem echten Modul im Raum so arbeiten wie mit
+dem simulierten.
+
 ## 0.14.0
 
 **Radar-Knoten mit dem HLK-LD2460.** Echolot baut jetzt neben

@@ -1,1248 +1,423 @@
-// Geräteverwaltung + Flashen über den Browser (Phase 2).
-//
-// Alle API-Pfade sind relativ (ohne führenden Slash), damit sie unter dem
-// Ingress-Präfix bleiben — Begründung in app.js.
+// Sensors: list, create, and one sheet per device for firmware, network,
+// credentials and settings. Also the Wi-Fi CSI devices of earlier versions,
+// which can be turned into radar nodes under the same identity.
 
-const POLL_INTERVAL_MS = 2000;
-const activePolls = new Set();
+(() => {
+  const E = Echolot;
+  const { escapeHtml, icon, api, toast, state } = E;
 
-async function loadBoards() {
-  const select = document.getElementById("board-select");
-  try {
-    const boards = await (await fetch("api/boards")).json();
-    select.innerHTML = boards
-      .map((b) => `<option value="${escapeHtml(b.key)}">${escapeHtml(b.label)}${b.experimental ? " ⚠" : ""}</option>`)
-      .join("");
-
-    // The band field belongs to the board, not to the form: only the
-    // ESP32-C5 has two radios, and ESPHome rejects `band_mode` outright
-    // on every other chip. Showing the control anywhere else would offer
-    // a choice the hardware cannot make — so it is hidden *and* disabled,
-    // because a disabled field is the one FormData leaves out.
-    dualBandBoards = new Set(boards.filter((b) => b.dual_band).map((b) => b.key));
-    const dualBand = dualBandBoards;
-    const field = document.getElementById("wifi-band-field");
-    const applyBand = () => {
-      const offered = dualBand.has(select.value);
-      field.hidden = !offered;
-      field.querySelector("select").disabled = !offered;
-    };
-    select.addEventListener("change", applyBand);
-    applyBand();
-
-    radarPinsByBoard = new Map(boards.map((b) => [b.key, b.radar_uart_pins]));
-    select.addEventListener("change", applyRadarDefaults);
-    applyRadarDefaults();
-  } catch (err) {
-    select.innerHTML = '<option value="">Boards konnten nicht geladen werden</option>';
+  let boards = [];
+  async function loadBoards() {
+    if (!boards.length) boards = await api("api/boards");
+    return boards;
   }
-}
 
-// Each board's suggested radar UART pins, [tx, rx] or null. Filled by
-// loadBoards().
-let radarPinsByBoard = new Map();
-
-// Show only the fields of the chosen sensor. Hidden fields are also
-// disabled: FormData leaves disabled controls out, and a hidden
-// `required` field would otherwise block the submit with nothing to see.
-function applySensor() {
-  const form = document.getElementById("device-form");
-  const sensor = form.elements.sensor.value;
-  for (const el of form.querySelectorAll("[data-sensor]")) {
-    const shown = el.dataset.sensor === sensor;
-    el.hidden = !shown;
-    for (const control of el.querySelectorAll("input, select, textarea")) {
-      control.disabled = !shown;
-    }
+  function slug(text) {
+    let s = String(text || "").toLowerCase();
+    for (const [a, b] of [["ä", "ae"], ["ö", "oe"], ["ü", "ue"], ["ß", "ss"]]) s = s.split(a).join(b);
+    s = s.normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return s.slice(0, 32).replace(/-+$/, "");
   }
-  applyRadarDefaults();
-}
 
-// Fill the UART pins from the board's suggestion — unless somebody typed
-// their own, which a board change must not silently undo.
-function applyRadarDefaults() {
-  const form = document.getElementById("device-form");
-  const pins = radarPinsByBoard.get(form.elements.board.value);
-  for (const [index, name] of [[0, "radar_tx_pin"], [1, "radar_rx_pin"]]) {
-    const input = form.elements[name];
-    if (!input || input.dataset.touched) continue;
-    input.value = pins ? pins[index] : "";
+  function firmwareChip(d) {
+    if (d.status === "queued") return '<span class="chip warn">Build wartet</span>';
+    if (d.status === "running") return '<span class="chip warn">wird gebaut…</span>';
+    if (d.status === "error") return '<span class="chip err">Build fehlgeschlagen</span>';
+    if (d.status !== "success") return '<span class="chip">nicht gebaut</span>';
+    if (d.runs_radar_firmware === false) return '<span class="chip warn">noch CSI-Firmware</span>';
+    if (d.firmware_behind_config) return '<span class="chip warn">Einstellungen nicht geflasht</span>';
+    return '<span class="chip ok">Firmware gebaut</span>';
   }
-}
 
-function initSensorFields() {
-  const form = document.getElementById("device-form");
-  form.elements.sensor.addEventListener("change", applySensor);
-  for (const name of ["radar_tx_pin", "radar_rx_pin"]) {
-    form.elements[name].addEventListener("input", (evt) => {
-      evt.target.dataset.touched = "1";
-    });
+  function linkChip(d) {
+    const l = d.link;
+    if (!l) return '<span class="chip">keine Verbindung</span>';
+    if (l.connected && l.fresh && l.link_state === "receiving") return '<span class="chip ok">Radar empfängt</span>';
+    if (l.connected && l.link_state === "quiet") return '<span class="chip ok">verbunden · still</span>';
+    if (l.connected && l.no_frame_entity) return '<span class="chip warn">falsche Firmware</span>';
+    if (l.connected) return '<span class="chip warn">verbunden · Radar schweigt</span>';
+    return '<span class="chip err">offline</span>';
   }
-  // The one board this has been wired to: a Waveshare ESP32-C5-Zero,
-  // UART on GP11/GP12, antenna switch on GP26.
-  document.getElementById("waveshare-c5-preset").addEventListener("click", () => {
-    const board = form.elements.board;
-    if ([...board.options].some((o) => o.value === "esp32c5")) {
-      board.value = "esp32c5";
-      board.dispatchEvent(new Event("change"));
-    }
-    form.elements.radar_tx_pin.value = 11;
-    form.elements.radar_rx_pin.value = 12;
-    form.elements.antenna_select_pin.value = 26;
-    form.elements.radar_tx_pin.dataset.touched = "1";
-    form.elements.radar_rx_pin.dataset.touched = "1";
-  });
-  applySensor();
-}
 
-let kbPerPps = 0.09; // vom Backend überschrieben
-
-// Which boards offer a band at all. Filled by loadBoards(); until then
-// empty, which is the safe direction — the field stays hidden rather
-// than offering a radio the chip may not have.
-let dualBandBoards = new Set();
-
-// Voreinstellungen ersparen es, vier Parameter mit nicht offensichtlichen
-// Wechselwirkungen von Hand zu treffen.
-async function loadPresets() {
-  const select = document.getElementById("preset-select");
-  const description = document.getElementById("preset-description");
-  const form = document.getElementById("device-form");
-  let data;
-  try {
-    data = await (await fetch("api/presets")).json();
-  } catch (err) {
-    return;
+  function field(label, inner, hint = "") {
+    return `<label class="field"><span>${label}</span>${inner}${hint ? `<p class="hint">${hint}</p>` : ""}</label>`;
   }
-  kbPerPps = data.kb_per_second_per_pps;
-  updateRateEstimate();
 
-  for (const p of data.presets) {
-    const opt = document.createElement("option");
-    opt.value = p.key;
-    opt.textContent = p.label;
-    select.appendChild(opt);
-  }
-  select.value = "balanced";
-  const apply = () => {
-    const preset = data.presets.find((p) => p.key === select.value);
-    description.textContent = preset ? preset.description : "";
-    if (!preset) return;
-    form.elements.csi_target_pps.value = preset.csi_target_pps;
-    form.elements.detection_algorithm.value = preset.detection_algorithm;
-    form.elements.evaluation_interval_ms.value = preset.evaluation_interval_ms;
-    updateRateEstimate();
-  };
-  select.addEventListener("change", apply);
-  apply();
+  // ---------------------------------------------------------------- list
 
-  // Wer die Werte selbst anfasst, verlässt die Voreinstellung.
-  for (const name of ["csi_target_pps", "detection_algorithm", "evaluation_interval_ms"]) {
-    form.elements[name].addEventListener("input", () => {
-      select.value = "";
-      description.textContent = "";
-    });
-  }
-  form.elements.csi_target_pps.addEventListener("input", updateRateEstimate);
-}
-
-function updateRateEstimate() {
-  const el = document.getElementById("rate-estimate");
-  const rate = Number(document.getElementById("device-form").elements.csi_target_pps.value);
-  // 0 used to mean "an external source generates the traffic"; that is a
-  // separate setting upstream now (csi_traffic_mode), and the rate itself
-  // starts at 1.
-  if (!Number.isFinite(rate) || rate <= 0) {
-    el.textContent = "";
-    return;
-  }
-  el.textContent = `≈ ${(rate * kbPerPps).toFixed(1)} KB/s Funklast pro Gerät`;
-}
-
-// Only worth saying where there was a choice. On every other chip the
-// band is 2.4 GHz by construction, and printing it would read as a
-// setting rather than as a fact about the radio.
-const BAND_LABELS = { "2.4GHz": "2,4 GHz", "5GHz": "5 GHz", auto: "Band automatisch" };
-
-function bandSuffix(config) {
-  const label = BAND_LABELS[config.wifi_band];
-  return label && config.wifi_band !== "2.4GHz" ? ` (${escapeHtml(label)})` : "";
-}
-
-function statusLabel(status) {
-  return { idle: "nicht gebaut", queued: "in Warteschlange…", running: "wird gebaut…", success: "bereit zum Flashen", error: "Build fehlgeschlagen" }[status] || status;
-}
-
-function statusClass(status) {
-  return { success: "status-ok", error: "status-err", running: "status-warn", queued: "status-warn" }[status] || "status-pending";
-}
-
-const ENTITY_FIELDS = ["entity_motion", "entity_movement_score", "entity_threshold", "entity_calibrate"];
-const ENTITY_LABELS = { entity_motion: "Bewegung", entity_movement_score: "Bewegungswert", entity_threshold: "Schwelle", entity_calibrate: "Kalibrierung" };
-
-//: Which cards are open. A poll re-renders the whole list, so without
-//: this every open card would snap shut under the person reading it.
-const openCards = new Set();
-//: The status each device had when it was last drawn, so a build that
-//: fails can open its own card instead of hiding the reason.
-const lastStatus = new Map();
-
-function expandAllCards() {
-  return readPref("echolot.expandCards");
-}
-
-function shouldOpen(device, deviceCount) {
-  const previous = lastStatus.get(device.id);
-  const first = previous === undefined;
-  lastStatus.set(device.id, device.status);
-
-  // Something is happening or went wrong: the detail is the whole point,
-  // so open it — but only on the transition, never on every poll, or the
-  // card would spring back open each time it is closed.
-  const busy = device.status === "queued" || device.status === "running";
-  if ((first && (busy || device.status === "error")) || (!first && previous !== device.status && device.status === "error")) {
-    openCards.add(device.id);
-  }
-  // With one device there is nothing to scan past, so the list view buys
-  // nothing and the card opens.
-  if (first && deviceCount === 1) openCards.add(device.id);
-
-  return expandAllCards() || openCards.has(device.id);
-}
-
-//: A collapsible group inside a card. Kept out of the summary line so the
-//: card stays a list entry: name, state, done.
-function section(title, body, { open = false } = {}) {
-  return `<details class="device-section"${open ? " open" : ""}>
-      <summary>${escapeHtml(title)}</summary>
-      <div class="device-section-body">${body}</div>
-    </details>`;
-}
-
-// One line under the title: what it is and how it senses.
-function deviceMeta(c) {
-  const how = c.sensor === "ld2460"
-    ? `Radar · TX ${c.radar_tx_pin} / RX ${c.radar_rx_pin}`
-    : c.detection_algorithm;
-  return `${c.name} · ${c.board}${bandSuffix(c)} · ${how}`;
-}
-
-function renderDevice(device, deviceCount) {
-  const c = device.config;
-  const radar = c.sensor === "ld2460";
-  const title = c.friendly_name || c.name;
-  const canBuild = device.status !== "queued" && device.status !== "running";
-  const built = device.status === "success";
-
-  const logBlock = device.build_log
-    ? section("Build-Protokoll", `<pre class="build-log">${escapeHtml(device.build_log.slice(-4000))}</pre>`)
-    : "";
-  const errorLine = device.build_error
-    ? `<p class="status status-err">${escapeHtml(device.build_error)}</p>`
-    : "";
-
-  // Not an error — the device works, it just works the way it was last
-  // flashed. But somebody changed a setting and is entitled to know it
-  // has not arrived on the chip yet.
-  const staleLine = device.firmware_behind_config
-    ? `<p class="stale-line status status-warn">
-         Umkonfiguriert, aber noch nicht neu gebaut — auf dem Gerät läuft
-         weiter das zuletzt geflashte Image.
-       </p>`
-    : "";
-
-  // Only offered after a failure the backend traced to the toolchain: the
-  // button throws away a ~2 GB download, so it must not read as a routine
-  // "try this" next to every build.
-  const otaLine = device.ota_status === "running" || device.ota_status === "queued"
-    ? '<p class="status status-pending">Update über WLAN läuft…</p>'
-    : device.ota_error
-      ? `<p class="status status-err">${escapeHtml(device.ota_error)}</p>`
-      : device.ota_last_success
-        ? `<p class="field-note">Zuletzt über WLAN aktualisiert: ${
-            escapeHtml(new Date(device.ota_last_success * 1000).toLocaleString("de-DE"))}</p>`
-        : "";
-
-  const toolchainBroken = (device.build_error || "").includes("Toolchain");
-  const repairBlock = toolchainBroken
-    ? `<button class="repair-btn btn-secondary" ${canBuild ? "" : "disabled"}>Toolchain zurücksetzen</button>`
-    : "";
-
-  const sizeLabel = device.firmware_size
-    ? ` (${(device.firmware_size / 1048576).toFixed(1)} MB)`
-    : "";
-
-  const flashBlock = built
-    ? `<esp-web-install-button manifest="api/devices/${device.id}/manifest.json">
-         <button slot="activate">Über USB flashen</button>
-         <span slot="unsupported">Dieser Browser unterstützt kein Web Serial (nutze Chrome oder Edge).</span>
-         <span slot="not-allowed">Web Serial benötigt HTTPS oder localhost — siehe Hinweis oben.</span>
-       </esp-web-install-button>
-       <a class="download-fw-link btn-secondary"
-          href="api/devices/${device.id}/firmware.bin"
-          download="${escapeHtml(c.name)}-firmware.bin"
-          title="Zum Flashen mit einem anderen Werkzeug, etwa web.esphome.io oder esptool"
-          >Firmware herunterladen${escapeHtml(sizeLabel)}</a>
-       <p class="flash-progress" hidden></p>`
-    : "";
-
-  // The live state stays out of a collapsible group: it is the reason to
-  // open the card at all, and burying it behind a second click would put
-  // the most-wanted number two clicks deep.
-  const liveBlock = built && radar
-    ? `<div class="radar-block">
-         <p class="hint">
-           Ziele, Radarstatus und die Firmware des Moduls erscheinen in Home
-           Assistant als Entitäten dieses Geräts, sobald es dort übernommen
-           ist. Die Raumkarte mit Grundriss und Zonen kommt als nächster
-           Schritt in Echolot.
-         </p>
-       </div>`
-    : built
-    ? `<div class="live-block" data-live-id="${device.id}">
-         <div class="live-row"><span class="live-label">Bewegung</span><span class="live-motion status status-pending">wird geprüft…</span></div>
-         <div class="live-row"><span class="live-label">Bewegungswert</span><span class="live-score">—</span></div>
-         <form class="threshold-form">
-           <label>Schwelle
-             <input class="threshold-input" type="number" min="0" max="10" step="0.1" placeholder="0.0–10.0">
-           </label>
-           <button type="submit">Senden</button>
-         </form>
-         <button type="button" class="calibrate-btn">Neu kalibrieren</button>
-         <p class="live-error status status-err" hidden></p>
-         <button type="button" class="detect-btn btn-secondary" hidden>Entities in Home Assistant suchen</button>
-       </div>`
-    : "";
-
-  const detailSections = built
-    ? section("Netzwerk und Update über WLAN", `
-         <div class="network-block">
-           <label class="address-label">Netzwerkadresse
-             <input class="address-input" value="${escapeHtml(device.address || "")}"
-                    placeholder="${escapeHtml(device.config.name)}.local oder IP">
-           </label>
-           <div class="device-actions">
-             <button type="button" class="probe-btn btn-secondary">Erreichbarkeit prüfen</button>
-             <button type="button" class="ota-btn btn-secondary">Update über WLAN</button>
-             ${device.config.web_server
-               ? `<a class="status-page-link btn-secondary" target="_blank" rel="noopener"
-                     href="http://${encodeURIComponent(device.address || device.config.name + ".local")}/"
-                     >Statusseite öffnen</a>`
-               : ""}
-           </div>
-           <p class="probe-result status" hidden></p>
-           <p class="probe-direct status status-pending" hidden></p>
-         </div>`)
-      + (radar ? "" : section("Diagnose", `
-         <div class="health-block">
-           <p class="hint">Prüft, ob das Gerät wirklich misst — und nicht nur erreichbar ist.</p>
-           <button type="button" class="health-btn btn-secondary">Diagnose stellen</button>
-           <div class="health-result" hidden></div>
-         </div>`))
-      + section("Verschlüsselungscode für Home Assistant", `
-         <div class="key-block">
-           <p class="hint">
-             ${device.config.api_encryption
-               ? "Home Assistant fragt danach, wenn es dieses Gerät übernimmt. Ohne den Code kann niemand im Netz das Gerät auslesen oder steuern."
-               : "Für dieses Gerät ist die API-Verschlüsselung <strong>abgeschaltet</strong> — der Code steckt also nicht in der Firmware und Home Assistant fragt nicht danach. Er bleibt gespeichert, falls du sie später einschaltest."}
-           </p>
-           <div class="key-row">
-             <code class="api-key">— aufklappen zum Anzeigen —</code>
-             <button type="button" class="copy-key-btn btn-secondary">Kopieren</button>
-           </div>
-           <p class="hint">
-             Notfall-WLAN <code>${escapeHtml(device.fallback_ssid || device.config.name + " Fallback")}</code> —
-             das Gerät öffnet es, wenn es dein WLAN nicht erreicht.
-             Passwort: <code class="fallback-password">— aufklappen zum Anzeigen —</code>
-           </p>
-         </div>`)
-      + (radar ? "" : section("HA-Entity-IDs", `
-         <div class="entity-editor">
-           <p class="hint">
-             Über diese IDs holt Echolot Zustand und Schwelle aus Home
-             Assistant. Sie sind begründete Vermutungen — wenn ein Gerät als
-             „nicht verfügbar“ angezeigt wird, stimmt hier meist etwas nicht.
-           </p>
-           ${ENTITY_FIELDS.map((f) => `
-             <label>${ENTITY_LABELS[f]}
-               <input class="entity-input" data-field="${f}" value="${escapeHtml(device[f] || "")}">
-             </label>`).join("")}
-           <button type="button" class="save-entities-btn">Entity-IDs speichern</button>
-         </div>`))
-    : "";
-
-  // Editable at any point in a device's life, built or not. Changing one
-  // of these used to mean deleting the device and making a new one — and
-  // losing its entity ids, its learned profile and its recordings to
-  // change one number.
-  const configEditor = section("Firmware-Optionen ändern", `
-     <div class="config-editor">
-       <p class="hint">
-         Diese Werte stecken im Image. Nach dem Speichern muss die Firmware
-         neu gebaut und übertragen werden, sonst läuft auf dem Gerät weiter
-         die alte. Gerätename, Board und Sensor lassen sich nicht ändern —
-         dafür ist ein neues Gerät der ehrliche Weg.
-       </p>
-       <label>Anzeigename
-         <input class="cfg" data-field="friendly_name" value="${escapeHtml(c.friendly_name || "")}">
-       </label>
-       <label>WLAN-Name (SSID)
-         <input class="cfg" data-field="wifi_ssid" maxlength="32" value="${escapeHtml(c.wifi_ssid || "")}">
-       </label>
-       <label>WLAN-Passwort
-         <input class="cfg" data-field="wifi_password" type="password" maxlength="64"
-                placeholder="unverändert lassen">
-       </label>
-       ${dualBandBoards.has(c.board) ? `
-       <label>WLAN-Band
-         <select class="cfg" data-field="wifi_band">
-           ${["2.4GHz", "5GHz", "auto"].map((b) => `
-             <option value="${b}"${c.wifi_band === b ? " selected" : ""}>${escapeHtml(BAND_LABELS[b] || b)}</option>`).join("")}
-         </select>
-         <span class="field-hint">
-           ${radar
-             ? "Beim Radar entscheidet das Band nur, worüber die Daten laufen."
-             : "Gemessen ist bisher nur 2,4 GHz. Ein Bandwechsel entwertet ein gelerntes Profil — es beschreibt dann eine andere Messung."}
-         </span>
-       </label>` : ""}
-       ${radar ? `
-       <label>ESP-TX → Radar Rx2 (GPIO)
-         <input class="cfg" data-field="radar_tx_pin" type="number" min="0" max="56" value="${Number(c.radar_tx_pin)}">
-       </label>
-       <label>ESP-RX ← Radar Tx2 (GPIO)
-         <input class="cfg" data-field="radar_rx_pin" type="number" min="0" max="56" value="${Number(c.radar_rx_pin)}">
-       </label>
-       <label>Antennen-Umschaltung (GPIO)
-         <input class="cfg" data-field="antenna_select_pin" data-nullable="1" type="number" min="0" max="56"
-                placeholder="keine" value="${c.antenna_select_pin == null ? "" : Number(c.antenna_select_pin)}">
-       </label>
-       <label class="checkbox-field">
-         <input type="checkbox" class="cfg" data-field="radar_quiet_means_empty"${c.radar_quiet_means_empty ? " checked" : ""}>
-         <span>Stiller Radar heißt „niemand da“
-           <span class="field-hint">
-             Erst einschalten, wenn du beobachtet hast, dass das Modul in
-             einem leeren Raum verstummt, statt leere Meldungen zu schicken.
-           </span>
-         </span>
-       </label>` : `
-       <label>Erkennungsprofil
-         <select class="cfg" data-field="detection_algorithm">
-           <option value="lightweight"${c.detection_algorithm === "lightweight" ? " selected" : ""}>Lightweight</option>
-           <option value="high_accuracy"${c.detection_algorithm === "high_accuracy" ? " selected" : ""}>High Accuracy</option>
-         </select>
-       </label>
-       <label>Paketrate (Pakete/s)
-         <input class="cfg" data-field="csi_target_pps" type="number" min="1" max="500" value="${Number(c.csi_target_pps)}">
-       </label>
-       <label>Auswerteintervall (ms)
-         <input class="cfg" data-field="evaluation_interval_ms" type="number" min="10" max="10000" value="${Number(c.evaluation_interval_ms)}">
-       </label>`}
-       <label>Log-Level
-         <select class="cfg" data-field="log_level">
-           ${["NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"].map((l) => `
-             <option value="${l}"${c.log_level === l ? " selected" : ""}>${l}</option>`).join("")}
-         </select>
-       </label>
-       <label class="checkbox-field">
-         <input type="checkbox" class="cfg" data-field="web_server"${c.web_server ? " checked" : ""}>
-         <span>Statusseite auf dem Gerät</span>
-       </label>
-       <label class="checkbox-field">
-         <input type="checkbox" class="cfg" data-field="diagnostics"${c.diagnostics ? " checked" : ""}>
-         <span>Diagnose-Sensoren</span>
-       </label>
-       ${radar ? "" : `
-       <label class="checkbox-field">
-         <input type="checkbox" class="cfg" data-field="direct_api"${c.direct_api ? " checked" : ""}>
-         <span>Direkte Telemetrie (Port 62587)</span>
-       </label>
-       <label class="checkbox-field">
-         <input type="checkbox" class="cfg" data-field="api_encryption"${c.api_encryption ? " checked" : ""}>
-         <span>API-Verschlüsselung
-           <span class="field-hint">
-             Baut derzeit nicht — siehe „Der Verschlüsselungscode“ in der Doku.
-           </span>
-         </span>
-       </label>`}
-       <button type="button" class="save-config-btn">Firmware-Optionen speichern</button>
-       <p class="config-result status" hidden></p>
-     </div>`);
-
-  // The summary carries the two things worth scanning a list for: what the
-  // build is doing, and — once built — whether the room is occupied.
-  const summaryLive = built && !radar
-    ? `<span class="summary-live" data-summary-id="${device.id}">
-         <span class="summary-dot"></span><span class="summary-live-text">…</span>
-       </span>`
-    : "";
-
-  return `
-    <details class="card device-card" data-id="${device.id}"${shouldOpen(device, deviceCount) ? " open" : ""}>
-      <summary class="device-summary">
-        <span class="device-summary-text">
-          <span class="device-title">${escapeHtml(title)}</span>
-          <span class="device-meta">${escapeHtml(deviceMeta(c))}</span>
-        </span>
-        <span class="device-summary-state">
-          ${summaryLive}
-          <span class="status ${statusClass(device.status)}">${statusLabel(device.status)}</span>
-        </span>
-      </summary>
-      <div class="device-body">
-        ${errorLine}
-        ${otaLine}
-        ${staleLine}
-        <div class="device-actions">
-          <button class="build-btn${built ? " btn-secondary" : ""}" ${canBuild ? "" : "disabled"}>${built ? "Neu bauen" : "Firmware bauen"}</button>
-          ${repairBlock}
-          ${flashBlock}
-          <button class="delete-btn">Löschen</button>
+  const view = {
+    async mount(el, params) {
+      this.el = el;
+      this.sheet = null;
+      this.render();
+      await loadBoards().catch(() => {});
+      if (params.action === "new") this.openCreate();
+      if (params.open) this.openDevice(params.open);
+    },
+    unmount() { if (this.sheet) { const s = this.sheet; this.sheet = null; s.close(); } },
+    onData() {
+      this.render();
+      if (this.sheet && this.sheet.refresh) this.sheet.refresh();
+    },
+    render() {
+      const devices = state.devices;
+      this.el.innerHTML = `
+        <div class="page-head">
+          <div><div class="eyebrow">Einrichtung</div><h1>Sensoren</h1>
+            <p class="sub">ESP32 mit HLK-LD2460 — anlegen, Firmware bauen, flashen.</p></div>
+          <div class="head-actions"><button class="btn primary" id="add-device">${icon("plus")}Sensor anlegen</button></div>
         </div>
-        ${liveBlock}
-        ${detailSections}
-        ${configEditor}
-        ${logBlock}
-      </div>
-    </details>`;
-}
+        ${devices.length ? "" : `<div class="card pad empty-state" style="margin-bottom:16px">
+          <p>Noch kein Sensor. Du brauchst einen ESP32 (etwa den Waveshare ESP32-C5-Zero) und ein HLK-LD2460:
+          ESP-TX an Pin 8 (Rx2), ESP-RX an Pin 7 (Tx2), 5 V und GND.</p></div>`}
+        <div class="device-grid">
+          ${devices.map((d) => `
+            <button class="card device-tile" data-open="${escapeHtml(d.id)}">
+              <div class="head"><div class="device-glyph">${icon("radar")}</div>
+                <div><div class="title">${escapeHtml(d.config.friendly_name || d.config.name)}</div>
+                  <div class="meta">${escapeHtml(d.config.name)} · ${escapeHtml((boards.find((b) => b.key === d.config.board) || {}).label || d.config.board)}</div></div></div>
+              <div class="chips">${firmwareChip(d)}${linkChip(d)}${d.room ? `<span class="chip plain">${escapeHtml(d.room.name)}</span>` : '<span class="chip plain">keinem Raum zugeordnet</span>'}</div>
+            </button>`).join("")}
+        </div>
+        ${state.legacy.length ? `
+          <h2 style="margin-top:30px">Aus früheren Versionen</h2>
+          <p class="hint" style="margin-bottom:14px">WLAN-CSI-Geräte. Echolot 1.0 baut keine CSI-Firmware mehr. Die Einträge
+            sind unverändert gespeichert. Umstellen behält Kennung, Namen, WLAN und alle Zugangsdaten; danach ein LD2460
+            anschließen und die neue Firmware aufspielen — per WLAN, das OTA-Passwort bleibt dasselbe.</p>
+          <div class="device-grid">${state.legacy.map((d) => `
+            <div class="card device-tile legacy" style="cursor:default">
+              <div class="head"><div class="device-glyph">${icon("wifi")}</div>
+                <div><div class="title">${escapeHtml(d.friendly_name || d.name)}</div>
+                  <div class="meta">${escapeHtml(d.name)} · ${escapeHtml(d.board_label)} · WLAN-CSI</div></div></div>
+              <div class="actions">
+                <button class="btn primary small" data-convert="${escapeHtml(d.id)}" ${d.convertible ? "" : "disabled"}>Auf Radar umstellen</button>
+                <button class="btn danger small" data-drop="${escapeHtml(d.id)}">Entfernen</button>
+              </div>
+            </div>`).join("")}</div>` : ""}`;
+      this.el.querySelector("#add-device").addEventListener("click", () => this.openCreate());
+      this.el.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => this.openDevice(b.dataset.open)));
+      this.el.querySelectorAll("[data-convert]").forEach((b) => b.addEventListener("click", () => this.convert(b.dataset.convert)));
+      this.el.querySelectorAll("[data-drop]").forEach((b) => b.addEventListener("click", () => this.dropLegacy(b.dataset.drop)));
+    },
 
-function addressOf(card) {
-  const input = card.querySelector(".address-input");
-  return input ? input.value.trim() : "";
-}
-
-async function probeDevice(id, card) {
-  const out = card.querySelector(".probe-result");
-  const direct = card.querySelector(".probe-direct");
-  const button = card.querySelector(".probe-btn");
-  button.disabled = true;
-  out.hidden = false;
-  direct.hidden = true;
-  out.className = "probe-result status status-pending";
-  out.textContent = "Wird geprüft…";
-
-  const host = addressOf(card);
-  const url = host
-    ? `api/devices/${id}/reachability?host=${encodeURIComponent(host)}`
-    : `api/devices/${id}/reachability`;
-  try {
-    const res = await fetch(url);
-    const body = await res.json();
-    if (!res.ok) {
-      out.className = "probe-result status status-err";
-      out.textContent = body.detail || "Prüfung fehlgeschlagen";
-      return;
-    }
-    // "ok" means the device answers — which, when it is still missing in
-    // Home Assistant, points at adoption rather than at the network. That
-    // is a caveat, not a success, so it is not painted green.
-    out.className = `probe-result status ${body.api ? "status-ok" : "status-warn"}`;
-    out.textContent = body.message;
-    // Port 62587 is a separate question from "can Home Assistant reach it",
-    // and it is the one that decides whether the Calibration Lab has data.
-    if (body.direct_message) {
-      direct.className = `probe-direct status ${body.direct ? "status-ok" : "status-warn"}`;
-      direct.textContent = body.direct_message;
-      direct.hidden = false;
-    }
-  } catch (err) {
-    out.className = "probe-result status status-err";
-    out.textContent = "Backend nicht erreichbar";
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function startOta(id, card) {
-  const address = addressOf(card);
-  if (!confirm(
-    "Die gebaute Firmware wird über das WLAN auf das Gerät geschoben" +
-    (address ? ` (${address}).` : ".") +
-    "\n\nDas Gerät startet dabei neu. Fortfahren?"
-  )) return;
-
-  const button = card.querySelector(".ota-btn");
-  button.disabled = true;
-  try {
-    const res = await fetch(`api/devices/${id}/ota`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(address ? { address } : {}),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(body.detail || "Das Update konnte nicht gestartet werden");
-      return;
-    }
-    pollDevice(id);
-  } catch (err) {
-    alert("Backend nicht erreichbar");
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function revealKey(id, card) {
-  const target = card.querySelector(".api-key");
-  if (target.dataset.loaded) return;
-  target.textContent = "wird geladen…";
-  try {
-    const res = await fetch(`api/devices/${id}/credentials`);
-    const body = await res.json();
-    if (!res.ok) {
-      target.textContent = body.detail || "konnte nicht geladen werden";
-      return;
-    }
-    target.textContent = body.api_encryption_key;
-    target.dataset.loaded = "1";
-    // The fallback access point's password lives in the same section:
-    // it is needed at exactly the moment the device is unreachable, so
-    // it has to be readable before that happens.
-    const fallback = card.querySelector(".fallback-password");
-    if (fallback) fallback.textContent = body.fallback_password || "—";
-  } catch (err) {
-    target.textContent = "Backend nicht erreichbar";
-  }
-}
-
-async function copyKey(card, button) {
-  const key = card.querySelector(".api-key").textContent;
-  const original = button.textContent;
-  try {
-    await navigator.clipboard.writeText(key);
-    button.textContent = "Kopiert";
-  } catch (err) {
-    // Clipboard access needs a secure context, which Ingress over plain
-    // HTTP is not. Select the text instead so it can be copied by hand.
-    const range = document.createRange();
-    range.selectNodeContents(card.querySelector(".api-key"));
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    button.textContent = "Markiert — jetzt kopieren";
-  }
-  setTimeout(() => { button.textContent = original; }, 2500);
-}
-
-async function detectEntities(id, button) {
-  button.disabled = true;
-  const original = button.textContent;
-  button.textContent = "Wird gesucht…";
-  try {
-    const res = await fetch(`api/devices/${id}/entities/detect`, { method: "POST" });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(body.detail || "Die Entities konnten nicht gefunden werden");
-      return;
-    }
-    alert(
-      "Gefunden:\n" +
-      Object.values(body.detected).join("\n") +
-      "\n\nDie IDs sind gespeichert."
-    );
-    await loadDevices();
-  } catch (err) {
-    alert("Backend nicht erreichbar");
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
-}
-
-async function resetToolchain(id, button) {
-  if (!confirm(
-    "Die Toolchain für dieses Board wird gelöscht und beim nächsten Build " +
-    "neu heruntergeladen (rund 2 GB). Fortfahren?"
-  )) return;
-
-  button.disabled = true;
-  button.textContent = "Wird zurückgesetzt…";
-  try {
-    const res = await fetch(`api/devices/${id}/toolchain/reset`, { method: "POST" });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(body.detail || "Die Toolchain konnte nicht zurückgesetzt werden");
-      return;
-    }
-    alert(
-      body.removed
-        ? "Toolchain entfernt. Starte den Build neu — der Download läuft dann automatisch."
-        : "Es war keine Toolchain installiert. Starte den Build einfach neu."
-    );
-    await loadDevices();
-  } catch (err) {
-    alert("Backend nicht erreichbar");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Toolchain zurücksetzen";
-  }
-}
-
-async function loadDevices() {
-  const list = document.getElementById("device-list");
-  let devices;
-  try {
-    devices = await (await fetch("api/devices")).json();
-  } catch (err) {
-    list.innerHTML = '<p class="status status-err">Geräte konnten nicht geladen werden</p>';
-    return;
-  }
-
-  list.innerHTML = devices.length
-    ? devices.map((device) => renderDevice(device, devices.length)).join("")
-    : '<p class="status status-pending">Noch keine Geräte — lege oben eines an.</p>';
-
-  // With devices present, creating another one is the rare case, so the
-  // form folds away; with none, it is the only thing to do.
-  const createCard = document.getElementById("create-device");
-  if (createCard && !createCard.dataset.touched) createCard.open = devices.length === 0;
-  if (createCard && !createCard.dataset.wired) {
-    createCard.dataset.wired = "1";
-    createCard.querySelector("summary").addEventListener("click", () => {
-      createCard.dataset.touched = "1";
-    });
-  }
-
-  for (const el of list.querySelectorAll(".device-card")) {
-    const id = el.dataset.id;
-
-    el.addEventListener("toggle", () => {
-      if (el.open) openCards.add(id);
-      else openCards.delete(id);
-    });
-    el.querySelector(".build-btn").addEventListener("click", () => startBuild(id));
-    el.querySelector(".delete-btn").addEventListener("click", () => deleteDevice(id));
-
-    const repairBtn = el.querySelector(".repair-btn");
-    if (repairBtn) repairBtn.addEventListener("click", () => resetToolchain(id, repairBtn));
-
-    const thresholdForm = el.querySelector(".threshold-form");
-    if (thresholdForm) thresholdForm.addEventListener("submit", (evt) => pushThreshold(evt, id));
-
-    const detectBtn = el.querySelector(".detect-btn");
-    if (detectBtn) detectBtn.addEventListener("click", () => detectEntities(id, detectBtn));
-
-    const calibrateBtn = el.querySelector(".calibrate-btn");
-    if (calibrateBtn) calibrateBtn.addEventListener("click", () => calibrateDevice(id, calibrateBtn));
-
-    const healthBtn = el.querySelector(".health-btn");
-    if (healthBtn) healthBtn.addEventListener("click", () => runDiagnosis(id, el));
-
-    const saveEntitiesBtn = el.querySelector(".save-entities-btn");
-    if (saveEntitiesBtn) saveEntitiesBtn.addEventListener("click", () => saveEntityIds(id, el));
-
-    const saveConfigBtn = el.querySelector(".save-config-btn");
-    if (saveConfigBtn) saveConfigBtn.addEventListener("click", () => saveConfig(id, el));
-
-    const addressInput = el.querySelector(".address-input");
-    if (addressInput) {
-      addressInput.addEventListener("change", () =>
-        fetch(`api/devices/${id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address: addressInput.value.trim() || null }),
-        }).catch(() => {})
-      );
-    }
-
-    const probeBtn = el.querySelector(".probe-btn");
-    if (probeBtn) probeBtn.addEventListener("click", () => probeDevice(id, el));
-
-    const otaBtn = el.querySelector(".ota-btn");
-    if (otaBtn) otaBtn.addEventListener("click", () => startOta(id, el));
-
-    const keyBlock = el.querySelector(".key-block");
-    if (keyBlock) {
-      keyBlock.addEventListener("toggle", () => {
-        if (keyBlock.open) revealKey(id, el);
+    async convert(id) {
+      const d = state.legacy.find((x) => x.id === id);
+      const ok = await E.confirmDialog({
+        title: `„${d.friendly_name || d.name}“ auf Radar umstellen?`,
+        text: "Kennung, Knotenname, WLAN, API-Schlüssel und OTA-Passwort bleiben. Die CSI-Einstellungen werden als Datei im Geräteordner aufbewahrt. Danach Firmware bauen und aufspielen.",
+        confirm: "Umstellen",
       });
-    }
+      if (!ok) return;
+      try {
+        const device = await api(`api/legacy-devices/${encodeURIComponent(id)}/convert`, { method: "POST", body: {} });
+        await E.refresh();
+        toast("Umgestellt. Jetzt Firmware bauen.");
+        this.openDevice(device.id);
+      } catch (err) { toast(err.message, "err"); }
+    },
 
-    const copyKeyBtn = el.querySelector(".copy-key-btn");
-    if (copyKeyBtn) copyKeyBtn.addEventListener("click", () => copyKey(el, copyKeyBtn));
-  }
+    async dropLegacy(id) {
+      const d = state.legacy.find((x) => x.id === id);
+      const ok = await E.confirmDialog({ title: `„${d.friendly_name || d.name}“ entfernen?`,
+        text: "Der Eintrag verschwindet aus der Liste. Eine Kopie bleibt als csi_record.json im Geräteordner unter /data.",
+        confirm: "Entfernen", danger: true });
+      if (!ok) return;
+      try { await api(`api/legacy-devices/${encodeURIComponent(id)}`, { method: "DELETE" }); await E.refresh(); }
+      catch (err) { toast(err.message, "err"); }
+    },
 
-  for (const d of devices) {
-    if (d.status === "queued" || d.status === "running") pollDevice(d.id);
-    if (d.status === "success") refreshLiveState(d.id);
-  }
-}
+    // -------------------------------------------------------- create
 
-async function refreshLiveState(id) {
-  const block = document.querySelector(`.live-block[data-live-id="${id}"]`);
-  if (!block) return;
-  const motionEl = block.querySelector(".live-motion");
-  const scoreEl = block.querySelector(".live-score");
-  const thresholdInput = block.querySelector(".threshold-input");
-  const errorEl = block.querySelector(".live-error");
+    async openCreate() {
+      await loadBoards();
+      const sheet = E.openSheet("Sensor anlegen", { onClose: () => { this.sheet = null; if (location.hash.startsWith("#/devices/")) history.replaceState(null, "", "#/devices"); } });
+      this.sheet = sheet;
+      sheet.body.innerHTML = `
+        <form id="create" class="card">
+          ${field("Name", '<input name="friendly_name" required maxlength="40" placeholder="z. B. Wohnzimmer-Radar" autofocus>',
+            'Knotenname in ESPHome: <b class="mono" id="node-name">—</b>')}
+          ${field("Board", `<select name="board">${boards.map((b) => `<option value="${b.key}" ${b.key === "esp32c5" ? "selected" : ""}>${escapeHtml(b.label)}</option>`).join("")}</select>`)}
+          <button type="button" class="btn small" id="waveshare">Waveshare ESP32-C5-Zero übernehmen</button>
+          <p class="hint" style="margin:6px 0 14px">Setzt TX GPIO11, RX GPIO12 und hält GPIO26 low (Onboard-Antenne) — die Belegung des Prototyps.</p>
+          <div class="row2">
+            ${field("WLAN-Name", '<input name="wifi_ssid" required maxlength="32" autocomplete="off">')}
+            ${field("WLAN-Passwort", '<input name="wifi_password" type="password" maxlength="64" autocomplete="new-password">')}
+          </div>
+          <div id="band-field">${field("WLAN-Band", `<select name="wifi_band"><option value="2.4GHz">2,4 GHz</option><option value="5GHz">5 GHz</option><option value="auto">automatisch</option></select>`,
+            "Nur der ESP32-C5 hat zwei Bänder. Fürs Radar ist es egal — es entscheidet nur, welches Funknetz die Daten trägt.")}</div>
+          <div class="row3">
+            ${field("TX-Pin", '<input name="radar_tx_pin" type="number" min="0" max="56" inputmode="numeric">', "an Pin 8 (Rx2)")}
+            ${field("RX-Pin", '<input name="radar_rx_pin" type="number" min="0" max="56" inputmode="numeric">', "an Pin 7 (Tx2)")}
+            ${field("Antennen-Pin", '<input name="antenna_select_pin" type="number" min="0" max="56" placeholder="—" inputmode="numeric">', "optional, low")}
+          </div>
+          <details class="more"><summary>Weitere Optionen</summary>
+            <label class="check"><input type="checkbox" name="radar_quiet_means_empty"><span>Stille = leerer Raum
+              <small>Antwortet das Modul, meldet aber nichts, gilt der Raum als leer statt als unbekannt. Erst einschalten, wenn du beobachtet hast, dass dein Modul im leeren Raum verstummt.</small></span></label>
+            <label class="check"><input type="checkbox" name="diagnostics" checked><span>Diagnose-Entitäten<small>WLAN-Signal, Laufzeit, Temperatur, Byte- und Meldungszähler, Neustart-Knopf.</small></span></label>
+            <label class="check"><input type="checkbox" name="web_server" checked><span>Statusseite auf dem Gerät<small>http://&lt;ip&gt;/ — nützlich auf dem iPad, wo es kein Web Serial gibt.</small></span></label>
+            ${field("Log-Level", `<select name="log_level">${["INFO", "DEBUG", "WARN", "ERROR", "VERBOSE", "NONE"].map((l) => `<option>${l}</option>`).join("")}</select>`)}
+            ${field("BSSID (optional)", '<input name="wifi_bssid" placeholder="AA:BB:CC:DD:EE:FF">', "Nur um an einen bestimmten Access Point zu binden.")}
+          </details>
+          <div class="actions" style="margin-top:14px"><button class="btn primary" type="submit">${icon("check")}Anlegen</button></div>
+        </form>`;
+      const form = sheet.body.querySelector("#create");
+      const nodeName = sheet.body.querySelector("#node-name");
+      const applyBoard = () => {
+        const b = boards.find((x) => x.key === form.board.value);
+        sheet.body.querySelector("#band-field").hidden = !(b && b.dual_band);
+        if (b && b.radar_uart_pins) { form.radar_tx_pin.value = b.radar_uart_pins[0]; form.radar_rx_pin.value = b.radar_uart_pins[1]; }
+        if (!b || !b.dual_band) form.wifi_band.value = "2.4GHz";
+      };
+      form.board.addEventListener("change", applyBoard);
+      form.friendly_name.addEventListener("input", () => { nodeName.textContent = slug(form.friendly_name.value) || "—"; });
+      sheet.body.querySelector("#waveshare").addEventListener("click", () => {
+        form.board.value = "esp32c5"; applyBoard();
+        form.radar_tx_pin.value = 11; form.radar_rx_pin.value = 12; form.antenna_select_pin.value = 26;
+        toast("Waveshare-Belegung übernommen.");
+      });
+      applyBoard();
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const n = (v) => (v === "" || v === null ? null : Number(v));
+        const body = {
+          name: slug(form.friendly_name.value),
+          friendly_name: form.friendly_name.value.trim(),
+          board: form.board.value,
+          wifi_ssid: form.wifi_ssid.value,
+          wifi_password: form.wifi_password.value,
+          wifi_bssid: form.wifi_bssid.value.trim() || null,
+          wifi_band: sheet.body.querySelector("#band-field").hidden ? "2.4GHz" : form.wifi_band.value,
+          radar_tx_pin: n(form.radar_tx_pin.value),
+          radar_rx_pin: n(form.radar_rx_pin.value),
+          antenna_select_pin: n(form.antenna_select_pin.value),
+          radar_quiet_means_empty: form.radar_quiet_means_empty.checked,
+          diagnostics: form.diagnostics.checked,
+          web_server: form.web_server.checked,
+          log_level: form.log_level.value,
+        };
+        if (!body.name) { toast("Der Name braucht mindestens einen Buchstaben oder eine Ziffer.", "err"); return; }
+        try {
+          const device = await api("api/devices", { method: "POST", body });
+          await E.refresh();
+          sheet.close();
+          this.openDevice(device.id);
+          toast("Sensor angelegt. Als Nächstes die Firmware bauen.");
+        } catch (err) { toast(err.message, "err"); }
+      });
+    },
 
-  let state;
-  try {
-    state = await (await fetch(`api/devices/${id}/state`)).json();
-  } catch (err) {
-    state = { available: false, error: "Backend nicht erreichbar" };
-  }
+    // -------------------------------------------------------- device
 
-  const detectBtn = block.querySelector(".detect-btn");
-  // The same reading, shown once in the open card and once on the closed
-  // summary line — otherwise a collapsed list says nothing about the rooms.
-  const summary = document.querySelector(`.summary-live[data-summary-id="${id}"]`);
-  const setSummary = (stateName, text) => {
-    if (!summary) return;
-    summary.querySelector(".summary-dot").dataset.state = stateName;
-    summary.querySelector(".summary-live-text").textContent = text;
+    openDevice(id) {
+      const device = state.devices.find((d) => d.id === id);
+      if (!device) { toast("Diesen Sensor gibt es nicht mehr.", "err"); return; }
+      if (this.sheet) this.sheet.close();
+      const sheet = E.openSheet(device.config.friendly_name || device.config.name, {
+        onClose: () => { clearInterval(fast); this.sheet = null; if (location.hash.startsWith("#/device/")) history.replaceState(null, "", "#/devices"); },
+      });
+      this.sheet = sheet;
+      let lastJson = "";
+      sheet.refresh = () => {
+        const d = state.devices.find((x) => x.id === id);
+        if (!d) { sheet.close(); return; }
+        const json = JSON.stringify({ ...d, link: null });
+        if (json === lastJson) { this.updateLive(sheet, d); return; }
+        const active = document.activeElement;
+        if (active && sheet.body.contains(active) && active.matches("input, select, textarea")) { this.updateLive(sheet, d); return; }
+        lastJson = json;
+        this.renderDevice(sheet, d);
+      };
+      // Build and OTA runs change the record for minutes; poll faster
+      // while the sheet is open than the page does.
+      const fast = setInterval(() => {
+        const d = state.devices.find((x) => x.id === id);
+        if (d && ["queued", "running"].includes(d.status) || d && ["queued", "running"].includes(d.ota_status)) E.refresh();
+      }, 2000);
+      sheet.refresh();
+    },
+
+    updateLive(sheet, d) {
+      const box = sheet.body.querySelector("#live-lines");
+      if (box) box.innerHTML = this.liveLines(d);
+      const chips = sheet.body.querySelector("#dev-chips");
+      if (chips) chips.innerHTML = this.chips(d);
+    },
+
+    chips(d) {
+      return `${firmwareChip(d)}${linkChip(d)}${d.room ? `<a class="chip plain" href="#/room/${encodeURIComponent(d.room.id)}">${escapeHtml(d.room.name)}</a>` : ""}`;
+    },
+
+    liveLines(d) {
+      const l = d.link || {};
+      const states = { receiving: "empfängt Meldungen", quiet: "antwortet, meldet nichts", unknown: "Modul antwortet nicht" };
+      const rows = [
+        ["Verbindung", l.connected ? '<span class="chip ok">verbunden</span>' : `<span class="chip err">getrennt</span>`],
+        ["Radarmodul", l.link_state ? escapeHtml(states[l.link_state] || l.link_state) : "—"],
+        ["Letzte Meldung", l.frame_age_s !== null && l.frame_age_s !== undefined ? `vor ${E.formatNumber(l.frame_age_s, 1)} s` : "—"],
+        ["WLAN-Signal", l.wifi_signal !== null && l.wifi_signal !== undefined ? `${Math.round(l.wifi_signal)} dBm` : "—"],
+        ["Modul-Firmware", l.firmware ? escapeHtml(l.firmware) : "—"],
+        ["Adresse", escapeHtml(l.address || d.address || `${d.config.name}.local`)],
+      ];
+      return rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")
+        + (l.error ? `<p class="hint" style="margin-top:8px">${escapeHtml(l.error)}</p>` : "");
+    },
+
+    renderDevice(sheet, d) {
+      const c = d.config;
+      const board = boards.find((b) => b.key === c.board) || { label: c.board, dual_band: false };
+      const built = d.status === "success" && d.firmware_bin;
+      const busy = ["queued", "running"].includes(d.status) || ["queued", "running"].includes(d.ota_status);
+      const size = d.firmware_size ? ` (${(d.firmware_size / 1048576).toFixed(1)} MB)` : "";
+      sheet.head.textContent = c.friendly_name || c.name;
+      sheet.body.innerHTML = `
+        <div class="card"><div class="chips" id="dev-chips" style="margin-bottom:10px">${this.chips(d)}</div>
+          <div class="stat-lines" id="live-lines">${this.liveLines(d)}</div></div>
+
+        <div class="card device-card"><h2>Firmware</h2>
+          ${d.runs_radar_firmware === false ? '<div class="notice warn"><div class="grow">Auf dem Chip läuft noch die WLAN-CSI-Firmware. LD2460 anschließen, Firmware bauen und aufspielen.</div></div>' : ""}
+          ${d.firmware_behind_config ? '<div class="notice warn"><div class="grow">Die Einstellungen haben sich seit dem letzten Build geändert. Neu bauen und aufspielen, damit der Sensor sie kennt.</div></div>' : ""}
+          ${d.status === "running" || d.status === "queued" ? `<p class="flash-progress busy-note">${d.status === "queued" ? "Wartet auf einen freien Build-Platz…" : "Firmware wird gebaut. Der erste Build lädt etwa 2 GB ESP-IDF und dauert 10–20 Minuten."}</p>` : ""}
+          ${d.status === "error" ? `<div class="notice err"><div class="grow"><strong>Build fehlgeschlagen</strong>${escapeHtml(d.build_error || "")}</div></div>` : ""}
+          <div class="actions">
+            <button class="btn ${built ? "" : "primary"}" id="build" ${busy ? "disabled" : ""}>${built ? "Neu bauen" : "Firmware bauen"}</button>
+            ${(d.build_error || "").includes("Toolchain") ? `<button class="btn" id="toolchain">Toolchain zurücksetzen</button>` : ""}
+          </div>
+          ${built ? `
+            <h3 style="margin-top:18px">${icon("usb")} Über USB (erstes Mal)</h3>
+            <div class="actions">
+              <esp-web-install-button manifest="api/devices/${encodeURIComponent(d.id)}/manifest.json">
+                <button slot="activate">Über USB flashen</button>
+                <span slot="unsupported">Dieser Browser kann kein Web Serial — Chrome oder Edge am Computer nutzen, oder die Datei laden.</span>
+                <span slot="not-allowed">Web Serial braucht HTTPS.</span>
+              </esp-web-install-button>
+              <a class="btn" href="api/devices/${encodeURIComponent(d.id)}/firmware.bin" download="${escapeHtml(c.name)}-firmware.bin">${icon("download")}Datei${escapeHtml(size)}</a>
+            </div>
+            <p class="flash-progress" data-flash hidden></p>
+            <h3 style="margin-top:18px">${icon("wifi")} Über WLAN</h3>
+            <div class="actions" style="flex-wrap:nowrap">
+              <input class="grow" id="ota-address" value="${escapeHtml(d.address || "")}" placeholder="${escapeHtml(c.name)}.local oder IP"
+                style="flex:1;min-width:0;min-height:40px;padding:8px 12px;border-radius:11px;border:1px solid var(--line-strong);background:var(--surface-2)">
+              <button class="btn" id="ota" ${busy ? "disabled" : ""}>Aufspielen</button>
+            </div>
+            ${d.ota_status === "running" || d.ota_status === "queued" ? '<p class="flash-progress busy-note">Update über WLAN läuft…</p>' : ""}
+            ${d.ota_error ? `<div class="notice err" style="margin-top:10px"><div class="grow">${escapeHtml(d.ota_error)}</div></div>` : ""}
+            ${d.ota_last_success && !d.ota_error && d.ota_status === "success" ? `<p class="hint" style="margin-top:8px">Zuletzt per WLAN aktualisiert: ${escapeHtml(new Date(d.ota_last_success * 1000).toLocaleString("de-DE"))}</p>` : ""}
+          ` : ""}
+          ${d.build_log || d.ota_log ? `<details class="more" style="margin-top:14px"><summary>Protokoll</summary><pre class="log">${escapeHtml(d.ota_log && ["running", "error", "success"].includes(d.ota_status) && d.ota_log ? d.ota_log : d.build_log)}</pre></details>` : ""}
+          <details class="more" style="margin-top:8px"><summary>Verkabelung</summary>
+            <p class="hint">ESP GPIO${c.radar_tx_pin} (TX) → LD2460 Pin 8 (Rx2) · ESP GPIO${c.radar_rx_pin} (RX) ← Pin 7 (Tx2) · 5 V → VCC · GND → GND.
+            ${c.antenna_select_pin !== null ? `GPIO${c.antenna_select_pin} wird beim Start low gehalten (Antennenwahl).` : ""} VDD33 bleibt frei.</p></details>
+        </div>
+
+        <div class="card"><h2>Home Assistant</h2>
+          <p class="hint">Home Assistant findet den Sensor selbst (ESPHome-Integration). Beim Hinzufügen fragt es nach dem Schlüssel — der steht unter „Zugangsdaten“.
+          Räume und Zonen kommen zusätzlich als eigene Geräte über MQTT.</p>
+          <details class="more" style="margin-top:10px" id="creds"><summary>${icon("key")} Zugangsdaten anzeigen</summary><div id="creds-body" class="hint">Wird geladen…</div></details>
+          <div class="actions" style="margin-top:10px"><button class="btn small" id="probe">Erreichbarkeit prüfen</button>
+            ${c.web_server ? `<a class="btn small" target="_blank" rel="noopener" href="http://${encodeURIComponent(d.address || c.name + ".local")}/">Statusseite</a>` : ""}</div>
+          <p class="hint" id="probe-result" style="margin-top:8px"></p>
+        </div>
+
+        <details class="card more" style="padding:18px"><summary>Einstellungen</summary>
+          <form id="settings">
+            ${field("Name", `<input name="friendly_name" value="${escapeHtml(c.friendly_name || "")}" maxlength="40">`, `Knotenname <span class="mono">${escapeHtml(c.name)}</span> und Board ${escapeHtml(board.label)} bleiben fest.`)}
+            <div class="row2">
+              ${field("WLAN-Name", `<input name="wifi_ssid" value="${escapeHtml(c.wifi_ssid)}" maxlength="32">`)}
+              ${field("WLAN-Passwort", `<input name="wifi_password" type="password" placeholder="unverändert" autocomplete="new-password">`)}
+            </div>
+            ${board.dual_band ? field("WLAN-Band", `<select name="wifi_band">${[["2.4GHz", "2,4 GHz"], ["5GHz", "5 GHz"], ["auto", "automatisch"]].map(([v, l]) => `<option value="${v}" ${c.wifi_band === v ? "selected" : ""}>${l}</option>`).join("")}</select>`) : ""}
+            <div class="row3">
+              ${field("TX-Pin", `<input name="radar_tx_pin" type="number" min="0" max="56" value="${c.radar_tx_pin}">`)}
+              ${field("RX-Pin", `<input name="radar_rx_pin" type="number" min="0" max="56" value="${c.radar_rx_pin}">`)}
+              ${field("Antennen-Pin", `<input name="antenna_select_pin" type="number" min="0" max="56" value="${c.antenna_select_pin ?? ""}" placeholder="—">`)}
+            </div>
+            <label class="check"><input type="checkbox" name="radar_quiet_means_empty" ${c.radar_quiet_means_empty ? "checked" : ""}><span>Stille = leerer Raum<small>Ändert, was „0 Personen“ bedeutet — erst nach Beobachtung im leeren Raum einschalten.</small></span></label>
+            <label class="check"><input type="checkbox" name="diagnostics" ${c.diagnostics ? "checked" : ""}><span>Diagnose-Entitäten</span></label>
+            <label class="check"><input type="checkbox" name="web_server" ${c.web_server ? "checked" : ""}><span>Statusseite auf dem Gerät</span></label>
+            ${field("Log-Level", `<select name="log_level">${["NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"].map((l) => `<option ${c.log_level === l ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+            <p class="hint">Alles außer dem Namen wird erst mit dem nächsten Build und Flash wirksam.</p>
+            <div class="actions" style="margin-top:12px"><button class="btn primary" type="submit">Speichern</button></div>
+          </form>
+        </details>
+
+        <div class="card"><button class="btn danger" id="delete">${icon("trash")}Sensor löschen</button>
+          <p class="hint" style="margin-top:8px">Nimmt ihn auch aus seinem Raum. Das Gerät selbst läuft weiter, bis es neu geflasht wird.</p></div>`;
+      this.bindDevice(sheet, d);
+    },
+
+    bindDevice(sheet, d) {
+      const $ = (s) => sheet.body.querySelector(s);
+      const id = encodeURIComponent(d.id);
+      $("#build").addEventListener("click", async () => {
+        try { await api(`api/devices/${id}/build`, { method: "POST" }); await E.refresh(); toast("Build gestartet."); }
+        catch (err) { toast(err.message, "err"); }
+      });
+      const tc = $("#toolchain");
+      if (tc) tc.addEventListener("click", async () => {
+        try { await api(`api/devices/${id}/toolchain/reset`, { method: "POST" }); toast("Toolchain entfernt — der nächste Build lädt sie neu."); }
+        catch (err) { toast(err.message, "err"); }
+      });
+      const ota = $("#ota");
+      if (ota) ota.addEventListener("click", async () => {
+        const address = $("#ota-address").value.trim();
+        try { await api(`api/devices/${id}/ota`, { method: "POST", body: address ? { address } : {} }); await E.refresh(); toast("Update über WLAN gestartet."); }
+        catch (err) { toast(err.message, "err"); }
+      });
+      $("#creds").addEventListener("toggle", async (e) => {
+        if (!e.target.open) return;
+        try {
+          const c = await api(`api/devices/${id}/credentials`);
+          $("#creds-body").innerHTML = `
+            ${field("API-Schlüssel (für Home Assistant)", `<div class="secret">${escapeHtml(c.api_encryption_key)}</div>`)}
+            ${field("OTA-Passwort", `<div class="secret">${escapeHtml(c.ota_password)}</div>`)}
+            ${field(`Notfall-WLAN „${escapeHtml(d.fallback_ssid)}“`, `<div class="secret">${escapeHtml(c.fallback_password)}</div>`,
+              "Öffnet der Sensor nur, wenn er dein WLAN nicht erreicht.")}`;
+        } catch (err) { $("#creds-body").textContent = err.message; }
+      });
+      $("#probe").addEventListener("click", async () => {
+        const out = $("#probe-result");
+        out.textContent = "Wird geprüft…";
+        try {
+          const address = $("#ota-address") ? $("#ota-address").value.trim() : "";
+          const r = await api(`api/devices/${id}/reachability${address ? `?host=${encodeURIComponent(address)}` : ""}`);
+          out.textContent = r.message;
+        } catch (err) { out.textContent = err.message; }
+      });
+      $("#settings").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = e.target;
+        const n = (v) => (v === "" ? null : Number(v));
+        const config = {
+          wifi_ssid: f.wifi_ssid.value,
+          radar_tx_pin: n(f.radar_tx_pin.value),
+          radar_rx_pin: n(f.radar_rx_pin.value),
+          antenna_select_pin: n(f.antenna_select_pin.value),
+          radar_quiet_means_empty: f.radar_quiet_means_empty.checked,
+          diagnostics: f.diagnostics.checked,
+          web_server: f.web_server.checked,
+          log_level: f.log_level.value,
+        };
+        if (f.wifi_band) config.wifi_band = f.wifi_band.value;
+        if (f.wifi_password.value) config.wifi_password = f.wifi_password.value;
+        const c = d.config;
+        const changed = Object.fromEntries(Object.entries(config).filter(([k, v]) => k === "wifi_password" || c[k] !== v));
+        try {
+          if (Object.keys(changed).length) await api(`api/devices/${id}/config`, { method: "PATCH", body: changed });
+          if ((f.friendly_name.value.trim() || null) !== (c.friendly_name || null)) {
+            await api(`api/devices/${id}`, { method: "PATCH", body: { friendly_name: f.friendly_name.value.trim() || null } });
+          }
+          await E.refresh();
+          toast("Gespeichert.");
+        } catch (err) { toast(err.message, "err"); }
+      });
+      $("#delete").addEventListener("click", async () => {
+        const ok = await E.confirmDialog({ title: "Sensor löschen?", text: "Zugangsdaten und gebaute Firmware in Echolot gehen verloren.", confirm: "Löschen", danger: true });
+        if (!ok) return;
+        try { await api(`api/devices/${id}`, { method: "DELETE" }); sheet.close(); await E.refresh(); toast("Sensor gelöscht."); }
+        catch (err) { toast(err.message, "err"); }
+      });
+    },
   };
 
-  if (!state.available) {
-    motionEl.textContent = "nicht verfügbar";
-    motionEl.className = "live-motion status status-warn";
-    scoreEl.textContent = "—";
-    setSummary("warn", "nicht verfügbar");
-    errorEl.textContent = state.error || "Nicht verfügbar";
-    errorEl.hidden = false;
-    // The lookup only helps when the entity is missing; a broken
-    // connection to Home Assistant is a different problem and offering it
-    // there would just waste a click.
-    if (detectBtn) detectBtn.hidden = !(state.error || "").includes("existiert in Home Assistant nicht");
-    return;
-  }
-
-  if (detectBtn) detectBtn.hidden = true;
-  errorEl.hidden = true;
-  motionEl.textContent = state.motion ? "erkannt" : "frei";
-  motionEl.className = `live-motion status ${state.motion ? "status-ok" : "status-pending"}`;
-  scoreEl.textContent = state.movement_score != null ? state.movement_score.toFixed(2) : "—";
-  setSummary(
-    state.motion ? "on" : "off",
-    state.motion ? "Bewegung" : "frei",
-  );
-  if (state.threshold != null && document.activeElement !== thresholdInput) {
-    thresholdInput.value = state.threshold;
-  }
-}
-
-function refreshAllLiveStates() {
-  for (const block of document.querySelectorAll(".live-block")) {
-    refreshLiveState(block.dataset.liveId);
-  }
-}
-
-async function pushThreshold(evt, id) {
-  evt.preventDefault();
-  const form = evt.target;
-  const input = form.querySelector(".threshold-input");
-  const value = Number(input.value);
-  const errorEl = form.closest(".live-block").querySelector(".live-error");
-  try {
-    const res = await fetch(`api/devices/${id}/threshold`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      errorEl.textContent = body.detail || "Schwelle konnte nicht gesendet werden";
-      errorEl.hidden = false;
-      return;
-    }
-    errorEl.hidden = true;
-  } catch (err) {
-    errorEl.textContent = "Backend nicht erreichbar";
-    errorEl.hidden = false;
-  }
-}
-
-async function calibrateDevice(id, button) {
-  const errorEl = button.closest(".live-block").querySelector(".live-error");
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "Kalibriert…";
-  try {
-    const res = await fetch(`api/devices/${id}/calibrate`, { method: "POST" });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      errorEl.textContent = body.detail || "Kalibrierung konnte nicht ausgelöst werden";
-      errorEl.hidden = false;
-    } else {
-      errorEl.hidden = true;
-    }
-  } catch (err) {
-    errorEl.textContent = "Backend nicht erreichbar";
-    errorEl.hidden = false;
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
-}
-
-async function saveEntityIds(id, cardEl) {
-  const patch = {};
-  for (const input of cardEl.querySelectorAll(".entity-input")) {
-    patch[input.dataset.field] = input.value || null;
-  }
-  try {
-    const res = await fetch(`api/devices/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    if (res.ok) refreshLiveState(id);
-  } catch (err) {
-    // Best-effort — the entity editor has no dedicated error slot; a failed
-    // save just leaves the live state as before.
-  }
-}
-
-// The "your change has not reached the chip yet" line, added or removed
-// without redrawing the card around it.
-function markStale(cardEl, stale) {
-  const existing = cardEl.querySelector(".stale-line");
-  if (!stale) {
-    if (existing) existing.remove();
-    return;
-  }
-  if (existing) return;
-  const body = cardEl.querySelector(".device-body");
-  const line = document.createElement("p");
-  line.className = "stale-line status status-warn";
-  line.textContent =
-    "Umkonfiguriert, aber noch nicht neu gebaut — auf dem Gerät läuft weiter "
-    + "das zuletzt geflashte Image.";
-  body.insertBefore(line, body.firstElementChild);
-}
-
-async function saveConfig(id, cardEl) {
-  const out = cardEl.querySelector(".config-result");
-  const button = cardEl.querySelector(".save-config-btn");
-  const patch = {};
-  for (const field of cardEl.querySelectorAll(".cfg")) {
-    const name = field.dataset.field;
-    if (field.type === "checkbox") {
-      patch[name] = field.checked;
-    } else if (field.type === "number") {
-      // An empty optional pin means "none", not GPIO0 — which is what
-      // Number("") would make of it.
-      patch[name] = field.dataset.nullable && field.value === "" ? null : Number(field.value);
-    } else if (name === "wifi_password") {
-      // Empty means "leave it alone": the API never hands the real one
-      // back, so sending the placeholder would overwrite a working
-      // password with asterisks.
-      if (field.value) patch[name] = field.value;
-    } else {
-      patch[name] = field.value;
-    }
-  }
-
-  button.disabled = true;
-  out.hidden = false;
-  out.className = "config-result status status-pending";
-  out.textContent = "Wird gespeichert…";
-  try {
-    const res = await fetch(`api/devices/${id}/config`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      out.className = "config-result status status-err";
-      out.textContent = Array.isArray(body.detail)
-        ? body.detail.map((d) => d.msg).join(" · ")
-        : body.detail || "Speichern fehlgeschlagen";
-      return;
-    }
-    out.className = "config-result status status-ok";
-    out.textContent = "Gespeichert. Jetzt neu bauen und übertragen.";
-    // Deliberately not a full reload: re-rendering the list replaces this
-    // card, which collapses the section that was just used and throws
-    // away the confirmation with it. Only two things on screen can have
-    // changed, so both are updated in place.
-    markStale(cardEl, body.firmware_behind_config);
-    const meta = cardEl.querySelector(".device-meta");
-    if (meta && body.config) {
-      meta.textContent = deviceMeta(body.config);
-    }
-  } catch (err) {
-    out.className = "config-result status status-err";
-    out.textContent = "Backend nicht erreichbar";
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function startBuild(id) {
-  try {
-    const res = await fetch(`api/devices/${id}/build`, { method: "POST" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(data.detail || "Build konnte nicht gestartet werden");
-      return;
-    }
-  } catch (err) {
-    alert("Backend nicht erreichbar");
-    return;
-  }
-  await loadDevices();
-}
-
-async function deleteDevice(id) {
-  if (!confirm("Dieses Gerät löschen?")) return;
-  await fetch(`api/devices/${id}`, { method: "DELETE" });
-  await loadDevices();
-}
-
-function pollDevice(id) {
-  if (activePolls.has(id)) return;
-  activePolls.add(id);
-  const tick = async () => {
-    let device;
-    try {
-      device = await (await fetch(`api/devices/${id}`)).json();
-    } catch (err) {
-      activePolls.delete(id);
-      return;
-    }
-    const busy = (st) => st === "queued" || st === "running";
-    if (busy(device.status) || busy(device.ota_status)) {
-      setTimeout(tick, POLL_INTERVAL_MS);
-    } else {
-      activePolls.delete(id);
-      await loadDevices();
-    }
-  };
-  setTimeout(tick, POLL_INTERVAL_MS);
-}
-
-document.getElementById("device-form").addEventListener("submit", async (evt) => {
-  evt.preventDefault();
-  const errorEl = document.getElementById("device-form-error");
-  errorEl.hidden = true;
-
-  const form = evt.target;
-  const data = Object.fromEntries(new FormData(form).entries());
-  // Only the fields of the chosen sensor are in `data` — the others are
-  // disabled, see applySensor() — so each conversion checks first.
-  // Number(undefined) is NaN, which JSON sends as null and the API
-  // rightly refuses.
-  for (const name of ["csi_target_pps", "evaluation_interval_ms", "radar_tx_pin", "radar_rx_pin"]) {
-    if (name in data) data[name] = Number(data[name]);
-  }
-  if ("antenna_select_pin" in data) {
-    if (data.antenna_select_pin === "") delete data.antenna_select_pin;
-    else data.antenna_select_pin = Number(data.antenna_select_pin);
-  }
-  // FormData drops unchecked boxes entirely and reports "on" for checked
-  // ones, so neither state survives as the boolean the API expects.
-  data.web_server = form.elements.web_server.checked;
-  data.diagnostics = form.elements.diagnostics.checked;
-  for (const name of ["api_encryption", "radar_quiet_means_empty"]) {
-    if (!form.elements[name].disabled) data[name] = form.elements[name].checked;
-  }
-  if (!data.friendly_name) delete data.friendly_name;
-  if (!data.wifi_password) delete data.wifi_password;
-
-  try {
-    const res = await fetch("api/devices", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      const detail = Array.isArray(body.detail)
-        ? body.detail.map((e) => e.msg).join("; ")
-        : body.detail || "Gerät konnte nicht angelegt werden";
-      errorEl.textContent = detail;
-      errorEl.hidden = false;
-      return;
-    }
-    form.reset();
-    for (const name of ["radar_tx_pin", "radar_rx_pin"]) delete form.elements[name].dataset.touched;
-    applySensor();
-    await loadDevices();
-  } catch (err) {
-    errorEl.textContent = "Backend nicht erreichbar";
-    errorEl.hidden = false;
-  }
-});
-
-// Web Serial needs a secure context. Where the page already has one, the
-// warning is noise on every visit, and permanent noise is what stops
-// warnings from being read at all.
-if (!window.isSecureContext) {
-  document.getElementById("web-serial-notice").hidden = false;
-}
-
-// Once the person opens or closes the create form themselves, stop
-// deciding it for them on every reload.
-//
-// The listener is on the summary's click rather than the element's
-// `toggle`, because `toggle` cannot tell a person apart from the line in
-// loadDevices that opens the form when there are no devices — and it is
-// fired asynchronously, so a flag set around that assignment would be
-// gone by the time the event arrived. A click on the summary only ever
-// comes from a person; the keyboard sends one too.
-
-initSensorFields();
-loadBoards();
-loadPresets();
-loadDevices();
-setInterval(() => {
-  // One switch in the header stops every poller on the page.
-  if (!refreshPaused()) refreshAllLiveStates();
-}, 5000);
-
-// Flipping "cards open" in the header applies to the cards already drawn,
-// rather than only to the next poll.
-document.addEventListener("echolot:prefs", () => {
-  const open = expandAllCards();
-  for (const el of document.querySelectorAll(".device-card")) {
-    if (open) el.open = true;
-  }
-});
-
-// --- Diagnose ---------------------------------------------------------------
-//
-// Answers the question the rest of this page never could: is this device
-// actually sensing? Three real ways it can look healthy and not be — a
-// threshold belonging to the other detection profile, missing sensing
-// entities from stale firmware, and CSI diagnostics that never published —
-// each come back with the button that addresses them.
-
-const SEVERITY_CLASS = { blocker: "status-err", warning: "status-warn", info: "status-pending" };
-const SEVERITY_LABEL = { blocker: "Blockiert", warning: "Achtung", info: "Hinweis" };
-const ACTION_LABEL = {
-  recalibrate: "Neu kalibrieren",
-  rebuild: "Firmware neu bauen",
-  refresh_diagnostics: "Diagnosewerte abrufen",
-};
-
-function renderDiagnosis(card, body) {
-  const box = card.querySelector(".health-result");
-  box.hidden = false;
-  box.textContent = "";
-
-  if (!body.findings.length) {
-    const ok = document.createElement("p");
-    ok.className = "status status-ok";
-    ok.textContent = "Nichts zu beanstanden — das Gerät misst.";
-    box.appendChild(ok);
-  }
-
-  for (const finding of body.findings) {
-    const item = document.createElement("div");
-    item.className = "health-finding";
-
-    const head = document.createElement("strong");
-    head.className = `status ${SEVERITY_CLASS[finding.severity] || "status-pending"}`;
-    head.textContent = SEVERITY_LABEL[finding.severity] || finding.severity;
-    item.appendChild(head);
-
-    const text = document.createElement("p");
-    text.textContent = finding.message;
-    item.appendChild(text);
-
-    if (finding.action && ACTION_LABEL[finding.action]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "btn-secondary health-action";
-      button.dataset.action = finding.action;
-      button.textContent = ACTION_LABEL[finding.action];
-      item.appendChild(button);
-    }
-    box.appendChild(item);
-  }
-
-  // The numbers behind the verdict, so it can be checked rather than
-  // believed. Only shown once something has actually reported.
-  const measured = Object.entries(body.diagnostics || {}).filter(
-    ([, value]) => value !== null && value !== "unknown" && value !== "unavailable",
-  );
-  if (measured.length) {
-    const list = document.createElement("dl");
-    list.className = "health-numbers";
-    for (const [label, value] of measured) {
-      const term = document.createElement("dt");
-      term.textContent = label;
-      const def = document.createElement("dd");
-      def.textContent = value;
-      list.append(term, def);
-    }
-    box.appendChild(list);
-  }
-
-  const note = document.createElement("p");
-  note.className = "field-note";
-  note.textContent = `${body.samples} Messwerte aus den letzten ${body.window_minutes} Minuten.`;
-  box.appendChild(note);
-
-  for (const button of box.querySelectorAll(".health-action")) {
-    button.addEventListener("click", () => runHealthAction(card, button));
-  }
-}
-
-async function runDiagnosis(id, card) {
-  const button = card.querySelector(".health-btn");
-  const box = card.querySelector(".health-result");
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "Prüft…";
-  try {
-    const res = await fetch(`api/devices/${id}/health`);
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      box.hidden = false;
-      box.textContent = "";
-      const err = document.createElement("p");
-      err.className = "status status-err";
-      err.textContent = body.detail || "Diagnose fehlgeschlagen";
-      box.appendChild(err);
-      return;
-    }
-    card.dataset.deviceId = id;
-    renderDiagnosis(card, body);
-  } catch (err) {
-    box.hidden = false;
-    box.textContent = "";
-    const offline = document.createElement("p");
-    offline.className = "status status-err";
-    offline.textContent = "Backend nicht erreichbar";
-    box.appendChild(offline);
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
-}
-
-async function runHealthAction(card, button) {
-  const id = card.dataset.deviceId;
-  const endpoints = {
-    recalibrate: `api/devices/${id}/calibrate`,
-    rebuild: `api/devices/${id}/build`,
-    refresh_diagnostics: `api/devices/${id}/diagnostics/refresh`,
-  };
-  const url = endpoints[button.dataset.action];
-  if (!url) return;
-
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "Läuft…";
-  try {
-    const res = await fetch(url, { method: "POST" });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      button.textContent = body.detail || "Fehlgeschlagen";
-      return;
-    }
-    // The device needs a moment to publish what was just asked of it;
-    // re-running the diagnosis immediately would read the old values.
-    button.textContent = "Erledigt — Diagnose neu stellen";
-  } catch (err) {
-    button.textContent = "Backend nicht erreichbar";
-  } finally {
-    button.disabled = false;
-    setTimeout(() => {
-      button.textContent = original;
-    }, 6000);
-  }
-}
+  E.register("devices", view);
+})();

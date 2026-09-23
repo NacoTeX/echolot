@@ -1,15 +1,15 @@
 name: Echolot
-version: "0.14.0"
+version: "1.0.0"
 slug: echolot
 description: >-
-  Presence detection with HLK-LD2460 radar or Wi-Fi CSI: build the firmware,
-  flash it from the browser, and publish zones to Home Assistant.
+  Room presence with HLK-LD2460 radar: build the firmware, flash it from the
+  browser, draw rooms and zones on a floor plan, and publish them to Home
+  Assistant.
 url: "https://github.com/NacoTeX/echolot/tree/main/echolot"
 arch:
   - aarch64
   - amd64
 init: false
-homeassistant_api: true
 # Supervisor API: needed to look up the managed MQTT broker.
 hassio_api: true
 # Zones are published to Home Assistant over MQTT when a broker exists;

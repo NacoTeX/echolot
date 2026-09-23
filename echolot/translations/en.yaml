@@ -6,10 +6,11 @@ configuration:
       affect the log level of the firmware on your devices, which is set per
       device when you create it.
   mqtt_export:
-    name: Publish zones to Home Assistant
+    name: Publish rooms and zones to Home Assistant
     description: >-
-      Mirrors each zone to Home Assistant as an occupancy binary_sensor over
-      MQTT discovery. Needs a broker such as the Mosquitto add-on; without
-      one the add-on runs normally and zones stay visible only in this
-      interface.
+      Creates one Home Assistant device per room, with an occupancy
+      binary_sensor and a person count, and another pair per detection
+      zone, over MQTT discovery. Needs a broker such as the Mosquitto
+      add-on; without one the add-on runs normally and rooms stay visible
+      only in this interface.
 network: {}

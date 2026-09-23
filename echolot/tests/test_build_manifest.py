@@ -33,16 +33,11 @@ def make(**config):
     )
 
 
-def test_the_rendered_config_names_a_commit_not_a_branch():
-    yaml_text = builder.render_yaml(make())
-    assert f"ref: {builder.ESPECTRE_REF}" in yaml_text
-    assert "ref: main" not in yaml_text
-    assert len(builder.ESPECTRE_REF) == 40, "ein Branchname ist kein Commit"
-
-
 def test_the_manifest_says_what_it_was_built_from():
     manifest = builder.build_manifest(make(), None)
-    assert manifest["espectre_ref"] == builder.ESPECTRE_REF
+    assert manifest["sensor"] == "ld2460"
+    assert manifest["radar_component"]["sha256"] == builder.radar_component_digest()
+    assert "espectre_ref" not in manifest
     assert manifest["board"] == "esp32c6"
     assert manifest["esphome_version"]
     assert manifest["config_hash"]
@@ -59,9 +54,9 @@ def test_the_manifest_carries_no_secrets():
 
 
 def test_the_fingerprint_changes_with_the_configuration():
-    quiet = builder.config_fingerprint(make(csi_target_pps=50))
-    busy = builder.config_fingerprint(make(csi_target_pps=100))
-    assert quiet != busy
+    one = builder.config_fingerprint(make(radar_quiet_means_empty=False))
+    other = builder.config_fingerprint(make(radar_quiet_means_empty=True))
+    assert one != other
 
 
 def test_the_fingerprint_ignores_the_wifi_password():
@@ -217,27 +212,6 @@ def test_the_new_fields_carry_no_secrets_either(tmp_path, monkeypatch):
 
 
 # --- the environment a build actually runs in ---------------------------
-
-
-def test_a_build_names_the_espectre_version_for_cmake(monkeypatch):
-    """ESPHome checks out an external component shallow at the pinned
-    commit, with no tags, so ESPectre's `git describe` finds nothing and
-    its CMake stops before a compiler ever runs. The add-on passes the
-    version in; anything that builds firmware has to do the same."""
-    seen = {}
-
-    def fake_run(argv, cwd=None, capture_output=None, text=None, timeout=None, env=None):
-        seen.update(env or {})
-
-        class Result:
-            returncode = 0
-            stdout = stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(builder.subprocess, "run", fake_run)
-    builder._run_esphome(["esphome", "compile", "x.yaml"], Path("."), 10)
-    assert seen.get("ESPECTRE_GIT_VERSION") == builder.ESPECTRE_FALLBACK_VERSION
 
 
 def test_the_compile_smoke_uses_the_same_runner():

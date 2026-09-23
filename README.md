@@ -3,22 +3,18 @@
 </p>
 
 <p align="center">
-  Wi-Fi CSI presence detection for Home Assistant —<br>
-  build the firmware, flash it from the browser, group the sensors into zones.
+  Radar room presence for Home Assistant —<br>
+  build the firmware, flash it from the browser, draw your rooms and zones.
 </p>
 
 ---
 
-Echolot is a Home Assistant add-on that turns inexpensive ESP32 boards into
-presence sensors. It reads Channel State Information: the way a body moving
-through a room disturbs the Wi-Fi signal between the board and the router.
-Detection therefore needs no wearable, no phone, no camera, and no line of
-sight — the sensor can sit behind furniture.
-
-The sensing itself is [ESPectre][espectre], an ESPHome component. Echolot is
-everything around it: per-device firmware builds, browser-based flashing,
-over-the-air updates, zones, calibration, a live dashboard, and MQTT
-discovery so each zone arrives in Home Assistant as an occupancy sensor.
+Echolot is a Home Assistant add-on for room presence with the Hi-Link
+**HLK-LD2460**, a 24 GHz radar that reports up to five targets with their
+position. Put one on an inexpensive ESP32, and Echolot does the rest:
+per-device firmware builds, flashing over USB from the browser, updates
+over Wi-Fi, a floor plan with live targets, zones you draw with your finger,
+and every room and zone as an entity in Home Assistant.
 
 ## Installation
 
@@ -31,56 +27,47 @@ https://github.com/NacoTeX/echolot
 
 Then install **Echolot** and start it; the interface appears in the sidebar.
 
-Requires 64-bit Home Assistant OS or Supervised (`aarch64` or `amd64`).
-Espressif ships no ESP-IDF toolchain for 32-bit hosts, so `armv7` is not
-supported. The first firmware build downloads roughly 2 GB of ESP-IDF and
-cross toolchain into `/data/platformio`, where it stays.
+Requires 64-bit Home Assistant OS or Supervised (`aarch64` or `amd64`). The
+first firmware build downloads roughly 2 GB of ESP-IDF and cross toolchain
+into `/data/platformio`, where it stays.
 
 ## What it does
 
 - **Firmware from the browser.** Choose a board, enter Wi-Fi credentials,
-  press build. Echolot renders an ESPHome configuration, compiles it, and
-  serves the result as an [ESP Web Tools][ewt] manifest, so flashing runs
-  over USB from Chrome or Edge with no toolchain on your machine. Later
-  updates go over the network.
-- **Zones.** A zone groups devices into one presence state, with a hold time
-  and optional enter/exit thresholds, and is published to Home Assistant over
-  MQTT discovery.
-- **Calibration.** Record a session from a device, label what was happening,
-  and let Echolot learn what the room does when it is empty.
-- **Presence from the crossing rate.** Motion detection reacts in a second
-  and switches lights on; it cannot see somebody sitting still. Measured over
-  a minute, a still-occupied room crosses its threshold about ten times as
-  often as an empty one, and Echolot uses that as a second, slower signal
-  that keeps a zone occupied. See [DOCS.md][docs].
-- **Dashboard.** Movement score against detection threshold per device,
-  pre-filled from Home Assistant's recorder, plus a fused second opinion per
-  zone that reports disagreement instead of hiding it.
+  press build. Echolot compiles an ESPHome firmware with its own
+  `echolot_ld2460` component and serves it to [ESP Web Tools][ewt], so the
+  first flash runs over USB from Chrome or Edge. Later updates go over
+  Wi-Fi, from any browser — iPad included.
+- **Rooms on a floor plan.** Room size, an optional floor-plan image,
+  furniture, and where the sensor hangs and which way it looks. Targets
+  appear live on the plan, with a short trail.
+- **Zones like on the mmWave apps.** Draw rectangles or free shapes; drag
+  corners, add and remove them. Detection zones count people; exclusion
+  zones hide the fan and the curtain. Each zone has its own absence delay.
+- **Home Assistant.** Per room an occupancy sensor and a person count, and
+  another pair per zone, over MQTT discovery — and from there on to
+  HomeKit, Matter, Google or Alexa through Home Assistant's own bridges.
 
 ## Scope and limits
 
-Stated plainly, because CSI sensing is easy to oversell:
+- **Tested with simulated sensors, not yet in a real room.** The firmware
+  links on real toolchains and reads real frames in a host build; the room
+  map, zones and MQTT export are tested against a simulated node.
+- **The module has no target IDs.** Echolot counts and places targets per
+  report; it does not claim to follow a person across reports.
+- **Three hardware questions are open** — whether the LD2460 goes silent in
+  an empty room, the sign of its X axis, and the layout of two
+  acknowledgement frames. Each is a setting or a visible diagnostic rather
+  than an assumption. See [DOCS.md][docs].
 
-- **Rooms, not positions.** At 20 MHz channel bandwidth the range resolution
-  is about 15 m, and a single antenna gives no direction. Echolot answers
-  "is this room occupied", not "where in the room".
-- **The slow signal needs calibration.** Rate-based presence requires a
-  recording of at least ten minutes of the empty room. Without one, a device
-  contributes nothing to it rather than guessing.
-- **Measured in one room, on one device, so far.** The numbers in
-  [DOCS.md][docs] come from real recordings on real hardware, and that is
-  the whole sample.
-- **The direct BLE telemetry path is untested on hardware.** It is
-  implemented against ESPectre's documented protocol; no BLE-capable browser
-  was available to exercise it.
-- **No native Matter.** Once a zone is a Home Assistant entity, Home
-  Assistant's own HomeKit and Matter bridges export it — a smaller and more
-  reliable path than commissioning Matter in here.
+Up to 0.14 Echolot also built Wi-Fi CSI sensors through ESPectre. 1.0 is
+radar only; stored CSI devices keep their identity and credentials and can
+be converted in place. See [DOCS.md][docs].
 
 ## Documentation
 
-- [`echolot/DOCS.md`][docs] — configuration, zones, calibration, dashboard,
-  troubleshooting, and why things work the way they do
+- [`echolot/DOCS.md`][docs] — wiring, the interface, how counting works,
+  Home Assistant, troubleshooting, what is open
 - [`echolot/CHANGELOG.md`](echolot/CHANGELOG.md) — what changed, and why
 
 ## Development
@@ -93,20 +80,15 @@ python tools/validate_firmware.py  # every board through `esphome config`
 python tools/check_metadata.py     # add-on manifest sanity
 ```
 
-All three run in CI on every pull request. `tools/make_brand.py` regenerates
-the icon and logo.
+All three run in CI on every pull request; real firmware images are linked
+on pushes to `main` and on pull requests labelled `firmware`.
 
 ## Licence and affiliation
 
-GPL-3.0-or-later, matching [ESPectre][espectre], whose component this builds
-on. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](LICENSE).
 
-Echolot is an independent project, not affiliated with ESPectre's
-maintainers, with Home Assistant, or with [TOMMY][tommy] — the commercial
-CSI presence sensor whose closed firmware and per-device licence prompted
-this one. No claim of feature parity is made.
+Echolot is an independent project, not affiliated with Hi-Link, Aqara,
+Home Assistant, or ESPectre's maintainers.
 
-[espectre]: https://github.com/francescopace/espectre
 [ewt]: https://esphome.github.io/esp-web-tools/
 [docs]: echolot/DOCS.md
-[tommy]: https://www.tommysense.com

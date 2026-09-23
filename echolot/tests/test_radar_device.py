@@ -77,43 +77,7 @@ def test_impossible_wiring_is_refused(extra, fragment):
     assert fragment in str(err.value)
 
 
-def test_espectre_switches_cannot_lie_about_a_radar_node():
-    """No ESPectre HTTP surface to probe, and the API always encrypted —
-    whatever a client sent."""
-    config = radar_config(direct_api=True, api_encryption=False)
-    assert config.direct_api is False
-    assert config.api_encryption is True
-
-
-def test_a_csi_device_is_left_exactly_as_it_was():
-    config = DeviceCreate(name="flur", board="esp32c5", wifi_ssid="netz", wifi_password="passwort123")
-    assert config.sensor == "espectre"
-    assert config.radar_tx_pin is None and config.radar_rx_pin is None
-    assert config.direct_api is True
-
-
-def test_a_radar_node_gets_no_guessed_csi_entities(store):
-    device = devices.create_device(radar_config())
-    assert device.entity_motion is None
-    assert device.entity_movement_score is None
-
-
 # --- what was stored before -------------------------------------------
-
-
-def test_a_device_stored_before_0_14_is_a_csi_device(store):
-    raw = {
-        "id": "alt", "created_at": 1.0, "updated_at": 1.0,
-        "config": {"name": "flur", "board": "esp32c6", "wifi_ssid": "netz",
-                   "wifi_password": "passwort123"},
-        "api_encryption_key": "k" * 44, "ota_password": "o" * 32,
-    }
-    devices.INDEX_PATH.write_text(json.dumps({"alt": raw}), encoding="utf-8")
-    device = devices.get_device("alt")
-    assert device.config.sensor == "espectre"
-    # Written back, so the day the default changes it cannot move.
-    stored = json.loads(devices.INDEX_PATH.read_text())["alt"]["config"]
-    assert stored["sensor"] == "espectre"
 
 
 def _hash_as_0_13_9_did(device: Device) -> str:
@@ -124,22 +88,6 @@ def _hash_as_0_13_9_did(device: Device) -> str:
         payload.pop(field, None)
     encoded = json.dumps(payload, sort_keys=True, default=str).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
-
-
-def test_a_device_built_by_0_13_9_is_not_suddenly_stale(store):
-    """The regression this guards against: adding fields changes every
-    stored config's dump, so every device built by the previous version
-    read as "umkonfiguriert, aber noch nicht neu gebaut" the moment the
-    add-on updated — with nothing changed."""
-    device = devices.create_device(
-        DeviceCreate(name="flur", board="esp32c6", wifi_ssid="netz", wifi_password="passwort123")
-    )
-    device.status = BuildStatus.SUCCESS
-    device.build_manifest = {"config_hash": _hash_as_0_13_9_did(device)}
-    devices.save_device(device)
-
-    assert devices.config_fingerprint(device) == _hash_as_0_13_9_did(device)
-    assert devices.get_device(device.id).firmware_behind_config is False
 
 
 def test_moving_a_new_field_off_its_old_value_is_still_a_change():
@@ -202,15 +150,6 @@ def test_the_component_digest_follows_its_sources(tmp_path, monkeypatch):
     assert builder.radar_component_digest() != first
 
 
-def test_a_csi_manifest_is_unchanged():
-    device = as_device(DeviceCreate(name="flur", board="esp32c6", wifi_ssid="netz",
-                                    wifi_password="passwort123"))
-    manifest = builder.build_manifest(device, None)
-    assert manifest["espectre_ref"] == builder.ESPECTRE_REF
-    assert manifest["firmware_capabilities"]["supports_router"] is True
-    assert "radar_component" not in manifest
-
-
 # --- the fallback AP, for every device ---------------------------------
 
 
@@ -257,70 +196,7 @@ def test_the_wiring_can_be_changed_later(store):
     assert (changed.config.radar_tx_pin, changed.config.radar_rx_pin) == (4, 5)
 
 
-def test_a_radar_node_cannot_join_a_csi_zone(store, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setattr(main.devices, "INDEX_PATH", devices.INDEX_PATH)
-    radar = devices.create_device(radar_config())
-    client = TestClient(main.app)
-    refused = client.post("/api/zones", json={"name": "Wohnzimmer", "device_ids": [radar.id]})
-    assert refused.status_code == 422
-    assert "Radar" in refused.json()["detail"]
-
-
-def test_a_built_radar_node_is_not_reported_as_silent_in_home_assistant(store, monkeypatch):
-    """The overview asks Home Assistant for CSI entities. A radar node has
-    none, and being told it "liefert keine Werte" would be a false alarm.
-    Through the route, because the route is where the reading happens."""
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setattr(main.devices, "INDEX_PATH", devices.INDEX_PATH)
-    monkeypatch.setenv("ECHOLOT_MQTT_EXPORT", "false")
-    device = devices.create_device(radar_config())
-    device.status = BuildStatus.SUCCESS
-    device.build_manifest = builder.build_manifest(device, None)
-    devices.save_device(device)
-
-    body = TestClient(main.app).get("/api/overview").json()
-    about_it = [p["kind"] for p in body["problems"] if p.get("device_id") == device.id]
-    assert about_it == []
-
-
 def test_the_card_shows_the_real_fallback_network(store):
     device = devices.create_device(radar_config())
     assert device.public()["fallback_ssid"] == "wohnzimmer-radar Fallback"
 
-
-def test_a_radar_node_is_not_told_about_espectres_port(store, monkeypatch):
-    """62587 is ESPectre's HTTP surface. Its silence on a radar node is
-    not a finding, and the sentence about `direct_api` would send
-    somebody looking for a switch that node never had."""
-    from fastapi.testclient import TestClient
-
-    async def answered(host, timeout=0):
-        return {"host": host, "resolved": "192.168.178.30", "verdict": "ok", "api": True,
-                "web": True, "direct": False, "reachable": True}
-
-    monkeypatch.setattr(main.devices, "INDEX_PATH", devices.INDEX_PATH)
-    monkeypatch.setattr(main.reachability, "check", answered)
-    radar = devices.create_device(radar_config())
-    csi = devices.create_device(DeviceCreate(name="flur", board="esp32c6", wifi_ssid="netz",
-                                             wifi_password="passwort123"))
-    client = TestClient(main.app)
-    assert client.get(f"/api/devices/{radar.id}/reachability?host=x").json()["direct_message"] is None
-    assert "62587" in client.get(f"/api/devices/{csi.id}/reachability?host=x").json()["direct_message"]
-
-
-def test_hidden_means_hidden_in_the_device_form():
-    """`.device-form label` sets display, which beats the hidden
-    attribute. Without an explicit rule the band field stood in the form
-    for single-band boards since 0.13.8, and the fields of the other
-    sensor type would stand there too. Checked in a browser once; this
-    keeps the rule from being tidied away."""
-    import re
-
-    css = (Path(__file__).resolve().parents[1] / "app" / "static" / "style.css").read_text()
-    rule = re.search(r"\.device-form \[hidden\]\s*\{([^}]*)\}", css)
-    assert rule and re.search(r"display:\s*none\s*!important", rule.group(1))
-    html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text()
-    assert 'data-sensor="ld2460"' in html and 'data-sensor="espectre"' in html

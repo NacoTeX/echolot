@@ -1,15 +1,11 @@
 """Known ESP32 boards for Echolot firmware builds.
 
-Shaped after ESPectre's own example configurations
-(https://github.com/francescopace/espectre/tree/main/examples): the
-classic ESP32 is selected by `board:`, every other chip by `variant:`,
-and none of them pin a framework version — ESPHome's recommended one is
-the right default, and pinning it only produces warnings.
-
-There is no `ble` flag any more: ESPectre dropped its BLE telemetry
-channel when it restructured in September 2026, so nothing in the
-generated firmware or the dashboard depends on which chips have
-Bluetooth.
+The classic ESP32 is selected by `board:`, every other chip by
+`variant:`, and none of them pin a framework version — ESPHome's
+recommended one is the right default, and pinning it only produces
+warnings. `radar_uart_pins` is the (TX, RX) pair suggested for the
+HLK-LD2460: pins that are free on the common dev boards and not strapping
+pins.
 """
 
 from dataclasses import dataclass
@@ -23,8 +19,8 @@ class Board:
     chip_family: str  # what ESP Web Tools calls it in a manifest
     esphome_board: str | None = None  # only where a board id is needed
     # Not every chip reaches 240MHz — the C3 and C6 top out lower, and
-    # asking for more is a hard config error. Values follow ESPectre's
-    # per-board examples; None means "leave it to ESPHome".
+    # asking for more is a hard config error. None means "leave it to
+    # ESPHome".
     cpu_frequency: str | None = None
     experimental: bool = False
     #: Two radios to choose between, so the band is a decision somebody
@@ -32,9 +28,7 @@ class Board:
     #: `wifi.band_mode` is declared
     #: `only_on_variant(supported=[VARIANT_ESP32C5])`, so rendering the
     #: key for any other chip is a config error rather than an ignored
-    #: line. ESPectre reads the same key — `_runtime_wifi_band_policy()`
-    #: returns a flat "2g" for every other variant — so this one flag
-    #: governs both halves.
+    #: line.
     dual_band: bool = False
     #: Where a radar module's UART goes when nobody says otherwise, as
     #: (ESP TX, ESP RX). A suggestion, not a fact about any particular
@@ -89,10 +83,8 @@ BOARDS: dict[str, Board] = {
         Board("esp32c5", "ESP32-C5", "ESP32C5", "ESP32-C5", cpu_frequency="240MHz",
               dual_band=True, radar_uart_pins=(11, 12)),
         Board("esp32c6", "ESP32-C6", "ESP32C6", "ESP32-C6", radar_uart_pins=(16, 17)),
-        # ESPectre still ships an S2 example, but flags less testing on it
-        # than the chips it maintains as canonical.
-        Board("esp32s2", "ESP32-S2 (experimentell)", "ESP32S2", "ESP32-S2",
-              cpu_frequency="240MHz", experimental=True, radar_uart_pins=(17, 18)),
+        Board("esp32s2", "ESP32-S2", "ESP32S2", "ESP32-S2",
+              cpu_frequency="240MHz", radar_uart_pins=(17, 18)),
         Board("esp32s3", "ESP32-S3", "ESP32S3", "ESP32-S3", cpu_frequency="240MHz",
               radar_uart_pins=(43, 44)),
     ]
