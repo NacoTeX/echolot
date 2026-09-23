@@ -14,7 +14,6 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.board_registry import get_board
-from app.firmware import ESPECTRE_REF, CAPABILITIES as FIRMWARE_CAPABILITIES
 from app.devices import (
     BuildStatus,
     Device,
@@ -23,7 +22,6 @@ from app.devices import (
     device_dir,
     effective_band,
     fallback_ssid,
-    is_radar,
     update_device,
 )
 
@@ -68,15 +66,6 @@ _LOG_TAIL_CHARS = 20_000
 # see toolchain_compiler() below.
 _MISSING_COMPILER_MARKER = "is not a full path and was not found in the PATH"
 
-# ESPHome external-component checkouts can contain no tags.  ESPectre's CMake
-# build normally derives its SDK version with ``git describe``, but such a
-# checkout of ``main`` contains none of the numeric tags it searches for.
-# Upstream explicitly supports this environment-variable fallback for source
-# archives and other unstamped checkouts.  Zero is intentionally an
-# "unknown development checkout" version rather than pretending that the
-# moving main branch is one of ESPectre's releases.  A caller may still provide
-# the exact version and wins through setdefault() below.
-ESPECTRE_FALLBACK_VERSION = "0.0.0"
 
 
 def platformio_core_dir() -> Path:
@@ -258,7 +247,7 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "echolot_version": addon_version(),
         "echolot_revision": addon_revision(),
         # What the image senses with. Absent from manifests written
-        # before 0.14.0, all of which are ESPectre builds.
+        # before 0.14.0, all of which are Wi-Fi CSI builds.
         "sensor": device.config.sensor,
         "esphome_version": esphome_version(),
         # The requirement as written: the installed version alone does not
@@ -266,10 +255,7 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "esphome_pin": esphome_pin(),
         "framework": framework_base(),
         "board": device.config.board,
-        # Which radio this image measures on. Only the C5 has a choice,
-        # and an image built before 0.13.8 made none — so "which band was
-        # this baseline learned under" had no answer at all until the
-        # manifest carried one.
+        # Which radio this image uses. Only the C5 has a choice.
         "wifi_band": effective_band(device.config),
         # Where the compile ran, not what it produced.
         "built_on_arch": os.environ.get("ECHOLOT_BUILD_ARCH") or None,
@@ -279,22 +265,14 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "fallback_ap_secured": True,
         "built_at": time.time(),
     }
-    if is_radar(device):
-        manifest["radar_component"] = {
-            "name": RADAR_COMPONENT,
-            "sha256": radar_component_digest(),
-            "frame_format": RADAR_FRAME_FORMAT,
-        }
-        # What the stored "quiet" rule was when this image was made: it
-        # decides whether a silent module reads as nobody or as unknown.
-        manifest["radar_quiet_means_empty"] = device.config.radar_quiet_means_empty
-    else:
-        manifest["espectre_ref"] = ESPECTRE_REF
-        # What that commit measures, recorded with the image rather
-        # than looked up later. A device flashed a year ago runs the
-        # firmware of a year ago, and asking today's add-on what it
-        # can do would be asking the wrong build.
-        manifest["firmware_capabilities"] = dict(FIRMWARE_CAPABILITIES)
+    manifest["radar_component"] = {
+        "name": RADAR_COMPONENT,
+        "sha256": radar_component_digest(),
+        "frame_format": RADAR_FRAME_FORMAT,
+    }
+    # What the stored "quiet" rule was when this image was made: it
+    # decides whether a silent module reads as nobody or as unknown.
+    manifest["radar_quiet_means_empty"] = device.config.radar_quiet_means_empty
     if firmware is not None and firmware.exists():
         digest = hashlib.sha256()
         with firmware.open("rb") as fh:
@@ -306,42 +284,11 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
 
 
 def render_yaml(device: Device) -> str:
-    board = get_board(device.config.board)
-    if is_radar(device):
-        return _render_radar_yaml(device, board)
-    template = _env.get_template("espectre.yaml.j2")
-    return template.render(
-        espectre_ref=ESPECTRE_REF,
-        device_name=device.config.name,
-        friendly_name=device.config.friendly_name or device.config.name,
-        board=board,
-        wifi_ssid=device.config.wifi_ssid,
-        wifi_password=device.config.wifi_password,
-        wifi_bssid=device.config.wifi_bssid,
-        wifi_band=effective_band(device.config),
-        detection_algorithm=device.config.detection_algorithm,
-        csi_target_pps=device.config.csi_target_pps,
-        csi_traffic_mode=device.config.csi_traffic_mode,
-        traffic_generator_mode=device.config.traffic_generator_mode,
-        evaluation_interval_ms=device.config.evaluation_interval_ms,
-        direct_api=device.config.direct_api,
-        web_server=device.config.web_server,
-        diagnostics=device.config.diagnostics,
-        log_level=device.config.log_level,
-        api_encryption=device.config.api_encryption,
-        api_encryption_key=device.api_encryption_key,
-        ota_password=device.ota_password,
-        fallback_ssid=fallback_ssid(device.config.name),
-        fallback_password=device.fallback_password,
-    )
-
-
-def _render_radar_yaml(device: Device, board) -> str:
     config = device.config
     return _env.get_template("ld2460.yaml.j2").render(
         device_name=config.name,
         friendly_name=config.friendly_name or config.name,
-        board=board,
+        board=get_board(config.board),
         wifi_ssid=config.wifi_ssid,
         wifi_password=config.wifi_password,
         wifi_bssid=config.wifi_bssid,
@@ -460,7 +407,6 @@ def _run_esphome(argv: list[str], cwd: Path, timeout: int) -> subprocess.Complet
     means all four, just not all at once.
     """
     env = os.environ.copy()
-    env.setdefault("ESPECTRE_GIT_VERSION", ESPECTRE_FALLBACK_VERSION)
     with _build_slots:
         return subprocess.run(
             argv,

@@ -1,44 +1,29 @@
 # Echolot
 
-Presence detection for Home Assistant. Echolot compiles per-device
-firmware, flashes it from the browser, groups devices into zones, and
-publishes those zones back to Home Assistant as occupancy sensors.
-
-Two kinds of sensor node:
-
-- **Radar** — a Hi-Link HLK-LD2460 on an ESP32, reporting up to five
-  targets with their position. Since 0.14.0; the room map that turns
-  positions into zones is the next step. See "Radar mit dem HLK-LD2460"
-  in [DOCS.md](DOCS.md).
-- **Wi-Fi CSI** through [ESPectre][espectre], described below.
-
-It reads Channel State Information — how a body moving through a room
-disturbs the Wi-Fi between the board and the router — so detection needs no
-wearable, no phone, no camera and no line of sight.
+Radar room presence for Home Assistant, with the Hi-Link HLK-LD2460 on an
+ESP32. Echolot builds the firmware, flashes it from the browser, puts the
+sensor on a floor plan, lets you draw zones on it, and publishes every room
+and zone to Home Assistant.
 
 ## What it does
 
-**Devices.** Pick a board, enter Wi-Fi credentials, press build. Echolot
-renders an ESPHome configuration, compiles it, and serves the result as an
-[ESP Web Tools][ewt] manifest, so flashing happens over USB straight from
-Chrome or Edge — no toolchain on your machine. Later updates go over the
-network instead, from any browser.
+**Sensors.** Pick a board, enter Wi-Fi credentials, press build. The first
+flash runs over USB from Chrome or Edge; every update after that goes over
+Wi-Fi from any browser. A button fills in the wiring of the Waveshare
+ESP32-C5-Zero.
 
-**Zones.** A zone is a group of devices with one presence state. Raw
-OR-logic reacts instantly and drops out just as instantly, so zones also
-carry a hold time and optional enter/exit thresholds — see [DOCS.md](DOCS.md).
+**Rooms.** Size, floor-plan image, furniture, and the sensor's position and
+direction. The plan shows every target live, marks those behind a wall or in
+an exclusion zone as not counting, and says why when a room has no current
+measurement instead of calling it empty.
 
-**Calibration and slow presence.** Record a session from a device, label
-what was happening, and Echolot learns what the room does when it is empty.
-Motion detection reacts in a second and is what switches a light on; it
-cannot see somebody sitting still. Measured over a minute, a still-occupied
-room crosses its threshold about ten times as often as an empty one, and
-that becomes a second, slower signal that keeps a zone occupied.
+**Zones.** Rectangles or free shapes, drawn and reshaped on the plan.
+Detection zones count people and keep an absence delay; exclusion zones hide
+fans and curtains.
 
-**Dashboard.** Each device plots its movement score against its detection
-threshold, pre-filled from Home Assistant's recorder. On BLE-capable boards
-a browser can subscribe to the device's telemetry directly for a 40 ms
-live view.
+**Home Assistant.** One device per room with *Anwesenheit* (occupancy) and
+*Personen* (count), and another pair per detection zone, over MQTT
+discovery.
 
 ## Installing
 
@@ -52,15 +37,13 @@ https://github.com/NacoTeX/echolot
 Then install **Echolot** and start it. The interface lives in the sidebar.
 
 Requires a 64-bit Home Assistant OS or Supervised install (aarch64 or
-amd64). Espressif ships no ESP-IDF toolchain for 32-bit hosts, so armv7 is
-not supported.
-
-The first firmware build downloads roughly 2 GB of ESP-IDF and cross
-toolchain into `/data/platformio`, where it stays for subsequent builds.
+amd64). The first firmware build downloads roughly 2 GB of ESP-IDF and cross
+toolchain into `/data/platformio`, where it stays.
 
 ## Documentation
 
-- [DOCS.md](DOCS.md) — configuration, zones, calibration, dashboard, troubleshooting
+- [DOCS.md](DOCS.md) — wiring, the interface, counting, Home Assistant,
+  troubleshooting, and what is still open
 - [CHANGELOG.md](CHANGELOG.md) — what changed, and why
 
 ## Developing
@@ -72,16 +55,9 @@ python tools/validate_firmware.py  # every board through `esphome config`
 python tools/check_metadata.py     # add-on manifest sanity
 ```
 
-All three run in CI on every pull request. `tools/make_brand.py` regenerates
-`icon.png` and `logo.png`.
+`tools/make_brand.py` regenerates `icon.png` and `logo.png`.
 
-## Licence and affiliation
+## Licence
 
-GPL-3.0-or-later, matching ESPectre, whose component this builds on.
-
-Echolot is an independent project, not affiliated with ESPectre's
-maintainers, with Home Assistant, or with any commercial CSI presence
-product.
-
-[espectre]: https://github.com/francescopace/espectre
-[ewt]: https://esphome.github.io/esp-web-tools/
+GPL-3.0-or-later. Echolot is an independent project, not affiliated with
+Hi-Link, Aqara or Home Assistant.

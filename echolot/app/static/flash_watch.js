@@ -121,7 +121,7 @@ if (typeof document !== "undefined") {
   );
 
   function renderFlashProgress(card, view) {
-    const box = card && card.querySelector(".flash-progress");
+    const box = card && (card.querySelector(".flash-progress[data-flash]") || card.querySelector(".flash-progress"));
     if (!box) return;
     if (!view) {
       box.hidden = true;

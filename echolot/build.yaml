@@ -4,6 +4,6 @@ build_from:
 labels:
   org.opencontainers.image.title: Echolot
   org.opencontainers.image.description: >-
-    Self-hosted Wi-Fi CSI presence detection hub built on ESPectre.
+    Room presence with HLK-LD2460 radar nodes, floor plans and zones for Home Assistant.
   org.opencontainers.image.source: https://github.com/NacoTeX/echolot
   org.opencontainers.image.licenses: GPL-3.0-or-later

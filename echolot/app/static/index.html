@@ -2,501 +2,94 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Echolot</title>
   <link rel="stylesheet" href="static/style.css">
   <link rel="icon" href="static/icon.svg" type="image/svg+xml">
   <script type="module" src="static/vendor/esp-web-tools/install-button.js"></script>
 </head>
 <body>
-  <main>
-    <header>
-      <div class="header-top">
-        <div class="brand">
-          <img src="static/icon.svg" alt="" width="44" height="44">
-          <div>
-            <h1>Echolot</h1>
-            <p class="subtitle">WLAN-CSI-Präsenzerkennung für Home Assistant</p>
-          </div>
-        </div>
+  <!-- Line icons, 24×24, drawn with the text colour. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></symbol>
+    <symbol id="i-living" viewBox="0 0 24 24"><path d="M4 11V8.5A2.5 2.5 0 0 1 6.5 6h11A2.5 2.5 0 0 1 20 8.5V11"/><path d="M3 13a2 2 0 0 1 4 0v2h10v-2a2 2 0 0 1 4 0v5H3z"/><path d="M5 18v2M19 18v2"/></symbol>
+    <symbol id="i-bedroom" viewBox="0 0 24 24"><path d="M3 18V6M3 14h18v4M21 18v-4a3 3 0 0 0-3-3h-8v3"/><circle cx="6.5" cy="11" r="1.6"/></symbol>
+    <symbol id="i-kitchen" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M8 6h.01M11 6h.01M9 13v4"/></symbol>
+    <symbol id="i-dining" viewBox="0 0 24 24"><path d="M3 10h18M6 10v9M18 10v9M8 6v4M12 5v5M16 6v4"/></symbol>
+    <symbol id="i-office" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="11" rx="1.5"/><path d="M8 20h8M12 15v5"/></symbol>
+    <symbol id="i-bath" viewBox="0 0 24 24"><path d="M3 12h18v2a5 5 0 0 1-5 5H8a5 5 0 0 1-5-5z"/><path d="M6 12V6a2 2 0 0 1 4 0M7 19l-1 2M17 19l1 2"/></symbol>
+    <symbol id="i-hall" viewBox="0 0 24 24"><path d="M6 21V4h12v17M3 21h18"/><circle cx="14.5" cy="12.5" r=".9"/></symbol>
+    <symbol id="i-kids" viewBox="0 0 24 24"><rect x="4" y="9" width="7" height="7" rx="1"/><path d="M15 16l3-7 3 7z"/><circle cx="8" cy="5.5" r="2"/><path d="M3 20h18"/></symbol>
+    <symbol id="i-generic" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M4 12h9v8"/></symbol>
+    <symbol id="i-radar" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="7" rx="2"/><path d="M12 10v3"/><path d="M5.6 15.5a9 9 0 0 0 12.8 0M8.4 13a5 5 0 0 0 7.2 0"/><path d="M12 13v8"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+    <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M5 3l14 7-6 2-2 6z"/></symbol>
+    <symbol id="i-rect" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke-dasharray="3 2"/></symbol>
+    <symbol id="i-polygon" viewBox="0 0 24 24"><path d="M5 8l7-4 7 5-2 10H7z"/><circle cx="5" cy="8" r="1.4"/><circle cx="12" cy="4" r="1.4"/><circle cx="19" cy="9" r="1.4"/><circle cx="17" cy="19" r="1.4"/><circle cx="7" cy="19" r="1.4"/></symbol>
+    <symbol id="i-armchair" viewBox="0 0 24 24"><path d="M6 11V7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4"/><path d="M4 12a2 2 0 0 1 4 0v2h8v-2a2 2 0 0 1 4 0v5H4z"/><path d="M6 17v2M18 17v2"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-magnet" viewBox="0 0 24 24"><path d="M4 4h5v4H4zM15 4h5v4h-5z"/><path d="M4 8v4a8 8 0 0 0 16 0V8M9 8v4a3 3 0 0 0 6 0V8"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-usb" viewBox="0 0 24 24"><path d="M12 3v14M9 6l3-3 3 3M7 10v2l5 3 5-3v-2"/><circle cx="12" cy="19" r="2"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5L5 20"/></symbol>
+    <symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="7" r="3.5"/><path d="M5 21a7 7 0 0 1 14 0"/></symbol>
+    <symbol id="i-bed" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><rect x="6.5" y="5.5" width="4.5" height="3" rx="1"/><rect x="13" y="5.5" width="4.5" height="3" rx="1"/><path d="M4 11h16"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="10" rx="2"/></symbol>
+    <symbol id="i-desk" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="7" rx="1"/><path d="M5 14v5M19 14v5"/></symbol>
+    <symbol id="i-chair" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M7 7V5h10v2"/></symbol>
+    <symbol id="i-tv" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="1.5"/><path d="M9 20h6"/></symbol>
+    <symbol id="i-wardrobe" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M12 3v18M10 12h.01M14 12h.01"/></symbol>
+    <symbol id="i-plant" viewBox="0 0 24 24"><path d="M7 15h10l-1.5 6h-7z"/><path d="M12 15V9M12 9c0-3 2-5 5-5 0 3-2 5-5 5zM12 11c0-2.5-1.8-4-4-4 0 2.5 1.8 4 4 4z"/></symbol>
+    <symbol id="i-door" viewBox="0 0 24 24"><path d="M4 20h16M6 20V4l9 2v14"/><path d="M6 4a14 14 0 0 1 14 14"/></symbol>
+    <symbol id="i-window" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M12 4v16M4 12h16"/></symbol>
+    <symbol id="i-sensor" viewBox="0 0 24 24"><circle cx="12" cy="7" r="3"/><path d="M12 10v2"/><path d="M4 15l8-3 8 3M6 20l6-8 6 8" stroke-dasharray="2 2"/></symbol>
+    <symbol id="i-mirror" viewBox="0 0 24 24"><path d="M12 3v18M9 7L4 12l5 5M15 7l5 5-5 5"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.5"/><path d="M20 3.5v5h-5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></symbol>
+  </svg>
 
-        <!-- The system's own state used to be visible only on the overview
-             tab, so a broken MQTT bridge or a missing SUPERVISOR_TOKEN was
-             invisible while you worked anywhere else. This says it on every
-             tab, and opens the same problem list. -->
-        <div class="header-actions">
-          <button type="button" id="status-chip" class="status-chip"
-                  aria-expanded="false" aria-controls="status-panel">
-            <span class="status-dot" data-state="unknown"></span>
-            <span id="status-chip-text">wird geprüft…</span>
-          </button>
-
-          <div id="status-panel" class="status-panel" hidden>
-            <h2>Systemzustand</h2>
-            <div id="status-panel-problems"></div>
-
-            <h2>Ansicht</h2>
-            <label class="checkbox-field">
-              <input type="checkbox" id="pref-pause">
-              <span>Automatisch aktualisieren aussetzen
-                <span class="field-hint">
-                  Hält das Neuladen an, damit ein Log oder eine Zahl stehen
-                  bleibt, während du sie liest.
-                </span>
-              </span>
-            </label>
-            <label class="checkbox-field">
-              <input type="checkbox" id="pref-expand">
-              <span>Gerätekarten offen anzeigen
-                <span class="field-hint">
-                  Sonst zeigt jede Karte nur Name und Zustand, bis du sie
-                  aufklappst.
-                </span>
-              </span>
-            </label>
-
-            <p class="status-panel-links">
-              <a href="https://github.com/NacoTeX/echolot/blob/main/echolot/DOCS.md"
-                 target="_blank" rel="noreferrer">Dokumentation</a>
-              <a href="https://github.com/NacoTeX/echolot/blob/main/echolot/CHANGELOG.md"
-                 target="_blank" rel="noreferrer">Änderungen</a>
-            </p>
-          </div>
-        </div>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Navigation">
+      <div class="brand">
+        <img src="static/icon.svg" alt="">
+        <div><strong>Echolot</strong><span>Radar-Räume für Home Assistant</span></div>
       </div>
+      <a class="nav-item" href="#/" data-nav="home"><svg class="icon"><use href="#i-home"/></svg><span class="grow">Übersicht</span></a>
+      <div class="nav-label">Räume</div>
+      <div id="nav-rooms"></div>
+      <a class="nav-item" href="#/new-room" data-nav="new-room"><svg class="icon"><use href="#i-plus"/></svg><span class="grow">Raum hinzufügen</span></a>
+      <div class="nav-label">Einrichtung</div>
+      <a class="nav-item" href="#/devices" data-nav="devices"><svg class="icon"><use href="#i-radar"/></svg><span class="grow">Sensoren</span><span class="nav-count" id="nav-device-count"></span></a>
+      <a class="nav-item" href="#/system" data-nav="system"><svg class="icon"><use href="#i-gear"/></svg><span class="grow">System</span></a>
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </aside>
 
-      <nav class="tabs">
-        <button class="tab-btn active" data-tab="overview">Übersicht</button>
-        <button class="tab-btn" data-tab="dashboard">Dashboard</button>
-        <button class="tab-btn" data-tab="calibration">Kalibrierung</button>
-        <button class="tab-btn" data-tab="devices">Geräte</button>
-        <button class="tab-btn" data-tab="zones">Zonen</button>
-      </nav>
-    </header>
+    <main class="content" id="view" tabindex="-1"></main>
+  </div>
 
-    <section id="tab-overview" class="tab-panel">
-      <!-- Rendered from one /api/overview call; see static/app.js. The page
-           is deliberately state-dependent: with no devices it is a setup
-           path, with devices it is a status report. -->
-      <div id="overview-loading" class="status status-pending">wird geladen…</div>
+  <nav class="tabbar" aria-label="Navigation">
+    <a href="#/" data-nav="home"><svg class="icon"><use href="#i-home"/></svg>Räume</a>
+    <a href="#/devices" data-nav="devices"><svg class="icon"><use href="#i-radar"/></svg>Sensoren</a>
+    <a href="#/system" data-nav="system"><svg class="icon"><use href="#i-gear"/></svg>System</a>
+  </nav>
 
-      <section id="overview-empty" hidden>
-        <h2>Ersteinrichtung</h2>
-        <p class="hint">
-          Echolot erkennt Anwesenheit an den Störungen, die ein Körper im
-          WLAN-Signal hinterlässt — ohne Kamera, ohne Mikrofon, ohne dass
-          jemand etwas tragen muss. Drei Schritte bis dahin:
-        </p>
-        <ol class="setup-steps">
-          <li>
-            <strong>Gerät anlegen und Firmware bauen.</strong>
-            Board wählen, WLAN-Zugangsdaten eintragen, bauen lassen. Der
-            erste Build lädt einmalig rund 2 GB Werkzeugkette und dauert
-            entsprechend.
-            <button class="link-btn" data-goto="devices">Zu den Geräten</button>
-          </li>
-          <li>
-            <strong>Über USB flashen und in Home Assistant übernehmen.</strong>
-            Das Flashen braucht Chrome oder Edge auf einem Rechner. Danach
-            meldet sich das Gerät unter Einstellungen → Geräte &amp; Dienste;
-            dort fragt Home Assistant nach dem Verschlüsselungscode von der
-            Gerätekarte.
-          </li>
-          <li>
-            <strong>Zonen bilden.</strong>
-            Eine Zone fasst Geräte zu einem Anwesenheitszustand zusammen und
-            erscheint in Home Assistant als Belegungssensor.
-            <button class="link-btn" data-goto="zones">Zu den Zonen</button>
-          </li>
-        </ol>
-      </section>
+  <div class="toast-host" id="toasts" aria-live="polite"></div>
 
-      <div id="overview-body" hidden>
-        <section id="overview-zones-section">
-          <h2>Jetzt</h2>
-          <div id="overview-zones" class="zone-strip"></div>
-        </section>
-
-        <section id="overview-problems-section" hidden>
-          <h2>Braucht Aufmerksamkeit</h2>
-          <ul id="overview-problems" class="problem-list"></ul>
-        </section>
-
-        <section>
-          <h2>System</h2>
-          <dl id="overview-system" class="system-facts"></dl>
-        </section>
-      </div>
-    </section>
-
-    <section id="tab-dashboard" class="tab-panel" hidden>
-      <div id="dashboard-grid"></div>
-    </section>
-
-    <section id="tab-calibration" class="tab-panel" hidden>
-      <section class="card calibration-intro">
-        <h2>Calibration Lab</h2>
-        <p>
-          Zeichne echte Situationen im Raum auf. Echolot verbindet die direkte
-          ESPectre-Telemetrie mit deinen Markierungen und berechnet daraus eine
-          nachvollziehbare Schwellenwert-Empfehlung.
-        </p>
-        <form id="calibration-form" class="calibration-form">
-          <label>Gerät
-            <select name="device_id" id="calibration-device" required></select>
-          </label>
-          <label>Name der Messung
-            <input name="name" maxlength="100" placeholder="z. B. Wohnzimmer am Abend">
-          </label>
-          <button type="submit">Aufzeichnung starten</button>
-        </form>
-        <p id="calibration-error" class="status status-err" hidden></p>
-      </section>
-
-      <section class="card calibration-import">
-        <h2>Aus dem Verlauf importieren</h2>
-        <p>
-          Der Raten-Detektor braucht mindestens zehn Minuten Material aus dem
-          leeren Raum — und genau die hast du schon: Home Assistant speichert
-          den Bewegungswert rund zehn Tage lang in voller Auflösung. Such dir
-          einen Zeitraum aus, von dem du weißt, wie der Raum da war.
-        </p>
-        <form id="import-form" class="calibration-form">
-          <label>Gerät
-            <select name="device_id" id="import-device" required></select>
-          </label>
-          <label>Von
-            <input type="datetime-local" name="start" id="import-start" required>
-          </label>
-          <label>Bis
-            <input type="datetime-local" name="end" id="import-end" required>
-          </label>
-          <label>Was war da los?
-            <select name="label" id="import-label">
-              <option value="empty" selected>Raum leer</option>
-              <option value="moving">Person bewegt sich</option>
-              <option value="still">Person sitzt still</option>
-              <option value="interference">Störquelle aktiv</option>
-            </select>
-          </label>
-          <button type="submit">Importieren</button>
-        </form>
-        <p class="hint">
-          Höchstens 90 Minuten auf einmal. Die Zeiten sind Ortszeit.
-        </p>
-        <p id="import-error" class="status status-err" hidden></p>
-        <p id="import-ok" class="status status-ok" hidden></p>
-      </section>
-
-      <section id="active-calibration" class="card" hidden>
-        <div class="calibration-heading">
-          <div>
-            <h2>Aufzeichnung läuft</h2>
-            <strong data-session-name></strong>
-          </div>
-          <span class="recording-indicator">● LIVE</span>
-        </div>
-        <p class="hint">Markiere immer den Zustand, der im Raum gerade tatsächlich gilt.</p>
-        <div class="label-buttons">
-          <button type="button" data-label="empty">Raum leer</button>
-          <button type="button" data-label="moving">Person bewegt sich</button>
-          <button type="button" data-label="still">Person sitzt still</button>
-          <button type="button" data-label="interference">Störquelle aktiv</button>
-        </div>
-        <div class="calibration-live">
-          <span><b data-sample-count>0</b> Samples</span>
-          <span>Aktuelles Label: <b data-current-label>noch nicht markiert</b></span>
-        </div>
-        <p class="status status-warn" data-no-samples hidden></p>
-        <p class="status status-warn" data-limit-reached hidden>
-          Das Aufnahmelimit ist erreicht — weitere Messwerte werden nicht mehr
-          gespeichert. Beende die Aufzeichnung; was bereits aufgenommen ist,
-          bleibt vollständig erhalten.
-        </p>
-        <button type="button" id="stop-calibration" class="btn-secondary">Aufzeichnung beenden</button>
-      </section>
-
-      <section>
-        <h2>Messungen</h2>
-        <div id="calibration-list" class="device-list"></div>
-      </section>
-    </section>
-
-    <section id="tab-devices" class="tab-panel" hidden>
-      <!-- Only shown where it applies. Web Serial needs a secure context,
-           so on HTTPS or localhost this warning is noise on every visit —
-           and permanent noise is what stops warnings being read. -->
-      <div class="notice" id="web-serial-notice" hidden>
-        Das Flashen nutzt die Web-Serial-Schnittstelle deines Browsers, die
-        Chrome und Edge nur auf verschlüsselten Seiten (HTTPS) oder auf
-        <code>localhost</code> erlauben. Diese Seite läuft über einfaches
-        HTTP, also öffne sie über die HTTPS-Adresse von Home Assistant — oder
-        rufe Echolot direkt unter <code>http://&lt;host&gt;:8099</code> von
-        demselben Rechner aus auf.
-      </div>
-
-      <details class="card" id="create-device">
-        <summary class="card-summary">
-          <span>Gerät anlegen</span>
-          <span class="card-summary-hint">Board, WLAN und Erkennungsprofil</span>
-        </summary>
-        <form id="device-form" class="device-form">
-          <label>Sensor
-            <select name="sensor" id="sensor-select">
-              <option value="ld2460" selected>Radar — HLK-LD2460 (24 GHz)</option>
-              <option value="espectre">WLAN-CSI — ESPectre</option>
-            </select>
-            <span class="field-note">
-              Der Radar liefert Positionen im Raum. WLAN-CSI misst Bewegung
-              über das Funksignal und läuft aus, sobald der Radar trägt.
-            </span>
-          </label>
-          <label class="preset-label" data-sensor="espectre">Voreinstellung
-            <select id="preset-select">
-              <option value="">— eigene Werte —</option>
-            </select>
-            <span id="preset-description" class="field-note"></span>
-          </label>
-          <label>Gerätename
-            <input name="name" placeholder="wohnzimmer" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" required>
-          </label>
-          <label>Anzeigename
-            <input name="friendly_name" placeholder="Wohnzimmer">
-          </label>
-          <label>Board
-            <select name="board" id="board-select" required></select>
-          </label>
-          <fieldset class="sensor-fields" data-sensor="ld2460">
-            <legend>Verkabelung zum Radar</legend>
-            <p class="hint">
-              ESP-TX an Pin&nbsp;8 (Rx2) des Moduls, ESP-RX an Pin&nbsp;7 (Tx2),
-              dazu 5&nbsp;V und GND. VDD33 und die UART1-Pins bleiben frei.
-            </p>
-            <button type="button" id="waveshare-c5-preset" class="btn-secondary">
-              Waveshare ESP32-C5-Zero übernehmen
-            </button>
-            <label>ESP-TX → Radar Rx2 (GPIO)
-              <input name="radar_tx_pin" type="number" min="0" max="56" required>
-            </label>
-            <label>ESP-RX ← Radar Tx2 (GPIO)
-              <input name="radar_rx_pin" type="number" min="0" max="56" required>
-            </label>
-            <span class="field-note">
-              Vorgeschlagen sind die Pins, die beim gewählten Chip frei sind.
-              Geprüft mit echter Verkabelung ist nur der ESP32-C5 (11/12) —
-              bei anderen Boards gegen die Pinbelegung prüfen.
-            </span>
-            <label>Antennen-Umschaltung (GPIO, optional)
-              <input name="antenna_select_pin" type="number" min="0" max="56" placeholder="keine">
-              <span class="field-note">
-                Wird ab dem Start auf LOW gehalten. Beim Waveshare
-                ESP32-C5-Zero wählt GPIO26 auf LOW die Antenne auf der
-                Platine. Leer lassen, wenn das Board keine Umschaltung hat.
-              </span>
-            </label>
-            <label class="checkbox-field">
-              <input type="checkbox" name="radar_quiet_means_empty">
-              <span>Stiller Radar heißt „niemand da“
-                <span class="field-hint">
-                  Ob das LD2460 in einem leeren Raum weiter leere Meldungen
-                  schickt oder verstummt, steht in keiner Unterlage. Aus
-                  heißt: Ein Modul, das antwortet, aber nichts meldet, gilt
-                  als „unbekannt“ statt als „leer“. Erst einschalten, wenn du
-                  es im leeren Raum beobachtet hast.
-                </span>
-              </span>
-            </label>
-          </fieldset>
-          <label>WLAN-Name (SSID)
-            <input name="wifi_ssid" placeholder="dein WLAN" required maxlength="32">
-          </label>
-          <label>WLAN-Passwort
-            <input name="wifi_password" type="password" maxlength="64" placeholder="leer lassen bei offenem Netz">
-          </label>
-          <label id="wifi-band-field" hidden>WLAN-Band
-            <select name="wifi_band" disabled>
-              <option value="2.4GHz" selected>2,4 GHz — vermessen</option>
-              <option value="5GHz">5 GHz — Erkennungsqualität unbekannt</option>
-              <option value="auto">Automatisch — Router entscheidet</option>
-            </select>
-            <span class="field-note" data-sensor="ld2460">
-              Nur der ESP32-C5 hat zwei Funkbänder. Beim Radar entscheidet das
-              Band nur, worüber die Daten laufen — gemessen wird mit 24 GHz.
-            </span>
-            <span class="field-note" data-sensor="espectre">
-              Nur der ESP32-C5 hat zwei Funkbänder. Gemessen ist bisher nur
-              2,4 GHz: ESPectre selbst schreibt, die Erkennungsqualität auf
-              5 GHz sei noch nicht charakterisiert. „Automatisch“ überlässt
-              die Wahl dem Router — dann weiß auch eine Aufnahme nicht, auf
-              welchem Band sie entstanden ist.
-            </span>
-          </label>
-          <div class="sensor-fields" data-sensor="espectre">
-          <label>Erkennungsprofil
-            <select name="detection_algorithm">
-              <option value="lightweight" selected>Lightweight — gewichtetes Modell, lernt beim Start ein</option>
-              <option value="high_accuracy">High Accuracy — neuronales Netz, ohne Kalibrierung</option>
-            </select>
-          </label>
-          <label>Paketrate (Pakete/s)
-            <input name="csi_target_pps" type="number" min="1" max="500" value="100">
-            <span id="rate-estimate" class="field-note"></span>
-          </label>
-          <label>Auswerteintervall (ms)
-            <input name="evaluation_interval_ms" type="number" min="10" max="10000" value="250">
-            <span class="field-note">Kürzer reagiert schneller und kostet mehr Rechenzeit.</span>
-          </label>
-          </div>
-
-          <details class="tuning device-extras">
-            <summary>Weitere Firmware-Optionen</summary>
-            <p class="hint">
-              Sinnvolle Voreinstellungen — anfassen musst du das nur, wenn
-              der Flash-Speicher knapp wird oder du einem Fehler nachgehst.
-            </p>
-            <div class="tuning-fields">
-              <label class="checkbox-field">
-                <input type="checkbox" name="web_server" checked>
-                <span>Statusseite auf dem Gerät
-                  <span class="field-hint">
-                    Erreichbar unter <code>http://&lt;IP&gt;/</code> von jedem
-                    Browser — auch dort, wo Flashen nicht geht, etwa auf dem iPad.
-                    Kostet etwas Flash-Speicher.
-                  </span>
-                </span>
-              </label>
-              <label class="checkbox-field">
-                <input type="checkbox" name="diagnostics" checked>
-                <span>Diagnose-Entities
-                  <span class="field-hint">
-                    Signalstärke, Betriebszeit, Chip-Temperatur, IP-Adresse und
-                    Neustart-Knöpfe. Die Signalstärke entscheidet, ob ein Platz
-                    für CSI-Erkennung überhaupt taugt.
-                  </span>
-                </span>
-              </label>
-              <p class="field-hint" data-sensor="ld2460">
-                API-Verschlüsselung ist bei Radar-Geräten immer an —
-                Positionen von Menschen im Raum gehen nicht im Klartext
-                durchs Netz.
-              </p>
-              <label class="checkbox-field" data-sensor="espectre">
-                <input type="checkbox" name="api_encryption">
-                <span>API-Verschlüsselung
-                  <span class="field-hint">
-                    Verschlüsselt die Verbindung zu Home Assistant. Zurzeit
-                    <strong>aus</strong>, weil die Firmware damit nicht
-                    kompiliert: ESPHome zieht dafür libsodium herein, dessen
-                    C-Quellen eine <code>utils.h</code> suchen und ESPectres
-                    gleichnamigen C++-Header finden. Das ist ein Fehler bei
-                    ESPectre, kein Wahlrecht — wieder einschalten, sobald er
-                    behoben ist. Der Schlüssel wird trotzdem erzeugt und
-                    behalten.
-                  </span>
-                </span>
-              </label>
-              <label>Protokollstufe des Geräts
-                <select name="log_level">
-                  <option value="NONE">NONE — nichts</option>
-                  <option value="ERROR">ERROR</option>
-                  <option value="WARN">WARN</option>
-                  <option value="INFO" selected>INFO — Standard</option>
-                  <option value="DEBUG">DEBUG</option>
-                  <option value="VERBOSE">VERBOSE — sehr gesprächig</option>
-                </select>
-                <span class="field-hint">
-                  Höhere Stufen kosten Rechenzeit und können die Messung stören.
-                </span>
-              </label>
-            </div>
-          </details>
-
-          <button type="submit">Gerät anlegen</button>
-        </form>
-        <p id="device-form-error" class="status status-err" hidden></p>
-      </details>
-
-      <section>
-        <h2>Geräte</h2>
-        <p class="hint">
-          Eine Karte aufklappen zeigt Zustand, Schwelle und alles zum Bauen,
-          Flashen und Prüfen.
-        </p>
-        <div id="device-list" class="device-list"></div>
-      </section>
-    </section>
-
-    <section id="tab-zones" class="tab-panel" hidden>
-      <section class="card">
-        <h2>Zone anlegen</h2>
-        <form id="zone-form" class="device-form">
-          <label>Zonenname
-            <input name="name" placeholder="Erdgeschoss" required maxlength="64">
-          </label>
-          <label class="zone-devices-label">Geräte
-            <div id="zone-device-picker" class="zone-device-picker"></div>
-          </label>
-
-          <details class="tuning">
-            <summary>Feinabstimmung</summary>
-            <p class="hint">
-              Ohne Feinabstimmung gilt eine Zone genau dann als belegt,
-              wenn irgendein Gerät gerade Bewegung meldet. Das reagiert
-              sofort — fällt aber genauso sofort wieder ab, sobald jemand
-              zwei Sekunden stillsitzt.
-            </p>
-            <div class="tuning-fields">
-            <label>Haltezeit (Sekunden)
-              <input name="hold_seconds" type="number" min="0" max="3600" step="1"
-                     value="0" inputmode="numeric">
-              <span class="field-hint">
-                Wie lange die Zone nach der letzten Bewegung noch als belegt
-                gilt. 0 schaltet die Haltezeit ab. Für Licht sind 60–180 s
-                üblich.
-              </span>
-            </label>
-            <label>Einschalt-Schwellwert
-              <input name="enter_threshold" type="number" min="0" step="0.01"
-                     placeholder="leer = Schwelle des Geräts nutzen" inputmode="decimal">
-              <span class="field-hint">
-                Ab diesem Bewegungswert schaltet die Zone ein. Leer lassen,
-                um die auf dem Gerät eingestellte Schwelle zu verwenden.
-              </span>
-            </label>
-            <label>Ausschalt-Schwellwert
-              <input name="exit_threshold" type="number" min="0" step="0.01"
-                     placeholder="leer = gleicher Wert" inputmode="decimal">
-              <span class="field-hint">
-                Ein niedrigerer zweiter Wert erzeugt eine Hysterese: dazwischen
-                bleibt die Zone in ihrem bisherigen Zustand und flackert nicht.
-              </span>
-            </label>
-          </details>
-
-          <button type="submit">Zone anlegen</button>
-        </form>
-        <p id="zone-form-error" class="status status-err" hidden></p>
-      </section>
-
-      <section>
-        <h2>Zonen</h2>
-        <p class="hint">
-          Eine Zone gilt als belegt, sobald eines ihrer Geräte Bewegung
-          erkennt. Mit Haltezeit bleibt sie danach noch eine Weile belegt
-          („hält“) und mit zwei Schwellwerten flackert sie im Grenzbereich
-          nicht mehr.
-        </p>
-        <div id="zone-list" class="device-list"></div>
-      </section>
-    </section>
-  </main>
-
+  <script src="static/geometry.js"></script>
   <script src="static/app.js"></script>
-  <script src="static/flash_watch.js"></script>
+  <script src="static/plan.js"></script>
+  <script src="static/rooms.js"></script>
   <script src="static/devices.js"></script>
-  <script src="static/zones.js"></script>
-  <script src="static/dashboard.js"></script>
-  <script src="static/dashboard_live.js"></script>
-  <script src="static/calibration.js"></script>
+  <script src="static/flash_watch.js"></script>
+  <script>Echolot.start();</script>
 </body>
 </html>

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Render the firmware template for every board and validate it with ESPHome.
 
-Three bugs reached a release because the generated YAML was only ever read,
-never validated: `ota: platform: esp32` (no such platform), `cpu_frequency:
-240MHz` on chips that top out lower, and a missing `esp32_ble_server` that
-left the BLE telemetry channel permanently off. `esphome config` catches
-all three in seconds, so CI runs it over every board on every change.
+Bugs have reached a release because the generated YAML was only ever read,
+never validated — `ota: platform: esp32` (no such platform), and
+`cpu_frequency: 240MHz` on chips that top out lower. `esphome config`
+catches that kind in seconds, so CI runs it over every board on every
+change.
 
 Run from anywhere: `python echolot/tools/validate_firmware.py`
 """
@@ -30,48 +30,25 @@ def main() -> int:
     from app.builder import render_yaml
     from app.devices import Device, DeviceCreate
 
-    # Every board, plus the variants whose branches are otherwise never
-    # exercised: the optional blocks off, and API encryption on.
-    #
-    # The encrypted case validates and does *not* link: noise-c/libsodium
-    # collides with a header ESPectre publishes globally (DOCS.md, "Der
-    # Verschlüsselungscode"). That is the difference between this tool and
-    # tools/compile_firmware.py in one line — a green tick here says the
-    # YAML is well-formed, never that a compiler would accept it.
-    cases = [(key, True, True, False, None) for key in BOARDS]
-    cases.append(("esp32c6", False, False, False, None))
-    cases.append(("esp32c6", True, True, True, None))
-    # The C5's three bands. ESPHome accepts `band_mode` only on this
-    # variant (only_on_variant(supported=[VARIANT_ESP32C5])), and the
-    # rendered value has to be one of its three spellings — so this is the
-    # check that "2.4GHz" in a stored config really reaches the firmware
-    # as 2.4GHZ rather than as a validation error at build time.
-    cases += [("esp32c5", True, True, False, band) for band in ("5GHz", "auto")]
-    cases = [(*case, {}) for case in cases]
-
-    # Radar nodes: every board on its suggested pins, then the branches
-    # that only a radar config has — the Waveshare C5-Zero's antenna pin,
-    # the optional blocks off, and the "quiet means empty" rule on. The
+    # Every board on its suggested pins, then the branches only some
+    # configs take: the Waveshare C5-Zero's antenna pin, the optional
+    # blocks off with the "quiet means empty" rule on, and the C5's other
+    # two bands — ESPHome accepts `band_mode` only on that variant, and
+    # the rendered value has to be one of its three spellings. The
     # external component is validated along with the YAML, so a schema
     # error in echolot_ld2460/__init__.py fails here, not at compile time.
-    radar = {"sensor": "ld2460"}
-    cases += [(key, True, True, True, None, radar) for key in BOARDS]
-    cases.append(("esp32c5", True, True, True, None, {**radar, "antenna_select_pin": 26}))
-    cases.append(("esp32c5", False, False, True, None, {**radar, "radar_quiet_means_empty": True}))
+    cases = [(key, True, True, None, {}) for key in BOARDS]
+    cases.append(("esp32c5", True, True, None, {"antenna_select_pin": 26}))
+    cases.append(("esp32c5", False, False, None, {"radar_quiet_means_empty": True}))
+    cases += [("esp32c5", True, True, band, {}) for band in ("5GHz", "auto")]
 
     failures = []
-    for board, web, diag, encryption, band, extra in cases:
+    for board, web, diag, band, extra in cases:
         name = f"probe-{board}"
-        if extra.get("sensor") == "ld2460":
-            name += "-radar"
         if extra.get("antenna_select_pin") is not None:
             name += "-antenna"
         if not (web and diag):
             name += "-minimal"
-        # Radar nodes are always encrypted; saying so in the name only
-        # makes it longer.
-        if encryption and extra.get("sensor") != "ld2460":
-            name += "-encrypted"
         if band:
             name += "-" + band.replace(".", "").replace("GHz", "g").lower()
         device = Device(
@@ -86,7 +63,6 @@ def main() -> int:
                 wifi_password="passwort123",
                 web_server=web,
                 diagnostics=diag,
-                api_encryption=encryption,
                 **({"wifi_band": band} if band else {}),
                 **extra,
             ),
@@ -101,8 +77,7 @@ def main() -> int:
             cwd=workdir,
         )
         label = (
-            f"{board:9s} sensor={device.config.sensor:8s} web_server={int(web)} "
-            f"diagnostics={int(diag)} encryption={int(encryption)} band={band or '-'}"
+            f"{board:9s} web_server={int(web)} diagnostics={int(diag)} band={band or '-'}"
             + (f" antenna=GPIO{extra['antenna_select_pin']}" if "antenna_select_pin" in extra else "")
         )
         if result.returncode == 0:

@@ -1,1808 +1,417 @@
-/* Echolot — design system.
-   Frosted-glass surfaces floating over an atmospheric backdrop. The blur
-   only reads as glass if there is something behind it to blur, hence the
-   coloured gradient field on <body> rather than a flat fill. */
+/* Echolot 1.0 — room-first radar UI.
+   Light, soft surfaces and pastel zones; the floor plan is the page. */
 
 :root {
-  color-scheme: light;
-
-  /* Neutrals & text */
-  --bg-base: #eef1f7;
-  --text: #1b1f27;
-  --muted: #626a7a;
-  --faint: #8b93a3;
-
-  /* Glass surfaces: two elevations + an inset well for inputs/logs */
-  --glass: rgba(255, 255, 255, 0.62);
-  --glass-raised: rgba(255, 255, 255, 0.78);
-  --glass-well: rgba(255, 255, 255, 0.55);
-  --hairline: rgba(20, 25, 35, 0.1);
-  --hairline-strong: rgba(20, 25, 35, 0.16);
-  --sheen: rgba(255, 255, 255, 0.7);
-  --shadow: 0 10px 34px rgba(20, 26, 44, 0.1);
-  --shadow-raised: 0 16px 44px rgba(20, 26, 44, 0.14);
-
-  /* Accents */
-  --accent: #0d9488;
-  --accent-soft: rgba(13, 148, 136, 0.14);
-  --accent-line: rgba(13, 148, 136, 0.36);
+  --bg: #f2f3f5;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --surface-3: #eef0f3;
+  --line: #e4e7eb;
+  --line-strong: #d3d8de;
+  --text: #1b1f24;
+  --muted: #69727d;
+  --faint: #9aa3ad;
+  --accent: #1f8a70;
+  --accent-strong: #16715b;
+  --accent-soft: #e2f3ee;
   --on-accent: #ffffff;
-  --ok: #15803d;
-  --warn: #b45309;
-  --err: #be123c;
-
-  /* Atmosphere behind the glass */
-  --wash-1: rgba(94, 234, 212, 0.5);
-  --wash-2: rgba(129, 172, 255, 0.42);
-  --wash-3: rgba(196, 181, 253, 0.34);
-
-  /* Shape & motion */
-  --r-sm: 10px;
-  --r-md: 14px;
-  --r-lg: 20px;
-  --r-xl: 26px;
-  --r-pill: 999px;
-  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --present: #f08a24;
+  --present-soft: #fff1e3;
+  --danger: #d6453d;
+  --danger-soft: #fdeceb;
+  --warn: #b7791f;
+  --warn-soft: #fdf5e6;
+  --plan-floor: #fbfcfd;
+  --plan-grid: #e9edf1;
+  --plan-wall: #5b6570;
+  --plan-furniture: #e8ebef;
+  --plan-furniture-line: #b9c1ca;
+  --target: #1f8a70;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .06);
+  --shadow-lg: 0 12px 40px rgba(16, 24, 40, .16);
+  --radius: 20px;
+  --radius-sm: 12px;
+  --z0: #4c8dff; --z1: #34b37f; --z2: #f0a020; --z3: #9467f5;
+  --z4: #f0648f; --z5: #19aebb; --z6: #ff7a45; --z7: #7c8aa5;
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1215; --surface: #181c21; --surface-2: #1e2329; --surface-3: #252b32;
+    --line: #2a3139; --line-strong: #37404a; --text: #e8ebee; --muted: #9aa4ae; --faint: #6c7680;
+    --accent: #3fbf9b; --accent-strong: #5ad1ae; --accent-soft: #173a31; --on-accent: #06221a;
+    --present: #ff9f45; --present-soft: #3a2616; --danger: #ff6b61; --danger-soft: #3a1c1a;
+    --warn: #e0b050; --warn-soft: #362a14;
+    --plan-floor: #161a1f; --plan-grid: #232a31; --plan-wall: #8d98a4;
+    --plan-furniture: #262d35; --plan-furniture-line: #445060; --target: #3fbf9b;
+    --shadow: 0 1px 3px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
     color-scheme: dark;
-
-    --bg-base: #0a0d14;
-    --text: #eef1f7;
-    --muted: #a2abbd;
-    --faint: #77808f;
-
-    --glass: rgba(30, 36, 50, 0.55);
-    --glass-raised: rgba(38, 45, 62, 0.68);
-    --glass-well: rgba(10, 13, 20, 0.45);
-    --hairline: rgba(255, 255, 255, 0.1);
-    --hairline-strong: rgba(255, 255, 255, 0.18);
-    --sheen: rgba(255, 255, 255, 0.14);
-    --shadow: 0 12px 38px rgba(0, 0, 0, 0.42);
-    --shadow-raised: 0 20px 52px rgba(0, 0, 0, 0.5);
-
-    --accent: #5eead4;
-    --accent-soft: rgba(94, 234, 212, 0.16);
-    --accent-line: rgba(94, 234, 212, 0.4);
-    --on-accent: #04241f;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --err: #fb7185;
-
-    --wash-1: rgba(20, 184, 166, 0.34);
-    --wash-2: rgba(59, 105, 246, 0.3);
-    --wash-3: rgba(139, 92, 246, 0.26);
   }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1215; --surface: #181c21; --surface-2: #1e2329; --surface-3: #252b32;
+  --line: #2a3139; --line-strong: #37404a; --text: #e8ebee; --muted: #9aa4ae; --faint: #6c7680;
+  --accent: #3fbf9b; --accent-strong: #5ad1ae; --accent-soft: #173a31; --on-accent: #06221a;
+  --present: #ff9f45; --present-soft: #3a2616; --danger: #ff6b61; --danger-soft: #3a1c1a;
+  --warn: #e0b050; --warn-soft: #362a14;
+  --plan-floor: #161a1f; --plan-grid: #232a31; --plan-wall: #8d98a4;
+  --plan-furniture: #262d35; --plan-furniture-line: #445060; --target: #3fbf9b;
+  --shadow: 0 1px 3px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
-
+html, body { margin: 0; height: 100%; }
 body {
-  margin: 0;
-  min-height: 100vh;
+  background: var(--bg);
   color: var(--text);
-  background-color: var(--bg-base);
-  /* Fixed so the glass has a stable field to refract while content scrolls. */
-  background-image:
-    radial-gradient(58vw 46vw at 12% -8%, var(--wash-1), transparent 62%),
-    radial-gradient(52vw 44vw at 92% 4%, var(--wash-2), transparent 60%),
-    radial-gradient(64vw 52vw at 50% 108%, var(--wash-3), transparent 64%);
-  background-attachment: fixed;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-main {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 2.75rem 1.5rem 4.5rem;
-}
-
-/* ---------- Header & tabs ---------- */
-
-/* The mark sits next to the wordmark rather than above it: the header is
-   already three rows tall, and Ingress gives it less height than a page. */
-.header-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.75rem;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-}
-
-.brand img {
-  flex: none;
-  border-radius: 22.5%;
-}
-
-header h1 {
-  margin: 0;
-  font-size: 2.1rem;
-  font-weight: 650;
-  letter-spacing: -0.025em;
-}
-
-.subtitle {
-  margin: 0.2rem 0 0;
-  color: var(--muted);
-}
-
-/* ---------- Header status chip ---------- */
-
-.header-actions {
-  position: relative;
-  flex: none;
-  padding-top: 0.35rem;
-}
-
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.42rem 0.85rem;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-pill);
-  background: var(--glass-raised);
-  box-shadow: inset 0 1px 0 var(--sheen);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.86rem;
-  cursor: pointer;
-}
-
-.status-chip:hover { border-color: var(--accent-line); }
-
-.status-dot {
-  width: 0.6rem;
-  height: 0.6rem;
-  flex: none;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-/* Colour is not the only carrier: the chip's own text says what the dot
-   means, so a red/green difference is never the whole message. */
-.status-dot[data-state="ok"] { background: var(--ok); }
-.status-dot[data-state="warn"] { background: var(--warn); }
-.status-dot[data-state="err"] { background: var(--err); }
-
-.status-panel {
-  position: absolute;
-  top: calc(100% + 0.5rem);
-  right: 0;
-  z-index: 20;
-  width: min(24rem, calc(100vw - 3rem));
-  padding: 1rem 1.1rem 0.9rem;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-lg);
-  /* Raised glass rather than plain glass: this floats over content, and
-     over an atmospheric backdrop the lighter surface is what separates
-     it from whatever it covers. */
-  background: var(--glass-raised);
-  backdrop-filter: blur(30px) saturate(180%);
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  box-shadow: var(--shadow-raised), inset 0 1px 0 var(--sheen);
-}
-
-.status-panel h2 {
-  margin: 0 0 0.5rem;
-  font-size: 0.74rem;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.status-panel h2 + * { margin-top: 0; }
-.status-panel .checkbox-field + h2,
-.status-panel div + h2 { margin-top: 1.1rem; }
-
-.status-panel .status-panel-problem {
-  display: block;
-  width: 100%;
-  margin-bottom: 0.4rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-sm);
-  background: var(--glass-well);
-  color: inherit;
-  font: inherit;
-  font-size: 0.85rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.status-panel .status-panel-problem:hover { border-color: var(--accent-line); }
-
-.status-panel-links {
-  display: flex;
-  gap: 1rem;
-  margin: 1rem 0 0;
-  padding-top: 0.8rem;
-  border-top: 1px solid var(--hairline);
-  font-size: 0.85rem;
-}
-
-@media (max-width: 620px) {
-  .header-top { flex-direction: column; }
-  .header-actions { align-self: flex-start; padding-top: 0; }
-  .status-panel { right: auto; left: 0; }
-}
-
-/* visionOS-style segmented control rather than an underline rail.
-   `width: fit-content` keeps it content-width on wide screens, while
-   max-width + overflow-x means a phone scrolls *the strip* instead of
-   the whole page — four German labels do not fit 360px, and the old
-   inline-flex silently widened the document by up to 58px. */
-.tabs {
-  display: flex;
-  width: fit-content;
-  max-width: 100%;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
-  gap: 0.25rem;
-  margin: 0 0 2rem;
-  padding: 0.3rem;
-  background: var(--glass);
-  backdrop-filter: blur(24px) saturate(170%);
-  -webkit-backdrop-filter: blur(24px) saturate(170%);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-pill);
-  box-shadow: var(--shadow), inset 0 1px 0 var(--sheen);
-}
-
-.tabs::-webkit-scrollbar { display: none; }
-
-.tab-btn {
-  appearance: none;
-  background: transparent;
-  border: none;
-  border-radius: var(--r-pill);
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.92rem;
-  font-weight: 550;
-  padding: 0.45rem 1.05rem;
-  cursor: pointer;
-  flex: 0 0 auto;
-  white-space: nowrap;
-  transition: background 0.22s var(--ease), color 0.22s var(--ease);
-}
-
-.tab-btn:hover { color: var(--text); }
-
-.tab-btn.active {
-  background: var(--glass-raised);
-  color: var(--text);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1), inset 0 1px 0 var(--sheen);
-}
-
-/* ---------- Surfaces ---------- */
-
-.card,
-.glass-tile,
-.notice {
-  background: var(--glass);
-  backdrop-filter: blur(30px) saturate(180%);
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  border: 1px solid var(--hairline);
-  box-shadow: var(--shadow), inset 0 1px 0 var(--sheen);
-}
-
-.card {
-  border-radius: var(--r-xl);
-  padding: 1.4rem 1.6rem;
-  margin-bottom: 1.5rem;
-}
-
-.card h2 {
-  margin: 0 0 0.55rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 650;
-  color: var(--faint);
-}
-
-/* Wider minimum than the device grid: with four status cards this settles
-   into an even 2x2 instead of an awkward 3 + 1. */
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.cards .card { margin-bottom: 0; }
-
-.notice {
-  border-radius: var(--r-lg);
-  border-color: var(--accent-line);
-  padding: 1rem 1.25rem;
-  color: var(--muted);
-  font-size: 0.88rem;
-  margin-bottom: 1.5rem;
-}
-
-.notice code {
-  color: var(--text);
-  background: var(--glass-well);
-  border-radius: 5px;
-  padding: 0.05em 0.35em;
-  font-size: 0.92em;
-}
-
-/* For asides that are worth stating but shouldn't shout — no glass, no
-   accent edge, just quiet text. */
-.notice-quiet {
-  background: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: none;
-  box-shadow: none;
-  padding: 0 0 0.25rem;
-  font-size: 0.84rem;
-  color: var(--faint);
-  max-width: 62ch;
-}
-
-/* ---------- Text & status ---------- */
-
-h2 {
-  font-size: 1.15rem;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-}
-
-.status {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 620;
-}
-
-.status-pending { color: var(--faint); }
-.status-ok { color: var(--ok); }
-.status-warn { color: var(--warn); }
-.status-err { color: var(--err); }
-
-.hint {
-  color: var(--muted);
-  font-size: 0.86rem;
-  margin: -0.25rem 0 1.1rem;
-  max-width: 62ch;
-}
-
-/* Secondary line under a status value or form field. */
-.card-note,
-.field-note {
-  color: var(--faint);
-  font-weight: 400;
-}
-
-.card-note {
-  margin: 0.4rem 0 0;
-  font-size: 0.78rem;
-  line-height: 1.4;
-}
-
-.field-note {
-  font-size: 0.72rem;
-  min-height: 1em;
-}
-
-/* The preset picker steers the four fields below it, so it gets the full
-   width and sits apart from them. */
-.preset-label {
-  grid-column: 1 / -1;
-  padding-bottom: 0.9rem;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.preset-label select { max-width: 22rem; }
-
-/* ---------- Übersicht ----------
-
-   The page answers, in order: what is sensed right now, what is stopping
-   it from sensing correctly, and what the system is made of. The first
-   two are the reason to open it; the third is reference and is styled to
-   recede. */
-
-.zone-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
-  gap: 0.7rem;
-  margin-top: 0.8rem;
-}
-
-/* A zone is a button because it leads somewhere — the dashboard tile that
-   shows which member device is actually tripping. */
-.zone-pill {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  align-items: flex-start;
-  text-align: left;
-  padding: 0.85rem 1rem;
-  border-radius: var(--r-md);
-  border: 1px solid var(--hairline);
-  background: var(--glass);
-  min-width: 0;
-}
-
-.zone-pill:hover { border-color: var(--accent-line); }
-
-.zone-pill-name {
-  font-weight: 600;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.zone-pill-state {
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-/* Occupied is the state worth spotting across a room. Holding gets the
-   warn colour rather than green: it is occupied only because a countdown
-   says so, and reading it as a live detection hides that. */
-.zone-pill-on {
-  border-color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 10%, var(--glass));
-}
-.zone-pill-on .zone-pill-state { color: var(--ok); font-weight: 600; }
-
-.zone-pill-holding {
-  border-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 10%, var(--glass));
-}
-.zone-pill-holding .zone-pill-state { color: var(--warn); font-weight: 600; }
-
-.zone-pill-unknown { opacity: 0.6; }
-
-.problem-list {
-  list-style: none;
-  padding: 0;
-  margin: 0.8rem 0 0;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.problem {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
-  padding: 0.7rem 0.9rem;
-  border-radius: var(--r-md);
-  border: 1px solid var(--hairline);
-  border-left: 3px solid var(--warn);
-  background: var(--glass-well);
-  line-height: 1.5;
-}
-
-.problem > span { min-width: 0; overflow-wrap: anywhere; }
-
-/* Reads as text, behaves as a control: these only ever switch tabs, so a
-   button styled like a button would overstate the action. */
-.link-btn {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-  white-space: nowrap;
-}
-
-.link-btn:hover { color: var(--text); }
-
-.setup-steps {
-  margin: 0.9rem 0 0;
-  padding-left: 1.3rem;
-  display: grid;
-  gap: 0.9rem;
-  max-width: 44rem;
-  color: var(--muted);
-  line-height: 1.6;
-}
-
-.setup-steps strong {
-  color: var(--text);
-  display: block;
-}
-
-/* Auf eigener Zeile: mitten im Fließtext liest sich ein Absprung als
-   Fußnote, nicht als der nächste Schritt. */
-.setup-steps .link-btn {
-  display: block;
-  margin-top: 0.45rem;
-}
-
-/* Reference, not news: two columns on wide screens, stacked on narrow. */
-.system-facts {
-  margin: 0.8rem 0 0;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.45rem 1.2rem;
-  font-size: 0.88rem;
-  max-width: 40rem;
-}
-
-.system-facts dt {
-  color: var(--faint);
-  font-weight: 550;
-}
-
-.system-facts dd {
-  margin: 0;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-/* ---------- Forms ---------- */
-
-.device-form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-  margin-top: 0.75rem;
-}
-
-.device-form label,
-.threshold-form label,
-.entity-editor label {
-  font-size: 0.78rem;
-  font-weight: 550;
-  letter-spacing: 0.01em;
-  color: var(--faint);
-}
-
-.device-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-input,
-select {
-  font: inherit;
-  color: var(--text);
-  background: var(--glass-well);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--r-sm);
-  padding: 0.5rem 0.65rem;
-  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
-}
-
-input:hover,
-select:hover { border-color: var(--faint); }
-
-input:focus-visible,
-select:focus-visible,
-button:focus-visible,
-summary:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-/* Keyboard focus for controls that have no border of their own. */
-button:focus-visible,
-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-input[type="checkbox"] {
-  accent-color: var(--accent);
-  width: 1rem;
-  height: 1rem;
-  padding: 0;
-}
-
-/* ---------- Buttons ---------- */
-
-button {
-  font: inherit;
-  cursor: pointer;
-  transition: transform 0.12s var(--ease), background 0.2s var(--ease),
-    border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
-}
-
-button:active:not(:disabled) { transform: scale(0.975); }
-
-/* Primary: filled accent */
-.device-form button,
-.device-actions .build-btn,
-esp-web-install-button button[slot="activate"] {
-  background: var(--accent);
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  color: var(--on-accent);
-  font-weight: 620;
-  padding: 0.55rem 1.1rem;
-  box-shadow: 0 4px 14px var(--accent-soft);
-}
-
-.device-form button:hover,
-.device-actions .build-btn:hover:not(:disabled),
-esp-web-install-button button[slot="activate"]:hover {
-  box-shadow: 0 6px 20px var(--accent-line);
-}
-
-.device-form button {
-  grid-column: 1 / -1;
-  justify-self: start;
-}
-
-/* Once a device is built, flashing is the primary action and rebuilding
-   steps down to secondary, so the two don't compete. Higher specificity
-   than the generic .btn-secondary below, which is what we want here. */
-.device-actions .build-btn.btn-secondary {
-  background: var(--glass-well);
-  border: 1px solid var(--hairline-strong);
-  color: var(--text);
-  box-shadow: none;
-}
-
-.device-actions .build-btn.btn-secondary:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-  box-shadow: none;
-}
-
-/* Secondary: glass outline.
-   This used to be a hand-kept list of every secondary control by name,
-   which meant each new button silently fell through to the browser's
-   default styling until someone remembered to add it here. `.btn-secondary`
-   is the class to reach for now; the named selectors stay so existing
-   markup without the class keeps its look. */
-.btn-secondary,
-.device-actions .delete-btn,
-.delete-zone-btn,
-.threshold-form button,
-.calibrate-btn,
-.save-entities-btn {
-  background: var(--glass-well);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--r-sm);
-  color: var(--text);
-  font-weight: 550;
-  padding: 0.48rem 0.9rem;
-}
-
-.btn-secondary:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.btn-secondary:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.device-actions .delete-btn,
-.delete-zone-btn { color: var(--muted); }
-
-.device-actions .delete-btn:hover,
-.delete-zone-btn:hover {
-  border-color: var(--err);
-  color: var(--err);
-}
-
-.threshold-form button:hover,
-.calibrate-btn:hover,
-.save-entities-btn:hover { border-color: var(--accent); color: var(--accent); }
-
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  transform: none;
-}
-
-/* ---------- Device cards ---------- */
-
-.device-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.device-card,
-.zone-card { margin-bottom: 0; }
-
-/* ---------- Collapsible cards ---------- */
-/*
-   A device card used to be a 500px wall whether or not you wanted any of
-   it, so a list of rooms did not fit on a screen. It is a <details> now:
-   the summary is the list entry — name, board, live state, build state —
-   and everything else is one click away. Native <details> rather than a
-   JS accordion, so the keyboard and the browser's own find-in-page work.
-*/
-
-.device-card,
-#create-device {
-  padding: 0;
-}
-
-.device-summary,
-.card-summary {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 1.1rem 1.6rem;
-  cursor: pointer;
-  list-style: none;
-  border-radius: inherit;
-}
-
-.device-summary::-webkit-details-marker,
-.card-summary::-webkit-details-marker { display: none; }
-
-/* The disclosure arrow is drawn rather than inherited, so it can sit on
-   the left of a flex row and turn with the card. */
-.device-summary::before,
-.card-summary::before {
-  content: "";
-  flex: none;
-  width: 0.42rem;
-  height: 0.42rem;
-  border-right: 2px solid var(--faint);
-  border-bottom: 2px solid var(--faint);
-  transform: rotate(-45deg);
-  transition: transform 0.16s var(--ease);
-}
-
-.device-card[open] > .device-summary::before,
-#create-device[open] > .card-summary::before {
-  transform: rotate(45deg);
-}
-
-.device-summary:hover::before,
-.card-summary:hover::before { border-color: var(--accent); }
-
-.device-summary:focus-visible,
-.card-summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.device-summary-text {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.device-title {
-  font-size: 1.05rem;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-}
-
-.device-summary-state {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex: none;
-}
-
-/* The live reading on the closed row. Without it a collapsed list would
-   say nothing about the rooms, which is the one thing worth scanning for. */
-.summary-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.82rem;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.summary-dot {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: var(--faint);
-}
-
-.summary-dot[data-state="on"] { background: var(--ok); }
-.summary-dot[data-state="off"] { background: var(--faint); }
-.summary-dot[data-state="warn"] { background: var(--warn); }
-
-.card-summary {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 650;
-  color: var(--faint);
-}
-
-.card-summary-hint {
-  margin-left: auto;
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 500;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.device-body,
-#create-device > .device-form,
-#create-device > #device-form-error {
-  padding: 0 1.6rem;
-}
-
-.device-body { padding-bottom: 1.4rem; }
-#create-device > #device-form-error { margin-bottom: 1.4rem; }
-
-/* ---------- Groups inside a card ---------- */
-
-.device-section {
-  border-top: 1px solid var(--hairline);
-}
-
-.device-section > summary {
-  padding: 0.7rem 0;
-  cursor: pointer;
-  list-style: none;
-  font-size: 0.88rem;
-  font-weight: 550;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.device-section > summary::-webkit-details-marker { display: none; }
-
-.device-section > summary::before {
-  content: "";
-  flex: none;
-  width: 0.34rem;
-  height: 0.34rem;
-  border-right: 2px solid var(--faint);
-  border-bottom: 2px solid var(--faint);
-  transform: rotate(-45deg);
-  transition: transform 0.16s var(--ease);
-}
-
-.device-section[open] > summary::before { transform: rotate(45deg); }
-
-/* The same disclosure arrow for the tuning blocks in the forms, so the
-   page has one way of saying "there is more under here" rather than two. */
-.tuning > summary {
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.tuning > summary::-webkit-details-marker { display: none; }
-
-.tuning > summary::before {
-  content: "";
-  flex: none;
-  width: 0.34rem;
-  height: 0.34rem;
-  border-right: 2px solid var(--faint);
-  border-bottom: 2px solid var(--faint);
-  transform: rotate(-45deg);
-  transition: transform 0.16s var(--ease);
-}
-
-.tuning[open] > summary::before { transform: rotate(45deg); }
-.device-section > summary:hover { color: var(--text); }
-.device-section-body { padding: 0 0 1rem; }
-
-/* ---------- Replay comparison ---------- */
-
-/* Wide content scrolls inside its own box; the page never does. */
-.table-scroll {
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-}
-
-.replay-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-  white-space: nowrap;
-}
-
-.replay-table th {
-  text-align: left;
-  font-weight: 600;
-  color: var(--muted);
-  padding: 0.4rem 0.8rem 0.4rem 0;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.replay-table td {
-  padding: 0.4rem 0.8rem 0.4rem 0;
-  border-bottom: 1px solid var(--hairline);
-  font-variant-numeric: tabular-nums;
-}
-
-.replay-table tr:last-child td { border-bottom: none; }
-.replay-reference td { font-weight: 600; }
-.replay-unavailable td { color: var(--muted); white-space: normal; }
-
-/* Zwei Durchläufe unter einer Überschrift: der chronologische und der
-   Fenstervergleich. Sie beantworten Verschiedenes und sollen nicht wie
-   eine Tabelle mit zwei Hälften aussehen. */
-.replay-heading {
-  margin: 1.1rem 0 0.5rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.replay-heading:first-of-type { margin-top: 0.8rem; }
-
-/* ---------- Zone timeline ---------- */
-
-.timeline-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 0.87rem;
-}
-
-.timeline-list li {
-  display: flex;
-  gap: 0.75rem;
-  align-items: baseline;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.timeline-list li:last-child { border-bottom: none; }
-
-.timeline-when {
-  flex: none;
-  font-variant-numeric: tabular-nums;
-  color: var(--faint);
-}
-
-.timeline-what { flex: 1 1 auto; min-width: 0; }
-
-.timeline-who {
-  flex: none;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-@media (max-width: 620px) {
-  .timeline-list li { flex-wrap: wrap; gap: 0.3rem 0.6rem; }
-  .timeline-what { flex: 1 1 100%; }
-}
-
-.device-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-}
-
-.device-card-header h3 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-}
-
-.device-summary-state .status,
-.device-card-header .status {
-  font-size: 0.78rem;
-  font-weight: 600;
-  padding: 0.2rem 0.6rem;
-  border-radius: var(--r-pill);
-  background: var(--glass-well);
-  border: 1px solid var(--hairline);
-  white-space: nowrap;
-}
-
-.device-meta {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.83rem;
-}
-
-.device-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  margin-bottom: 0.5rem;
-}
-
-details { margin-top: 0.7rem; }
-
-summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 550;
-  border-radius: var(--r-sm);
-}
-
-summary:hover { color: var(--text); }
-
-.build-log {
-  max-height: 260px;
-  overflow: auto;
-  background: var(--glass-well);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-md);
-  padding: 0.85rem;
-  margin-top: 0.6rem;
-  font-size: 0.76rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--muted);
-}
-
-/* Sits inside .device-actions so it lines up with Rebuild/Delete rather
-   than dropping onto its own row. */
-esp-web-install-button { display: inline-flex; }
-
-/* ---------- Live state (Phase 3) ---------- */
-
-.live-block {
-  margin-top: 0.9rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid var(--hairline);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem 1.35rem;
-}
-
-/* Readings render as small stat blocks (label over value) so they stay
-   legible next to the controls instead of running together in one line. */
-.live-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 6.5rem;
-}
-
-.live-label {
-  color: var(--faint);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 600;
-}
-
-.live-motion,
-.live-score {
-  font-size: 1rem;
-  font-weight: 620;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Controls sit apart from the readings. */
-.live-block .threshold-form {
-  margin-left: auto;
-  padding-left: 1rem;
-}
-
-.threshold-form {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.threshold-form label {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.threshold-form input {
-  width: 5.2rem;
-  padding: 0.38rem 0.55rem;
-}
-
-.live-error {
-  flex-basis: 100%;
-  margin: 0;
-  font-size: 0.83rem;
-  font-weight: 500;
-}
-
-.entity-editor {
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.entity-editor label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-  margin: 0.45rem 0;
-}
-
-.entity-editor input {
-  flex: 1;
-  min-width: 0;
-  padding: 0.34rem 0.55rem;
-  font-size: 0.79rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.save-entities-btn { margin-top: 0.45rem; }
-
-/* ---------- Zones ---------- */
-
-.zone-devices-label { grid-column: 1 / -1; }
-
-.zone-device-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-/* Specificity has to match `.device-form label`, which sets column
-   direction — otherwise the checkbox stacks on top of the name. */
-.device-form .zone-device-option {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: 0.87rem;
-  font-weight: 450;
-  color: var(--text);
-  background: var(--glass-well);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-pill);
-  padding: 0.35rem 0.85rem 0.35rem 0.6rem;
-  cursor: pointer;
-  transition: border-color 0.18s var(--ease);
-}
-
-.device-form .zone-device-option:hover { border-color: var(--accent-line); }
-
-/* The zone form is a single wide field + a device picker, so the device
-   form's auto-fit columns would leave a large gap beside the name. */
-#zone-form { grid-template-columns: 1fr; }
-#zone-form > label:first-of-type { max-width: 22rem; }
-
-.zone-members {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  margin: 0.6rem 0 0.9rem;
-}
-
-.chip {
-  background: var(--glass-well);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-pill);
-  padding: 0.28rem 0.75rem;
-  font-size: 0.79rem;
-  color: var(--muted);
-}
-
-/* ---------- Dashboard (Phase 4) ---------- */
-
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 1rem;
-}
-
-.dash-section + .dash-section { margin-top: 2rem; }
-
-.dash-heading {
-  margin: 0 0 0.8rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 650;
-  color: var(--faint);
-}
-
-.glass-tile {
-  border-radius: var(--r-xl);
-  padding: 1.3rem;
-  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease);
-}
-
-.glass-tile:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-raised), inset 0 1px 0 var(--sheen);
-}
-
-.glass-tile-header {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.glass-tile-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Current state, right-aligned against the name. */
-.tile-state {
-  margin-left: auto;
-  font-size: 0.74rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.trace {
-  display: block;
-  width: 100%;
-  height: 56px;
-  margin: 0.85rem 0 0.6rem;
-}
-
-.tile-readout {
-  display: flex;
-  align-items: center;
-  gap: 0.9rem;
-  font-size: 0.74rem;
-  color: var(--faint);
-}
-
-.readout-item b {
-  display: block;
-  font-size: 0.98rem;
-  font-weight: 620;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.25;
-}
-
-.readout-threshold b { color: var(--muted); }
-
-.tile-readout .ble-connect-btn {
-  margin-left: auto;
-  padding: 0.3rem 0.7rem;
-  font-size: 0.76rem;
-}
-
-/* A tile fed by BLE gets a subtle accent edge so it's obvious which
-   ones are on the fast path. */
-.tile-live { border-color: var(--accent-line); }
-
-.tile-idle { opacity: 0.72; }
-
-.tile-note {
-  margin: 0.55rem 0 0;
-  font-size: 0.71rem;
-  color: var(--faint);
-  word-break: break-word;
-}
-
-.chip-on {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-  color: var(--text);
-  font-weight: 550;
-}
-
-.chip-unknown { opacity: 0.55; }
-
-.tile-dot {
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
-  background: var(--faint);
-  flex-shrink: 0;
-  transition: background 0.3s var(--ease), box-shadow 0.3s var(--ease);
-}
-
-.tile-dot-on {
-  background: var(--ok);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 22%, transparent);
-}
-
-.tile-dot-off { background: var(--faint); opacity: 0.45; }
-.tile-dot-unknown { background: var(--warn); }
-
-.tile-sub {
-  margin: 0.35rem 0 0.9rem;
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
-.ble-connect-btn {
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-  border-radius: var(--r-sm);
-  color: var(--accent);
-  font-size: 0.83rem;
-  font-weight: 620;
-  padding: 0.42rem 0.9rem;
-}
-
-.ble-connect-btn:hover:not(:disabled) { background: var(--accent-line); }
-
-/* Zone tiles list their members, so the chips need to sit tighter here
-   than in the roomier Zones tab. */
-.glass-tile .zone-members { margin: 0.8rem 0 0; }
-
-/* ---------- Calibration Lab ---------- */
-
-.calibration-form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0.9rem;
-  align-items: end;
-  margin-top: 1rem;
-}
-
-.calibration-form button { min-height: 2.65rem; }
-
-.calibration-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: start;
-}
-
-.recording-indicator {
-  color: var(--err);
-  font-size: 0.78rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  animation: recording-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes recording-pulse {
-  50% { opacity: 0.4; }
-}
-
-.label-buttons {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.65rem;
-  margin: 1rem 0;
-}
-
-.label-buttons button {
-  background: var(--glass-well);
-  border: 1px solid var(--hairline-strong);
-  color: var(--text);
-  box-shadow: none;
-}
-
-.label-buttons button.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
-
-.calibration-live {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem 1.5rem;
-  margin-bottom: 1rem;
-  color: var(--muted);
-  font-size: 0.88rem;
-}
-
-.recommendation {
-  display: grid;
-  gap: 0.25rem;
-  margin: 0.8rem 0 1rem;
-  padding: 0.85rem 1rem;
-  border: 1px solid var(--accent-line);
-  border-radius: var(--r-md);
-  background: var(--accent-soft);
-  font-size: 0.84rem;
-}
-
-.recommendation span { color: var(--muted); }
-
-/* ---------- Phones ---------- */
-
-/* Home Assistant's companion app is a common way to open this, so the
-   narrow case is a first-class layout, not an afterthought. */
-@media (max-width: 620px) {
-  main { padding: 1.25rem 1rem 3rem; }
-
-  header h1 { font-size: 1.6rem; }
-  .subtitle { margin-bottom: 1.25rem; }
-
-  .tabs { margin-bottom: 1.5rem; }
-  .tab-btn { padding: 0.42rem 0.85rem; font-size: 0.88rem; }
-
-  .card { padding: 1.1rem 1.15rem; border-radius: var(--r-lg); }
-  .glass-tile { padding: 1.1rem; border-radius: var(--r-lg); }
-
-  /* Readings and controls stack instead of being squeezed onto one line. */
-  .live-block { gap: 0.85rem; }
-  .live-block .threshold-form {
-    margin-left: 0;
-    padding-left: 0;
-    flex-basis: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent); }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ---------- shell ---------- */
+
+.shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100%; }
+.sidebar {
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  padding: 22px 14px; border-right: 1px solid var(--line); background: var(--surface-2);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; }
+.brand img { width: 34px; height: 34px; }
+.brand strong { font-size: 19px; letter-spacing: -.3px; }
+.brand span { display: block; font-size: 12px; color: var(--muted); }
+.nav-label { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 1.2px;
+  color: var(--faint); padding: 16px 12px 6px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px;
+  padding: 8px 12px; border: 0; border-radius: 12px; background: transparent; text-align: left;
+  cursor: pointer; text-decoration: none; color: var(--text);
+}
+.nav-item:hover { background: var(--surface-3); }
+.nav-item.active { background: var(--surface); box-shadow: var(--shadow-sm); font-weight: 600; }
+.nav-item .icon { width: 22px; height: 22px; flex: none; color: var(--muted); }
+.nav-item.active .icon { color: var(--accent); }
+.nav-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-count { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.nav-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.nav-dot.present { background: var(--present); box-shadow: 0 0 0 3px var(--present-soft); }
+.nav-dot.empty { background: var(--accent); }
+.sidebar-foot { margin-top: auto; padding: 16px 12px 0; font-size: 12px; color: var(--faint); }
+
+.content { min-width: 0; padding: 28px 32px 48px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+  margin-bottom: 22px; flex-wrap: wrap; }
+.eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.6px; color: var(--muted); }
+h1 { font-size: 32px; letter-spacing: -1px; line-height: 1.1; margin: 4px 0 2px; font-weight: 700; }
+h2 { font-size: 17px; margin: 0 0 12px; letter-spacing: -.2px; }
+h3 { font-size: 15px; margin: 0 0 8px; }
+.sub { color: var(--muted); margin: 0; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* bottom tab bar (phones) */
+.tabbar { display: none; }
+
+@media (max-width: 1023px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .content { padding: 20px 16px 96px; }
+  .tabbar {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(16px);
+    border-top: 1px solid var(--line); padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   }
-  .threshold-form input { flex: 1; width: auto; }
-  .calibrate-btn { flex-basis: 100%; }
-
-  /* Entity ids are long; a label beside a field leaves no room for either. */
-  .entity-editor label {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.25rem;
-  }
-
-  /* A long device name shouldn't push its status badge off the card. */
-  .device-card-header { flex-wrap: wrap; gap: 0.4rem; }
-  .device-card-header h3 { flex: 1 1 auto; min-width: 0; }
-
-  /* On a phone the state moves under the name rather than squeezing it. */
-  .device-summary { flex-wrap: wrap; padding: 0.9rem 1.1rem; }
-  .device-summary-state { width: 100%; padding-left: 1.1rem; }
-  .device-body,
-  #create-device > .device-form,
-  #create-device > #device-form-error { padding-inline: 1.1rem; }
-  .card-summary { flex-wrap: wrap; padding: 0.9rem 1.1rem; }
-  .card-summary-hint { margin-left: 0; width: 100%; padding-left: 0.9rem; }
-
-  .device-actions button,
-  .device-actions esp-web-install-button,
-  esp-web-install-button button[slot="activate"] { flex: 1 1 auto; }
-
-  /* Deleting shouldn't be the widest target on the card. */
-  .device-actions .delete-btn,
-  .delete-zone-btn { flex: 0 0 auto; }
-
-  .hint, .notice-quiet { max-width: none; }
+  .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    font-size: 11px; color: var(--muted); text-decoration: none; padding: 6px 0; border-radius: 10px; }
+  .tabbar a.active { color: var(--accent); font-weight: 600; }
+  .tabbar .icon { width: 24px; height: 24px; }
+  h1 { font-size: 27px; }
 }
 
-/* Narrow phones: trim the tab strip horizontally (touch height untouched)
-   so all four labels fit without swiping. Below ~340px it scrolls. */
-@media (max-width: 400px) {
-  .tab-btn { padding: 0.42rem 0.6rem; font-size: 0.85rem; }
-  .tabs { gap: 0.15rem; }
+/* ---------- controls ---------- */
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 40px; padding: 8px 16px; border-radius: 12px; border: 1px solid var(--line-strong);
+  background: var(--surface); cursor: pointer; font-weight: 550; text-decoration: none; color: var(--text);
+  white-space: nowrap; transition: background .15s, border-color .15s, transform .05s;
+}
+.btn:hover { background: var(--surface-3); }
+.btn:active { transform: scale(.98); }
+.btn:disabled { opacity: .45; cursor: default; transform: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { background: var(--accent-strong); }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--surface-3); }
+.btn.small { min-height: 32px; padding: 5px 11px; font-size: 13px; border-radius: 10px; }
+.btn.icon-only { width: 40px; padding: 0; }
+.btn .icon { width: 18px; height: 18px; }
+
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; min-width: 0; }
+.field > span, .field-label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.field input:not([type=checkbox]):not([type=range]):not([type=file]), .field select, .field textarea {
+  width: 100%; min-height: 42px; padding: 9px 12px; border-radius: 11px; border: 1px solid var(--line-strong);
+  background: var(--surface-2); outline: none; transition: border-color .15s, box-shadow .15s;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field .hint, .hint { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin: 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.check { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0 12px; cursor: pointer; }
+.check input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--accent); flex: none; }
+.check small { display: block; color: var(--muted); font-size: 12.5px; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+
+.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-3); border-radius: 12px; }
+.segmented button {
+  border: 0; background: transparent; border-radius: 9px; padding: 7px 14px; min-height: 34px;
+  cursor: pointer; font-weight: 550; color: var(--muted);
+}
+.segmented button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600; background: var(--surface-3); color: var(--muted); white-space: nowrap; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .85; }
+.chip.ok { background: var(--accent-soft); color: var(--accent); }
+.chip.present { background: var(--present-soft); color: var(--present); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.err { background: var(--danger-soft); color: var(--danger); }
+.chip.plain::before { display: none; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); }
+.card.pad { padding: 20px; }
+.notice { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: 14px;
+  background: var(--surface-3); margin-bottom: 14px; font-size: 14px; }
+.notice.warn { background: var(--warn-soft); }
+.notice.err { background: var(--danger-soft); }
+.notice.ok { background: var(--accent-soft); }
+.notice .grow { flex: 1; min-width: 0; }
+.notice strong { display: block; margin-bottom: 2px; }
+
+/* ---------- overview ---------- */
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.room-tile {
+  position: relative; display: flex; flex-direction: column; gap: 12px; padding: 18px; min-height: 220px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); cursor: pointer; text-align: left; transition: transform .12s, box-shadow .12s;
+}
+.room-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.room-tile .tile-head { display: flex; align-items: center; gap: 12px; }
+.room-icon { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--surface-3); color: var(--muted); flex: none; }
+.room-icon .icon { width: 24px; height: 24px; }
+.room-tile.present .room-icon { background: var(--present-soft); color: var(--present); }
+.room-tile .tile-name { font-weight: 650; font-size: 17px; }
+.room-tile .tile-state { font-size: 13px; color: var(--muted); }
+.room-tile.present .tile-state { color: var(--present); font-weight: 600; }
+.tile-count { position: absolute; top: 16px; right: 18px; font-size: 30px; font-weight: 700;
+  letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+.tile-plan { flex: 1; border-radius: 12px; background: var(--surface-2); overflow: hidden; min-height: 110px; }
+.tile-plan svg { width: 100%; height: 100%; display: block; }
+.tile-zones { display: flex; gap: 6px; flex-wrap: wrap; }
+.add-tile { align-items: center; justify-content: center; border-style: dashed; color: var(--muted);
+  background: transparent; box-shadow: none; font-weight: 600; }
+.add-tile .icon { width: 34px; height: 34px; }
+
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 22px; }
+.step { padding: 18px; }
+.step .num { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-3); font-weight: 700; margin-bottom: 10px; }
+.step.done .num { background: var(--accent); color: var(--on-accent); }
+.step p { margin: 4px 0 12px; color: var(--muted); font-size: 14px; }
+
+/* ---------- room page ---------- */
+
+.room-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+@media (max-width: 1180px) { .room-layout { grid-template-columns: minmax(0, 1fr) 300px; } }
+@media (max-width: 900px) { .room-layout { grid-template-columns: 1fr; } }
+
+.plan-card { position: relative; overflow: hidden; }
+.plan-top { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 14px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.plan-top .dims { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.plan-stage { position: relative; padding: 18px; background: var(--surface); }
+.plan-stage svg { display: block; width: 100%; height: auto; max-height: calc(100vh - 230px);
+  touch-action: none; user-select: none; -webkit-user-select: none; overflow: visible; }
+.plan-legend { display: flex; flex-wrap: wrap; gap: 16px; padding: 12px 18px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--muted); }
+.plan-legend i { display: inline-block; vertical-align: middle; margin-right: 6px; }
+.lg-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--target); }
+.lg-ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--faint); }
+.lg-fov { width: 18px; border-top: 2px dashed var(--faint); }
+.lg-zone { width: 14px; height: 10px; border-radius: 3px; background: color-mix(in srgb, var(--z0) 25%, transparent);
+  border: 1.5px solid var(--z0); }
+
+.plan-overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.plan-overlay .card { pointer-events: auto; max-width: 380px; text-align: center; padding: 22px; box-shadow: var(--shadow); }
+
+/* plan SVG */
+.pl-floor { fill: var(--plan-floor); }
+.pl-grid-line { stroke: var(--plan-grid); stroke-width: .01; }
+.pl-wall { fill: none; stroke: var(--plan-wall); stroke-width: .06; stroke-linejoin: round; }
+.pl-ruler { font-size: .16px; fill: var(--faint); font-variant-numeric: tabular-nums; }
+.pl-fov { fill: var(--accent); fill-opacity: .06; stroke: var(--accent); stroke-opacity: .45;
+  stroke-width: .018; stroke-dasharray: .08 .07; }
+.pl-sensor-body { fill: var(--surface); stroke: var(--accent); stroke-width: .035; }
+.pl-sensor-nose { fill: var(--accent); }
+.pl-sensor.missing .pl-sensor-body { stroke: var(--faint); }
+.pl-sensor.missing .pl-sensor-nose { fill: var(--faint); }
+.pl-furn rect.body { fill: var(--plan-furniture); stroke: var(--plan-furniture-line); stroke-width: .015; }
+.pl-furn .detail { fill: none; stroke: var(--plan-furniture-line); stroke-width: .012; }
+.pl-furn text, .pl-zone-label { font-size: .15px; fill: var(--muted); font-weight: 600; pointer-events: none; }
+.pl-zone { stroke-width: .03; stroke-linejoin: round; transition: fill-opacity .25s; }
+.pl-zone.exclude { stroke-dasharray: .1 .06; }
+.pl-zone-label { font-size: .16px; font-weight: 700; paint-order: stroke; stroke: var(--plan-floor);
+  stroke-width: .04; stroke-linejoin: round; }
+.pl-zone-badge rect { fill: var(--present); }
+.pl-zone-badge text { fill: #fff; font-size: .15px; font-weight: 700; }
+.pl-target { transition: transform .32s linear; }
+.pl-target .halo { fill: var(--target); opacity: .16; }
+.pl-target .dot { fill: var(--target); stroke: var(--surface); stroke-width: .035; }
+.pl-target.outside .dot, .pl-target.excluded .dot { fill: var(--surface); stroke: var(--faint); stroke-width: .03; }
+.pl-target.outside .halo, .pl-target.excluded .halo,
+.pl-target.outside .pulse, .pl-target.excluded .pulse { display: none; }
+.pl-target .pulse { fill: none; stroke: var(--target); stroke-width: .02; opacity: 0;
+  animation: pulse 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes pulse { 0% { opacity: .5; transform: scale(.6); } 100% { opacity: 0; transform: scale(2.1); } }
+.pl-ghost { fill: var(--target); }
+.pl-stale { opacity: .35; }
+.editing .pl-furn, .editing .pl-zone, .editing .pl-sensor { cursor: move; }
+.pl-selected { stroke: var(--accent) !important; stroke-width: .04 !important; }
+.pl-handle { fill: var(--surface); stroke: var(--accent); stroke-width: .03; cursor: grab; }
+.pl-handle.mid { fill: var(--accent); stroke: var(--surface); opacity: .75; }
+.pl-handle.rotate { fill: var(--accent); stroke: var(--surface); }
+.pl-draft { fill: var(--accent); fill-opacity: .12; stroke: var(--accent); stroke-width: .03; stroke-dasharray: .08 .06; }
+.pl-draft-point { fill: var(--accent); }
+
+/* toolbar */
+.toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.tool {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 6px 12px; border-radius: 11px;
+  border: 1px solid transparent; background: var(--surface-3); cursor: pointer; font-weight: 550; font-size: 13.5px;
+}
+.tool:hover { border-color: var(--line-strong); }
+.tool.active { background: var(--accent); color: var(--on-accent); }
+.tool:disabled { opacity: .4; cursor: default; }
+.tool .icon { width: 18px; height: 18px; }
+.tool-sep { width: 1px; height: 26px; background: var(--line); margin: 0 4px; }
+.editor-hint { font-size: 12.5px; color: var(--muted); padding: 10px 18px 0; min-height: 28px; }
+
+.palette { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px; }
+.palette button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); cursor: pointer; font-size: 12px; }
+.palette button:hover { border-color: var(--accent); }
+.palette .icon { width: 26px; height: 26px; color: var(--muted); }
+
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatches button { width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; }
+.swatches button.active { box-shadow: 0 0 0 2px var(--text); }
+
+/* side panel */
+.side { display: flex; flex-direction: column; gap: 16px; }
+.side .card { padding: 18px; }
+.big-number { font-size: 52px; font-weight: 700; letter-spacing: -2.5px; line-height: 1; font-variant-numeric: tabular-nums; }
+.big-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
+.stat-lines { margin-top: 14px; }
+.stat-line { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line);
+  font-size: 13.5px; }
+.stat-line span:first-child { color: var(--muted); }
+.stat-line span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.zone-list { display: flex; flex-direction: column; gap: 8px; }
+.zone-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-radius: 14px;
+  background: var(--surface-2); border: 1px solid transparent; }
+.zone-row.present { background: var(--present-soft); }
+.zone-row .swatch { width: 12px; height: 12px; border-radius: 4px; flex: none; }
+.zone-row .grow { flex: 1; min-width: 0; }
+.zone-row .name { font-weight: 600; }
+.zone-row .meta { font-size: 12px; color: var(--muted); }
+.zone-row .count { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.empty-state { text-align: center; padding: 18px 8px; color: var(--muted); font-size: 14px; }
+
+/* ---------- devices ---------- */
+
+.device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.device-tile { padding: 18px; display: flex; flex-direction: column; gap: 12px; cursor: pointer;
+  transition: transform .12s, box-shadow .12s; text-align: left; }
+.device-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.device-tile .head { display: flex; gap: 12px; align-items: center; }
+.device-glyph { width: 46px; height: 46px; border-radius: 14px; background: var(--accent-soft); color: var(--accent);
+  display: grid; place-items: center; flex: none; }
+.device-glyph .icon { width: 26px; height: 26px; }
+.device-tile .title { font-weight: 650; font-size: 16px; }
+.device-tile .meta { font-size: 12.5px; color: var(--muted); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.legacy .device-glyph { background: var(--surface-3); color: var(--faint); }
+
+/* sheet (modal) */
+.sheet-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(12, 16, 20, .38);
+  display: flex; justify-content: flex-end; animation: fade .15s ease-out; }
+.sheet {
+  width: min(560px, 100%); height: 100%; overflow-y: auto; background: var(--bg);
+  box-shadow: var(--shadow-lg); animation: slide .2s ease-out; display: flex; flex-direction: column;
+}
+.sheet-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px;
+  padding: 16px 18px; background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line); }
+.sheet-head h2 { margin: 0; flex: 1; font-size: 19px; }
+.sheet-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.sheet-body .card { padding: 18px; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes slide { from { transform: translateX(40px); opacity: .4; } }
+@media (max-width: 700px) {
+  .sheet-backdrop { align-items: flex-end; }
+  .sheet { height: 94%; border-radius: 22px 22px 0 0; animation: rise .22s ease-out; }
+  @keyframes rise { from { transform: translateY(60px); opacity: .4; } }
 }
 
-/* ---------- Accessibility ---------- */
-
-@media (prefers-reduced-motion: reduce) {
-  * {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-  }
+.log { max-height: 280px; overflow: auto; background: #0f1418; color: #cfe3da; border-radius: 12px; padding: 12px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+details.more summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; }
+details.more[open] summary { margin-bottom: 10px; }
+.secret { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.flash-progress { margin: 0; padding: 10px 12px; border-radius: 12px; background: var(--surface-3); font-size: 13.5px; }
+.flash-progress.status-ok { background: var(--accent-soft); }
+.flash-progress.status-err { background: var(--danger-soft); }
+.flash-progress .flash-hint { display: block; margin-top: 4px; color: var(--muted); }
+esp-web-install-button button {
+  min-height: 40px; padding: 8px 16px; border-radius: 12px; border: 1px solid var(--accent);
+  background: var(--accent); color: var(--on-accent); font-weight: 600; cursor: pointer;
 }
 
-/* Eine Zone, die nur noch durch ihre Haltezeit belegt ist, darf nicht
-   aussehen wie eine, die gerade jemanden sieht — sonst lässt sich die
-   Abstimmung nicht beurteilen. Warnfarbe statt Grün, plus ein
-   Pulsieren, das den laufenden Countdown andeutet. */
-.tile-dot-holding {
-  background: var(--warn);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 20%, transparent);
-  animation: hold-pulse 2s var(--ease) infinite;
-}
+/* dialogs & toasts */
+.toast-host { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 80;
+  display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast { pointer-events: auto; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px;
+  box-shadow: var(--shadow-lg); font-size: 14px; max-width: min(520px, 92vw); animation: fade .2s; }
+.toast.err { background: var(--danger); color: #fff; }
+@media (max-width: 1023px) { .toast-host { bottom: 90px; } }
 
-@keyframes hold-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
+.dialog-backdrop { position: fixed; inset: 0; z-index: 70; background: rgba(12,16,20,.4); display: grid;
+  place-items: center; padding: 16px; animation: fade .15s; }
+.dialog { width: min(440px, 100%); background: var(--surface); border-radius: 20px; padding: 22px; box-shadow: var(--shadow-lg); }
+.dialog h2 { font-size: 19px; }
+.dialog p { color: var(--muted); margin: 0 0 16px; }
+.dialog .actions { justify-content: flex-end; margin-top: 16px; }
 
-@media (prefers-reduced-motion: reduce) {
-  .tile-dot-holding { animation: none; }
-}
-
-/* Abstimmungswerte einer Zone: lesbar, aber leiser als die Mitglieds-Chips,
-   damit die Karte weiterhin von den Geräten handelt. */
-.zone-tuning {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  /* Bottom margin as well as top: the actions row follows directly, and
-     with only a top margin the chips sat on the buttons. */
-  margin: 0.55rem 0 0.9rem;
-}
-
-.chip-quiet {
-  font-size: 0.73rem;
-  opacity: 0.75;
-}
-
-/* Feinabstimmung im Zonenformular. #zone-form ist einspaltig, damit der
-   Geräte-Picker Platz hat — die drei Zahlenfelder brauchen darin aber
-   keine volle Breite, sonst steht ein 22rem breites Namensfeld neben
-   armlangen Zahleneingaben. */
-.tuning {
-  margin-block: 0.2rem 0.4rem;
-  /* Grid-Items haben als Mindestbreite `auto`, also die Breite ihres
-     Inhalts — ohne dies wächst die Feinabstimmung auf schmalen Displays
-     über die Karte hinaus, statt umzubrechen. */
-  min-width: 0;
-}
-
-.tuning .hint {
-  margin-top: 0.5rem;
-  margin-bottom: 0.9rem;
-}
-
-.tuning-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
-  gap: 1rem 1.25rem;
-  max-width: 46rem;
-  align-items: start;
-  min-width: 0;
-}
-
-.tuning-fields > label { min-width: 0; }
-
-/* Die beiden Schwellwerte gehören zusammen und müssen nebeneinander
-   stehen — also bekommt die Haltezeit davor eine eigene Zeile, statt
-   sich einen Umbruch mit ihnen zu teilen. Das Eingabefeld behält dabei
-   die Breite der anderen, nur der Erklärtext darf länger laufen. */
-.tuning-fields > label:first-child {
-  grid-column: 1 / -1;
-}
-
-.tuning-fields > label:first-child input {
-  max-width: 15rem;
-}
-
-/* Die Erklärtexte sind Teil des Labels und erben dessen Spaltenfluss;
-   sie brauchen nur eigene Größe, Farbe und etwas Luft nach oben. */
-.field-hint {
-  font-size: 0.76rem;
-  color: var(--muted);
-  line-height: 1.45;
-  font-weight: 400;
-  margin-top: 0.1rem;
-}
-
-/* ---------- Netzwerk, Schlüssel und Firmware-Optionen (0.11) ---------- */
-
-.network-block,
-.key-block {
-  margin-top: 0.9rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid var(--hairline);
-}
-
-.address-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  font-weight: 550;
-  color: var(--faint);
-  max-width: 22rem;
-}
-
-.probe-result {
-  margin-top: 0.6rem;
-  line-height: 1.5;
-  /* Verdicts run to a couple of sentences — they have to wrap, not clip. */
-  white-space: normal;
-}
-
-/* Der Schlüssel ist lang und muss vollständig kopierbar sein, darf die
-   Karte aber auf keinem Display aufspreizen. */
-.key-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.6rem;
-  margin-top: 0.5rem;
-}
-
-.api-key {
-  flex: 1 1 14rem;
-  min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.78rem;
-  background: var(--glass-well);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-sm);
-  padding: 0.4rem 0.6rem;
-  overflow-wrap: anywhere;
-  user-select: all;
-}
-
-/* Ein Kontrollkästchen mit Erklärtext darunter: Kästchen links, Text
-   rechts, und der Erklärtext bricht unter der Beschriftung um statt
-   neben dem Kästchen zu kleben. */
-/* Shared by the firmware options and the header's view switches: a box,
-   a label, and a hint under the label rather than trailing after it. */
-.device-form .checkbox-field,
-.status-panel .checkbox-field {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.2rem 0.55rem;
-  align-items: start;
-  font-size: 0.87rem;
-  font-weight: 500;
-  color: var(--text);
-  min-width: 0;
-}
-
-.device-form .checkbox-field input,
-.status-panel .checkbox-field input {
-  margin-top: 0.15rem;
-}
-
-.device-form .checkbox-field .field-hint,
-.status-panel .checkbox-field .field-hint {
-  display: block;
-  margin-top: 0.2rem;
-}
-
-.status-panel .checkbox-field + .checkbox-field { margin-top: 0.75rem; }
-
-/* Ein aufklappbarer Block gehört nicht in eine Rasterspalte: zugeklappt
-   wäre er eine schmale Zeile, aufgeklappt ein Streifen neben leerem Platz.
-   Über die volle Breite wie der Absende-Knopf. */
-.device-form .device-extras {
-  grid-column: 1 / -1;
-}
-
-/* Im Formular heißt hidden verborgen. Das Attribut allein reicht hier
-   nicht: `.device-form label` und `.checkbox-field` setzen display und
-   überstimmen es. So stand seit 0.13.8 das WLAN-Band auch bei Boards mit
-   nur einem Band im Formular — abgeschaltet, aber sichtbar —, und ohne
-   diese Regel stünden die Felder des jeweils anderen Sensortyps ebenso da. */
-.device-form [hidden] {
-  display: none !important;
-}
-
-/* Die CSI-Gruppe ist nur eine Klammer zum Ein- und Ausblenden; ihre Felder
-   gehören ins Raster des Formulars wie vorher. */
-.device-form div.sensor-fields {
-  display: contents;
-}
-
-/* Die Verkabelung ist eine Einheit mit Erklärung, also ein eigener Block
-   über die volle Breite statt einer schmalen Rasterspalte. */
-.device-form fieldset.sensor-fields {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 0.75rem 1rem;
-  margin: 0;
-  padding: 0.9rem 1rem 1rem;
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-}
-
-.device-form fieldset.sensor-fields > legend {
-  padding: 0 0.35rem;
-  font-size: 0.78rem;
-  font-weight: 650;
-  color: var(--faint);
-}
-
-.device-form fieldset.sensor-fields > .hint,
-.device-form fieldset.sensor-fields > .field-note,
-.device-form fieldset.sensor-fields > .checkbox-field {
-  grid-column: 1 / -1;
-}
-
-.device-form fieldset.sensor-fields > button {
-  justify-self: start;
-}
-
-.device-extras code {
-  font-size: 0.92em;
-  background: var(--glass-well);
-  border-radius: 4px;
-  padding: 0.05rem 0.3rem;
-}
-
-/* Der Link zur Geräteseite sieht aus wie die Knöpfe daneben, ist aber ein
-   echtes <a> — er führt aus der App heraus auf ein anderes Gerät. */
-.status-page-link {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-}
-
-/* Der Erklärtext eines aufklappbaren Blocks klebte sonst direkt unter der
-   Überschrift. */
-.key-block .hint,
-.device-extras .hint {
-  margin-top: 0.5rem;
-}
-
-/* Der Download ist der Ausweg, wenn der eingebaute Flasher hängt: dieselbe
-   .bin, aber mit einem beliebigen anderen Werkzeug zu benutzen. Sekundär
-   gestaltet, weil der normale Weg der Knopf daneben bleibt. */
-.download-fw-link {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-}
-
-/* Welcher Schritt des Flashens gerade läuft. Der Dialog von ESP Web Tools
-   nennt Handshake und Download beide "Preparing installation"; diese Zeile
-   trennt sie und blendet nach einer Weile ohne Fortschritt den Hinweis ein,
-   der zum jeweiligen Schritt gehört. */
-.flash-progress {
-  display: block;
-  margin: 0.5rem 0 0;
-  max-width: 46rem;
-}
-
-.flash-progress .flash-hint {
-  display: block;
-  margin-top: 0.25rem;
-  color: var(--faint);
-  font-weight: normal;
-}
-
-/* Die Gerätediagnose. Absichtlich nicht dauerhaft sichtbar: sie liest den
-   vollständigen Zustandsschnappschuss von Home Assistant, was auf einer
-   großen Installation teuer ist. Deshalb ein Knopf statt Dauerbetrieb. */
-.health-block {
-  margin-top: 0.75rem;
-}
-
-.health-result {
-  margin-top: 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  max-width: 46rem;
-}
-
-.health-finding {
-  border-left: 3px solid var(--hairline-strong);
-  padding-left: 0.75rem;
-}
-
-.health-finding p {
-  margin: 0.25rem 0 0.5rem;
-}
-
-.health-numbers {
-  display: grid;
-  grid-template-columns: auto auto;
-  gap: 0.1rem 1rem;
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.health-numbers dt {
-  color: var(--faint);
-}
-
-.health-numbers dd {
-  margin: 0;
-}
-
-/* Die Fusion ist eine zweite Meinung, nicht das Urteil der Kachel: sie kommt
-   aus der Direkt-Telemetrie, während Punkt und Zustandstext von der
-   Zonen-Zustandsmaschine stammen, die auch Home Assistant und den
-   MQTT-Export speist. Deshalb eigene Zeile, abgesetzt statt hervorgehoben. */
-.fusion-note {
-  border-top: 1px solid var(--hairline);
-  padding-top: 0.4rem;
-  font-variant-numeric: tabular-nums;
-}
+.icon { display: inline-block; width: 1.2em; height: 1.2em; vertical-align: -0.22em; flex: none;
+  stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.notice > .icon { width: 22px; height: 22px; margin-top: 1px; }
+h3 .icon { color: var(--muted); margin-right: 4px; }
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.spacer { flex: 1; }

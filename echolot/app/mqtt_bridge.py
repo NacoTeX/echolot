@@ -1,23 +1,25 @@
-"""Publishes zones to Home Assistant as occupancy sensors over MQTT.
+"""Publishes rooms and zones to Home Assistant over MQTT discovery.
 
-Zones otherwise live only inside this add-on: you can see them here, but
-you can't use them in an automation, put them on a Home Assistant
-dashboard, or export them to HomeKit/Matter. Publishing them via MQTT
-discovery turns each one into a real `binary_sensor` entity, and from
-there Home Assistant's own bridges handle the rest — which is a far
-better answer than implementing Matter commissioning in here.
+Per room one Home Assistant device with an occupancy binary_sensor and a
+person-count sensor; per detection zone another pair. From there Home
+Assistant's own bridges (HomeKit, Matter, Google, Alexa) take over.
 
 Credentials come from the Supervisor (`services: mqtt:want` in
 config.yaml), so nothing needs configuring when the Mosquitto add-on is
-installed. Without a broker the bridge simply stays dormant.
+installed. Without a broker the bridge stays dormant.
+
+Deletions are the hard part and get a queue that survives restarts: an
+entity that should go gets a tombstone naming its retained topics
+*before* the first attempt, and the tombstone is dropped only once the
+broker acknowledged every one of them. The Wi-Fi CSI zones of earlier
+versions leave through the same queue.
 """
 
 import json
 import logging
 import os
-import re
 import threading
-import unicodedata
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -29,54 +31,70 @@ DISCOVERY_PREFIX = "homeassistant"
 BASE_TOPIC = "echolot"
 AVAILABILITY_TOPIC = f"{BASE_TOPIC}/status"
 
-# Identifies this add-on as one device that owns all the zone entities.
-DEVICE_INFO = {
-    "identifiers": ["echolot"],
-    "name": "Echolot",
-    "manufacturer": "Echolot",
-    "model": "Wi-Fi CSI presence",
-}
+
+def _data_dir() -> Path:
+    return Path(os.environ.get("ECHOLOT_DATA_DIR", "/data"))
 
 
-#: What Home Assistant has been told about, and what still has to be
-#: taken back, kept across restarts.
-#:
-#: The announced set alone was not a deletion queue. `forget_zone()`
-#: returns immediately when the broker is disconnected, and the loop then
-#: set `known = current` anyway — so on the next pass the zone to remove
-#: was not in `known` any more and nobody ever retried. Its retained
-#: discovery message stayed on the broker and the entity haunted Home
-#: Assistant. Failed publishes were ignored the same way.
-#:
-#: So a zone that should go gets a tombstone written down *before* the
-#: first attempt, and the tombstone is only dropped once every retained
-#: topic has actually been taken. Announcements and tombstones are stored
-#: together, because writing one without the other loses the other.
 def _state_path() -> Path:
-    return Path(os.environ.get("ECHOLOT_DATA_DIR", "/data")) / "mqtt_announced.json"
+    return _data_dir() / "mqtt_entities.json"
 
 
-def load_state() -> tuple[set[str], set[str]]:
-    """(announced, tombstones), tolerant of anything on disk."""
+def _legacy_state_path() -> Path:
+    """Where 0.13/0.14 kept the announced CSI zone ids."""
+    return _data_dir() / "mqtt_announced.json"
+
+
+def legacy_zone_topics(zone_id: str) -> list[str]:
+    """Every retained topic a CSI zone of 0.13/0.14 was published under."""
+    return [
+        f"{DISCOVERY_PREFIX}/binary_sensor/{BASE_TOPIC}/zone_{zone_id}/config",
+        f"{BASE_TOPIC}/zone/{zone_id}/state",
+        f"{BASE_TOPIC}/zone/{zone_id}/availability",
+    ]
+
+
+def load_state() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """(announced, tombstones), each key -> its retained topics.
+
+    On the first start after 0.14 the old file is read once: every CSI
+    zone it names — announced or already queued for deletion — becomes a
+    tombstone, because the thing that published it is gone.
+    """
     try:
         stored = json.loads(_state_path().read_text(encoding="utf-8"))
+        if isinstance(stored, dict):
+            announced = {k: list(v) for k, v in (stored.get("announced") or {}).items()}
+            tombstones = {k: list(v) for k, v in (stored.get("tombstones") or {}).items()}
+            return announced, tombstones
+    except (OSError, ValueError, AttributeError):
+        pass
+    tombstones: dict[str, list[str]] = {}
+    try:
+        legacy = json.loads(_legacy_state_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return set(), set()
-    if isinstance(stored, list):
-        # The 0.13.5 shape: a bare list of announced ids.
-        return set(stored), set()
-    if not isinstance(stored, dict):
-        return set(), set()
-    return set(stored.get("announced") or []), set(stored.get("tombstones") or [])
+        legacy = None
+    ids: set[str] = set()
+    if isinstance(legacy, list):
+        ids = {str(i) for i in legacy}
+    elif isinstance(legacy, dict):
+        ids = {str(i) for i in (legacy.get("announced") or [])} | {
+            str(i) for i in (legacy.get("tombstones") or [])
+        }
+    for zone_id in ids:
+        tombstones[f"csi_zone:{zone_id}"] = legacy_zone_topics(zone_id)
+    if tombstones:
+        remember_state({}, tombstones)
+    return {}, tombstones
 
 
-def remember_state(announced: set[str], tombstones: set[str]) -> None:
+def remember_state(announced: dict, tombstones: dict) -> None:
     try:
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(
-            json.dumps({"announced": sorted(announced), "tombstones": sorted(tombstones)}),
+            json.dumps({"announced": announced, "tombstones": tombstones}, sort_keys=True),
             encoding="utf-8",
         )
         temporary.replace(path)
@@ -85,92 +103,122 @@ def remember_state(announced: set[str], tombstones: set[str]) -> None:
         logger.warning("MQTT-Zustand konnte nicht gespeichert werden")
 
 
-def load_announced() -> set[str]:
-    return load_state()[0]
-
-
 class MqttUnavailable(Exception):
     """No broker configured, or the Supervisor wouldn't tell us about one."""
 
 
 def _new_client(client_id: str) -> mqtt.Client:
-    """Build a client that works on both paho generations.
-
-    ESPHome pins paho-mqtt==1.6.1, so the container gets 1.x while a
-    development machine may well have 2.x. Asking 2.x for the VERSION1
-    callback API means one set of callback signatures serves both.
-    """
+    """A client that works on both paho generations (ESPHome pins 1.6.1)."""
     if hasattr(mqtt, "CallbackAPIVersion"):
         return mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=client_id)
     return mqtt.Client(client_id=client_id)
 
 
-def zone_state_topic(zone_id: str) -> str:
-    return f"{BASE_TOPIC}/zone/{zone_id}/state"
+@dataclass
+class Entity:
+    """One Home Assistant entity and everything retained that it owns."""
+
+    key: str
+    component: str  # binary_sensor | sensor
+    discovery: dict
+    state_topic: str
+    availability_topic: str
+    #: "occupancy" or "count".
+    measure: str = "occupancy"
+    #: None for the room itself.
+    zone_id: str | None = None
+    #: Retained topics to clear when the entity goes. The shared room
+    #: availability topic belongs to the room's occupancy entity only.
+    owned: list[str] = field(default_factory=list)
+
+    @property
+    def discovery_topic(self) -> str:
+        return f"{DISCOVERY_PREFIX}/{self.component}/{BASE_TOPIC}/{self.key}/config"
+
+    def topics(self) -> list[str]:
+        return [self.discovery_topic, self.state_topic, *self.owned]
 
 
-def zone_discovery_topic(zone_id: str) -> str:
-    return f"{DISCOVERY_PREFIX}/binary_sensor/{BASE_TOPIC}/zone_{zone_id}/config"
-
-
-def zone_availability_topic(zone_id: str) -> str:
-    """Whether *this zone* currently has a measurement behind it.
+def room_availability_topic(room_id: str) -> str:
+    """Whether this room currently has a measurement behind it.
 
     Separate from the add-on's own LWT, because the two failures are
     different: the add-on being gone, and the add-on running fine while
-    one room's sensor has dropped off the network.
+    one room's sensor has dropped off the network. A stale "clear" is
+    worse than no answer — an automation cannot tell it from a real one.
     """
-    return f"{BASE_TOPIC}/zone/{zone_id}/availability"
+    return f"{BASE_TOPIC}/room/{room_id}/availability"
 
 
-def slugify(name: str) -> str:
-    """Zone name -> safe entity id suffix.
-
-    German zone names are the normal case here ("Küche", "Büro"), and an
-    umlaut left in an object_id makes the resulting entity id whatever
-    Home Assistant decides to do with it. Transliterate first, then keep
-    only characters that are valid in an entity id.
-    """
-    lowered = name.lower()
-    for source, target in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
-        lowered = lowered.replace(source, target)
-    slug = re.sub(r"[^a-z0-9]+", "_", unicodedata.normalize("NFKD", lowered))
-    slug = slug.encode("ascii", "ignore").decode().strip("_")
-    return slug or "zone"
+def _availability(room_id: str) -> list[dict]:
+    return [
+        {"topic": AVAILABILITY_TOPIC, "payload_available": "online", "payload_not_available": "offline"},
+        {"topic": room_availability_topic(room_id), "payload_available": "online",
+         "payload_not_available": "offline"},
+    ]
 
 
-def zone_discovery_payload(zone_id: str, zone_name: str) -> dict:
-    """The config message that makes Home Assistant create the entity."""
-    return {
-        "name": zone_name,
-        "unique_id": f"echolot_zone_{zone_id}",
-        "object_id": f"echolot_{slugify(zone_name)}",
-        "state_topic": zone_state_topic(zone_id),
-        "device_class": "occupancy",
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        # Two availability sources, both of which must say online.
-        #
-        # With only the add-on's LWT, a zone whose devices had fallen off
-        # the network published nothing at all — so Home Assistant kept
-        # the last ON/OFF it had seen, indefinitely, while the add-on
-        # itself stayed cheerfully "online". A stale "clear" is worse than
-        # no answer: an automation cannot tell it from a real one.
-        "availability": [
-            {
-                "topic": AVAILABILITY_TOPIC,
-                "payload_available": "online",
-                "payload_not_available": "offline",
-            },
-            {
-                "topic": zone_availability_topic(zone_id),
-                "payload_available": "online",
-                "payload_not_available": "offline",
-            },
-        ],
-        "availability_mode": "all",
-        "device": DEVICE_INFO,
+def room_entities(room) -> list[Entity]:
+    """Everything one room puts into Home Assistant."""
+    device = {
+        "identifiers": [f"echolot_room_{room.id}"],
+        "name": room.name,
+        "manufacturer": "Echolot",
+        "model": "Radar-Raum (HLK-LD2460)",
+        "suggested_area": room.name,
     }
+    availability_topic = room_availability_topic(room.id)
+    out = []
+
+    def pair(key: str, name: str, zone_id: str | None, occupancy_extra: list[str]):
+        occupancy_key = f"room_{key}_occupancy"
+        count_key = f"room_{key}_count"
+        occupancy_state = f"{BASE_TOPIC}/{occupancy_key}/state"
+        count_state = f"{BASE_TOPIC}/{count_key}/state"
+        out.append(Entity(
+            key=occupancy_key,
+            component="binary_sensor",
+            discovery={
+                "name": name,
+                "unique_id": f"echolot_{occupancy_key}",
+                "state_topic": occupancy_state,
+                "device_class": "occupancy",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "availability": _availability(room.id),
+                "availability_mode": "all",
+                "device": device,
+            },
+            state_topic=occupancy_state,
+            availability_topic=availability_topic,
+            measure="occupancy",
+            zone_id=zone_id,
+            owned=occupancy_extra,
+        ))
+        out.append(Entity(
+            key=count_key,
+            component="sensor",
+            discovery={
+                "name": f"{name} Personen" if name != "Anwesenheit" else "Personen",
+                "unique_id": f"echolot_{count_key}",
+                "state_topic": count_state,
+                "state_class": "measurement",
+                "icon": "mdi:account-multiple",
+                "availability": _availability(room.id),
+                "availability_mode": "all",
+                "device": device,
+            },
+            state_topic=count_state,
+            availability_topic=availability_topic,
+            measure="count",
+            zone_id=zone_id,
+        ))
+
+    pair(room.id, "Anwesenheit", None, [availability_topic])
+    for zone in room.zones:
+        if zone.kind == "detect":
+            pair(f"{room.id}_zone_{zone.id}", zone.name, zone.id, [])
+    return out
 
 
 async def fetch_broker_config() -> dict:
@@ -195,18 +243,17 @@ async def fetch_broker_config() -> dict:
     return data
 
 
-class ZoneBridge:
-    """Keeps one MQTT connection and mirrors zone state onto it."""
+class Bridge:
+    """One MQTT connection; publishes only what changed."""
 
     def __init__(self) -> None:
         self._client: mqtt.Client | None = None
         self._lock = threading.Lock()
-        #: zone id -> the name last announced under it. A set was not
-        #: enough: renaming a zone changes the discovery payload, and
-        #: without noticing, Home Assistant kept the old name forever.
-        self._announced: dict[str, str] = {}
-        #: zone id -> the three delete publishes still awaiting a PUBACK.
-        #: See `forget_zone`.
+        #: topic -> payload last handed to the broker. Cleared on every
+        #: (re)connect: a broker restarted without persistence has
+        #: forgotten everything, and the bridge must heal on its own.
+        self._sent: dict[str, str] = {}
+        #: key -> delete publishes still awaiting a PUBACK.
         self._pending_deletes: dict[str, list] = {}
         self.connected = False
         self.error: str | None = None
@@ -220,27 +267,15 @@ class ZoneBridge:
             client.tls_set()
         client.will_set(AVAILABILITY_TOPIC, "offline", retain=True)
 
-        # VERSION1 signatures: (client, userdata, flags, rc).
         def on_connect(_client, _userdata, _flags, rc):
             self.connected = rc == 0
             if self.connected:
                 self.error = None
                 _client.publish(AVAILABILITY_TOPIC, "online", retain=True)
-                # Forget what we believe the broker knows. Discovery is
-                # published retained, so it normally survives — but a broker
-                # that was restarted without persistence, or had its topics
-                # cleared, has forgotten every zone while this set still
-                # says they were announced. Nothing would then re-announce
-                # them and the entities would stay gone until the add-on
-                # restarted. Clearing here costs one repeat publish per
-                # zone on reconnect and makes the bridge self-healing.
                 with self._lock:
-                    self._announced.clear()
-                    # Anything that was in flight when the connection went
-                    # is not in flight any more. The tombstone outlives
-                    # this, so the delete is sent again.
+                    self._sent.clear()
                     self._pending_deletes.clear()
-                logger.info("MQTT connected to %s", config["host"])
+                logger.info("MQTT verbunden mit %s", config["host"])
             else:
                 self.error = f"Verbindung abgelehnt (Code {rc})"
 
@@ -249,10 +284,9 @@ class ZoneBridge:
 
         client.on_connect = on_connect
         client.on_disconnect = on_disconnect
-
         try:
             client.connect_async(config["host"], int(config.get("port") or 1883), keepalive=60)
-            client.loop_start()  # reconnects on its own thread
+            client.loop_start()
         except OSError as err:
             raise MqttUnavailable(f"Verbindung fehlgeschlagen: {err}") from err
         self._client = client
@@ -270,104 +304,59 @@ class ZoneBridge:
         self.connected = False
 
     def _send(self, topic: str, payload: str, *, retain: bool = True, qos: int = 0):
-        """Hand one message to the client, or None when it refused it.
-
-        paho returns an MQTTMessageInfo whose rc tells you the message was
-        dropped — queue full, or not connected after all. Discarding that
-        turns a silent failure into a zone that quietly stops updating in
-        Home Assistant, with nothing anywhere saying why.
-
-        The info is handed back rather than reduced to a bool, because
-        `rc == SUCCESS` means the *client* took it, not that the broker
-        did. For a deletion that difference decides whether a tombstone
-        may be dropped — see `forget_zone`.
-        """
+        """Hand one message to the client; None when it refused it."""
         info = self._client.publish(topic, payload, retain=retain, qos=qos)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             logger.warning("MQTT publish to %s rejected (rc=%s)", topic, info.rc)
             return None
         return info
 
-    def _publish(self, topic: str, payload: str, *, retain: bool = True) -> bool:
-        """Fire and forget. True when the client took the message."""
-        return self._send(topic, payload, retain=retain) is not None
-
-    def announced_ids(self) -> set[str]:
+    def _publish_changed(self, topic: str, payload: str) -> bool:
         with self._lock:
-            return set(self._announced)
-
-    def publish_zone(self, zone_id: str, zone_name: str, occupied: bool, available: bool) -> None:
-        if not self._client or not self.connected:
-            return
-
+            if self._sent.get(topic) == payload:
+                return True
+        if self._send(topic, payload) is None:
+            return False
         with self._lock:
-            # Renaming counts as new: the name and object_id live in the
-            # discovery payload, so an unchanged one leaves Home Assistant
-            # showing the old name for the rest of time.
-            needs_discovery = self._announced.get(zone_id) != zone_name
+            self._sent[topic] = payload
+        return True
 
-        if needs_discovery:
-            # Only remember the announcement once the broker has taken it;
-            # a rejected discovery message that we recorded as sent would
-            # never be retried.
-            if not self._publish(
-                zone_discovery_topic(zone_id),
-                json.dumps(zone_discovery_payload(zone_id, zone_name)),
-            ):
-                return
-            with self._lock:
-                self._announced[zone_id] = zone_name
+    @property
+    def ready(self) -> bool:
+        return self._client is not None and self.connected
 
-        # Say whether this zone has a measurement at all, then — only if
-        # it does — what that measurement is. An unavailable zone stops
-        # publishing state on purpose: Home Assistant marks the entity
-        # unavailable from the topic above rather than holding the last
-        # value as though it were current.
-        self._publish(zone_availability_topic(zone_id), "online" if available else "offline")
-        if available:
-            self._publish(zone_state_topic(zone_id), "ON" if occupied else "OFF")
+    def announce(self, entity: Entity) -> bool:
+        if not self.ready:
+            return False
+        return self._publish_changed(entity.discovery_topic, json.dumps(entity.discovery, sort_keys=True))
 
-    def forget_zone(self, zone_id: str) -> bool:
-        """Clear every retained topic. True only once the broker said so.
+    def publish(self, topic: str, payload: str) -> bool:
+        return self.ready and self._publish_changed(topic, payload)
 
-        The caller keeps a tombstone until this says True, and what counts
-        as True is the point. `publish().rc == SUCCESS` means the *client*
-        accepted the message; at QoS 0 nothing ever confirms it left the
-        machine. A deletion does not self-heal the way an announcement
-        does — `on_connect` re-announces, but nothing re-deletes — so the
-        three deletions go out at QoS 1 and the tombstone survives until
-        all three are acknowledged.
+    def forget(self, key: str, topics: list[str]) -> bool:
+        """Clear retained topics at QoS 1. True once the broker acked all.
 
-        The acknowledgement is *checked*, never waited for: this runs on
-        the evaluator's loop, and blocking it would stop every zone.
-        A delete therefore normally takes two rounds, which is what the
+        Checked, never waited for: this runs on the engine's loop. A
+        delete therefore normally takes two rounds, which is what the
         tombstone is for.
         """
-        if not self._client or not self.connected:
-            # Whatever was in flight is not any more.
-            self._pending_deletes.pop(zone_id, None)
+        if not self.ready:
+            self._pending_deletes.pop(key, None)
             return False
-
-        pending = self._pending_deletes.get(zone_id)
+        pending = self._pending_deletes.get(key)
         if pending is not None:
             if not all(info.is_published() for info in pending):
-                return False            # still in flight; do not resend
-            self._pending_deletes.pop(zone_id, None)
+                return False
+            self._pending_deletes.pop(key, None)
             with self._lock:
-                self._announced.pop(zone_id, None)
+                for topic in topics:
+                    self._sent.pop(topic, None)
             return True
-
-        sent = [
-            self._send(zone_discovery_topic(zone_id), "", qos=1),
-            self._send(zone_state_topic(zone_id), "", qos=1),
-            self._send(zone_availability_topic(zone_id), "", qos=1),
-        ]
+        sent = [self._send(topic, "", qos=1) for topic in topics]
         if any(info is None for info in sent):
             return False
-        self._pending_deletes[zone_id] = sent
-        # Already acknowledged (a fast local broker, or a test double)?
-        # Then this round is allowed to finish the job.
-        return self.forget_zone(zone_id)
+        self._pending_deletes[key] = sent
+        return self.forget(key, topics)
 
     def status(self) -> dict:
         if self.connected:
@@ -375,77 +364,73 @@ class ZoneBridge:
         return {"enabled": self._client is not None, "connected": False, "error": self.error}
 
 
-bridge = ZoneBridge()
+bridge = Bridge()
 
 
-class ZonePublisher:
-    """Mirrors the evaluator's rounds onto MQTT, with a deletion queue.
+class RoomPublisher:
+    """Mirrors the engine's rounds onto MQTT, with a deletion queue."""
 
-    It does no evaluation of its own. The export used to run its own loop
-    with its own clock and its own calls into Home Assistant, which is
-    how a reading arriving three times a second became three rounds of
-    requests; now it publishes what the one evaluator worked out, when it
-    works it out.
-    """
-
-    def __init__(self, on_zone_gone=None) -> None:
+    def __init__(self, target: Bridge | None = None) -> None:
+        self.bridge = target or bridge
         self.announced, self.tombstones = load_state()
-        self._on_zone_gone = on_zone_gone
 
-    def __call__(self, states: list[tuple]) -> None:
+    def __call__(self, rooms, results) -> None:
         try:
-            self.publish(states)
+            self.publish(rooms, results)
         except Exception:  # noqa: BLE001 - a bad round must not kill the loop
             logger.exception("MQTT publish cycle failed")
 
-    def publish(self, states: list[tuple]) -> None:
-        desired = {zone.id for zone, _ in states}
+    def publish(self, rooms, results) -> None:
+        entities = {e.key: e for room in rooms for e in room_entities(room)}
+        by_room = {r["room_id"]: r for r in results}
 
-        # A queued delete for a zone that exists again is not a delete any
-        # more, and working it would take a live entity away. Dropped
-        # before the queue is worked, not after.
-        revived = self.tombstones & desired
-        if revived:
-            self.tombstones -= revived
+        # A queued delete for an entity that exists again is not a delete
+        # any more, and working it would take a live entity away.
+        revived = set(self.tombstones) & set(entities)
+        changed = bool(revived)
+        for key in revived:
+            del self.tombstones[key]
+        # Written down before the first attempt: a delete that fails must
+        # survive the failure.
+        for key in set(self.announced) - set(entities) - set(self.tombstones):
+            self.tombstones[key] = self.announced[key]
+            changed = True
+        if changed:
             self._remember()
-
-        # Anything announced that should not exist gets a tombstone, and
-        # the tombstone is written down before the first attempt to
-        # remove it — a delete that fails must survive the failure.
-        vanished = (self.announced | bridge.announced_ids()) - desired - self.tombstones
-        if vanished:
-            self.tombstones |= vanished
-            self._remember()
-
         self._retry_deletions()
 
-        for zone, state in states:
-            bridge.publish_zone(
-                zone.id, zone.name, bool(state.get("occupied")), bool(state.get("available"))
-            )
-            if zone.id in bridge.announced_ids() and zone.id not in self.announced:
-                self.announced.add(zone.id)
-                self._remember()
+        if not self.bridge.ready:
+            return
+        for room in rooms:
+            result = by_room.get(room.id)
+            available = bool(result and result["available"])
+            zone_state = {z["id"]: z for z in (result or {}).get("zones", [])}
+            for entity in room_entities(room):
+                if not self.bridge.announce(entity):
+                    continue
+                if entity.key not in self.announced or self.announced[entity.key] != entity.topics():
+                    self.announced[entity.key] = entity.topics()
+                    self._remember()
+                if not available:
+                    continue
+                source = result if entity.zone_id is None else zone_state.get(entity.zone_id)
+                if source is None:
+                    continue
+                if entity.measure == "occupancy":
+                    self.bridge.publish(entity.state_topic, "ON" if source["occupied"] else "OFF")
+                else:
+                    self.bridge.publish(entity.state_topic, str(int(source["count"])))
+            # Availability last, so Home Assistant never shows a room as
+            # available with the state of its previous life.
+            self.bridge.publish(room_availability_topic(room.id), "online" if available else "offline")
 
     def _retry_deletions(self) -> None:
-        """Work the queue. Whatever does not take stays queued."""
-        done = set()
-        for zone_id in sorted(self.tombstones):
-            if bridge.forget_zone(zone_id):
-                done.add(zone_id)
-                if self._on_zone_gone is not None:
-                    self._on_zone_gone(zone_id)
+        done = [key for key, topics in sorted(self.tombstones.items()) if self.bridge.forget(key, topics)]
         if done:
-            self.tombstones -= done
-            self.announced -= done
+            for key in done:
+                self.tombstones.pop(key, None)
+                self.announced.pop(key, None)
             self._remember()
 
     def _remember(self) -> None:
         remember_state(self.announced, self.tombstones)
-
-
-def attach(evaluator, on_zone_gone=None) -> ZonePublisher:
-    """Publish on every evaluator round, for the life of the process."""
-    publisher = ZonePublisher(on_zone_gone)
-    evaluator.add_listener(publisher)
-    return publisher

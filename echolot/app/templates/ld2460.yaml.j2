@@ -2,10 +2,9 @@
   Per-device ESPHome configuration for an HLK-LD2460 radar node.
   Rendered by app/builder.py from a validated DeviceCreate payload.
 
-  Deliberately the same shape as espectre.yaml.j2 wherever the two do the
-  same job — Wi-Fi, fallback AP, API, OTA, diagnostics — so a device's
-  credentials and behaviour do not depend on which sensor it carries.
-  What differs is below `uart:`.
+  Credentials — API key, OTA password, fallback AP password — are the
+  device's own and survive every rebuild, including the first radar build
+  of a device converted from Wi-Fi CSI.
 #}
 esphome:
   name: {{ device_name }}
@@ -39,27 +38,23 @@ wifi:
   bssid: {{ wifi_bssid | tojson }}
 {% endif %}
 {% if board.dual_band %}
-  # Unlike CSI, radar does not measure on the Wi-Fi band — this only
-  # decides which radio carries the data. Rendered because ESPHome's own
-  # default for the C5 is AUTO, and a device should do what its
-  # configuration says.
+  # Radar does not measure on the Wi-Fi band — this only decides which
+  # radio carries the data. Rendered because ESPHome's own default for
+  # the C5 is AUTO, and a device should do what its configuration says.
   band_mode: {{ wifi_band | upper }}
 {% endif %}
   ap:
-    # Same reasoning as for ESPectre nodes: the portal behind this AP
-    # takes Wi-Fi credentials and comes up exactly when something is
-    # already wrong, so it is never open.
+    # The portal behind this AP takes Wi-Fi credentials and comes up
+    # exactly when something is already wrong, so it is never open.
     ssid: {{ fallback_ssid | tojson }}
     password: {{ fallback_password | tojson }}
 
 captive_portal:
 
 api:
-  # Always on for radar nodes. The reason ESPectre nodes cannot have it —
-  # ESPectre publishing a C++ utils.h into every include path, which the
-  # C sources of libsodium then pick up — does not exist here, because
-  # ESPectre is not in this build. Positions of people in a room are not
-  # something to send in the clear.
+  # Always encrypted: positions of people in a room are not something to
+  # send in the clear. Home Assistant and Echolot's own live link both
+  # connect with this key.
   encryption:
     key: {{ api_encryption_key | tojson }}
 
@@ -117,8 +112,9 @@ echolot_ld2460:
   # the honest answer while the question is open.
   quiet_means_empty: {{ "true" if quiet_means_empty else "false" }}
   frame:
-    # For Echolot, read over the native API. Disabled in Home Assistant
-    # from the start so the recorder does not store every report.
+    # For Echolot's live link (app/radar_link.py), which finds it by this
+    # name. Disabled in Home Assistant from the start so the recorder
+    # does not store every report.
     name: "Radar Frame"
     disabled_by_default: true
   target_count:

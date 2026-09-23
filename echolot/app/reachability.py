@@ -7,9 +7,9 @@ probe separates them — if port 6053 answers, the device is alive and it is
 Home Assistant's adoption that is missing, not the device.
 
 Ports probed:
-  6053   ESPHome's native API. The one Home Assistant connects to.
+  6053   ESPHome's native API. The one Home Assistant and Echolot's live
+         link connect to.
   80     The device's own status page, present when web_server is enabled.
-  62587  ESPectre's Direct HTTP/SSE surface, present when direct_api is on.
 """
 
 import asyncio
@@ -17,7 +17,6 @@ import socket
 
 API_PORT = 6053
 WEB_PORT = 80
-DIRECT_PORT = 62587
 
 #: Long enough for a sleepy ESP on a busy network, short enough that a
 #: dead address does not stall the UI.
@@ -69,21 +68,19 @@ async def check(host: str, timeout: float = TIMEOUT) -> dict:
             "verdict": "unresolved",
         }
 
-    api, web, direct = await asyncio.gather(
+    api, web = await asyncio.gather(
         _probe(resolved, API_PORT, timeout),
         _probe(resolved, WEB_PORT, timeout),
-        _probe(resolved, DIRECT_PORT, timeout),
     )
     return {
         "host": host,
         "resolved": resolved,
         "api": api,
         "web": web,
-        "direct": direct,
-        "reachable": api or web or direct,
+        "reachable": api or web,
         # The verdict turns on port 6053: that is the one Home Assistant
-        # needs. The other two only tell us the device is alive.
-        "verdict": "ok" if api else ("web_only" if (web or direct) else "silent"),
+        # and the live link need. Port 80 only tells us the device is alive.
+        "verdict": "ok" if api else ("web_only" if web else "silent"),
     }
 
 
@@ -112,42 +109,5 @@ VERDICT_MESSAGES = {
 }
 
 
-#: The direct port is probed but deliberately kept out of the verdict: the
-#: verdict answers "can Home Assistant reach this device", and only 6053
-#: settles that. Port 62587 answers a different question and gets its own
-#: sentence rather than muddying the first one.
-#:
-#: Both messages used to say the Calibration Lab and the live dashboard
-#: took their samples from this port. They do not, and at the pinned
-#: ESPectre commit they could not: an ESPHome-built device allows only
-#: espectre.dev as an origin and answers this add-on with 403. The
-#: readings come from Home Assistant — see app/samples.py.
-DIRECT_MESSAGES = {
-    True: (
-        "Port 62587 antwortet: die Direct-API des Geräts läuft. Echolot "
-        "nutzt sie nicht — am gepinnten ESPectre-Stand lässt sie nur "
-        "espectre.dev als Herkunft zu. Messwerte kommen aus Home Assistant."
-    ),
-    False: (
-        "Port 62587 antwortet nicht: die Firmware wurde ohne `direct_api` "
-        "gebaut oder das Gerät blockt den Port. Für Calibration Lab und "
-        "Live-Dashboard macht das keinen Unterschied — sie lesen die "
-        "Home-Assistant-Entities."
-    ),
-}
-
-
 def explain(result: dict) -> str:
     return VERDICT_MESSAGES[result["verdict"]].format(host=result.get("resolved") or result["host"])
-
-
-def explain_direct(result: dict) -> str | None:
-    """What the direct port says, or None when nothing answered at all.
-
-    On an unresolved or silent device the direct port tells you nothing
-    the verdict has not already said, and repeating it would read as a
-    second, separate fault.
-    """
-    if result["verdict"] in ("unresolved", "silent"):
-        return None
-    return DIRECT_MESSAGES[bool(result.get("direct"))]

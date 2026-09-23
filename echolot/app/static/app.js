@@ -1,328 +1,306 @@
-// Alle API-Pfade sind relativ (ohne führenden Slash), damit sie unter dem
-// Ingress-Token-Präfix von Home Assistant bleiben statt auf dessen Wurzel
-// zu zeigen.
-
-const OVERVIEW_REFRESH_MS = 10000;
-
-// Shared by every script on the page. app.js is loaded first, so these are
-// defined before devices.js, zones.js and dashboard.js run — each of which
-// used to carry its own copy.
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
-function plural(n, one, many) {
-  return `${n} ${n === 1 ? one : many}`;
-}
-
-//: Seconds a person can read: "45 s", "3 min", "3 min 20 s".
-function formatSeconds(seconds) {
-  if (seconds >= 60) {
-    const m = Math.floor(seconds / 60);
-    const rest = Math.round(seconds % 60);
-    return rest ? `${m} min ${rest} s` : `${m} min`;
-  }
-  return `${Math.round(seconds)} s`;
-}
-
-function switchTab(name) {
-  const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`);
-  if (btn) btn.click();
-}
-
-function renderZones(zones) {
-  const el = document.getElementById("overview-zones");
-  const section = document.getElementById("overview-zones-section");
-
-  if (!zones.length) {
-    section.hidden = false;
-    el.innerHTML =
-      '<p class="hint">Noch keine Zonen. Erst eine Zone macht aus einzelnen ' +
-      'Geräten einen Anwesenheitszustand, den Home Assistant nutzen kann. ' +
-      '<button class="link-btn" data-goto="zones">Zone anlegen</button></p>';
-    return;
-  }
-
-  section.hidden = false;
-  el.innerHTML = zones
-    .map((z) => {
-      // Three states, not two: "hält" is occupied but counting down, and
-      // conflating it with "belegt" hides why a zone is still on.
-      let label, cls;
-      if (!z.device_count) {
-        // A zone with no members is not "unavailable" — the cause is known
-        // and different, and saying so points at the fix.
-        label = "keine Geräte";
-        cls = "zone-pill-unknown";
-      } else if (z.pending) {
-        // Die Auswertung ist eine eigene Schleife; eine gerade angelegte
-        // Zone hat noch keine Runde hinter sich.
-        label = "wird ausgewertet…";
-        cls = "zone-pill-unknown";
-      } else if (!z.available) {
-        label = "nicht verfügbar";
-        cls = "zone-pill-unknown";
-      } else if (z.state === "holding") {
-        label = `hält noch ${formatSeconds(z.hold_remaining)}`;
-        cls = "zone-pill-holding";
-      } else if (z.occupied) {
-        label = "belegt";
-        cls = "zone-pill-on";
-      } else {
-        label = "frei";
-        cls = "zone-pill-off";
-      }
-      return `
-        <button class="zone-pill ${cls}" data-goto="dashboard">
-          <span class="zone-pill-name">${escapeHtml(z.name)}</span>
-          <span class="zone-pill-state">${escapeHtml(label)}</span>
-        </button>`;
-    })
-    .join("");
-}
-
-function renderProblems(problems) {
-  const section = document.getElementById("overview-problems-section");
-  const list = document.getElementById("overview-problems");
-  if (!problems.length) {
-    section.hidden = true;
-    return;
-  }
-  section.hidden = false;
-  list.innerHTML = problems
-    .map(
-      (p) => `
-      <li class="problem">
-        <span>${escapeHtml(p.message)}</span>
-        <button class="link-btn" data-goto="${escapeHtml(p.tab)}">ansehen</button>
-      </li>`
-    )
-    .join("");
-}
-
-function renderSystem(data) {
-  const el = document.getElementById("overview-system");
-  const rows = [];
-
-  const d = data.devices;
-  rows.push([
-    "Geräte",
-    d.total === 0
-      ? "keine"
-      : d.built === d.total
-        ? plural(d.total, "Gerät", "Geräte")
-        : `${plural(d.total, "Gerät", "Geräte")}, davon ${d.built} gebaut`,
-  ]);
-
-  // Every device probes the air continuously, so the fleet total is the
-  // number that matters for the household's Wi-Fi, not the per-device one.
-  if (d.total) {
-    rows.push(["Funklast", `≈ ${data.radio_load_kb_per_second.toFixed(1)} KB/s insgesamt`]);
-  }
-
-  rows.push([
-    "Zonen in Home Assistant",
-    !data.mqtt.wanted
-      ? "Export abgeschaltet"
-      : data.mqtt.connected
-        ? "werden exportiert"
-        : "kein MQTT-Broker erreichbar",
-  ]);
-
-  // `esphome version` prints "Version: 2026.6.5"; with "ESPHome" already
-  // as the term, the prefix reads as a stutter.
-  const esphomeVersion = (data.esphome.version || "").replace(/^Version:\s*/i, "");
-  rows.push([
-    "ESPHome",
-    data.esphome.available ? esphomeVersion || "installiert" : "nicht verfügbar",
-  ]);
-
-  el.innerHTML = rows
-    .map(([term, value]) => `<dt>${escapeHtml(term)}</dt><dd>${escapeHtml(value)}</dd>`)
-    .join("");
-}
-
-async function loadOverview() {
-  const loading = document.getElementById("overview-loading");
-  const empty = document.getElementById("overview-empty");
-  const body = document.getElementById("overview-body");
-
-  let data;
-  try {
-    const res = await fetch("api/overview");
-    if (!res.ok) throw new Error(String(res.status));
-    data = await res.json();
-  } catch (err) {
-    loading.hidden = false;
-    loading.textContent = "Backend nicht erreichbar";
-    loading.className = "status status-err";
-    body.hidden = true;
-    empty.hidden = true;
-    markStatusUnreachable();
-    return;
-  }
-
-  // The chip is on every tab, so it is updated before the overview panel
-  // decides whether it has anything to show.
-  renderStatusChip(data.problems);
-
-  loading.hidden = true;
-
-  // With nothing set up, a status report has nothing to report — the
-  // useful thing to show is the way in.
-  const fresh = data.devices.total === 0 && data.zones.length === 0;
-  empty.hidden = !fresh;
-  body.hidden = fresh;
-  if (fresh) return;
-
-  renderZones(data.zones);
-  renderProblems(data.problems);
-  renderSystem(data);
-}
-
-// Any element can ask for a tab switch; that keeps the setup steps and the
-// problem list from each needing their own wiring.
-document.addEventListener("click", (evt) => {
-  const target = evt.target.closest("[data-goto]");
-  if (target) switchTab(target.dataset.goto);
-});
-
-for (const btn of document.querySelectorAll(".tab-btn")) {
-  btn.addEventListener("click", () => {
-    for (const b of document.querySelectorAll(".tab-btn")) b.classList.remove("active");
-    btn.classList.add("active");
-    for (const panel of document.querySelectorAll(".tab-panel")) panel.hidden = true;
-    document.getElementById(`tab-${btn.dataset.tab}`).hidden = false;
-    if (btn.dataset.tab === "overview") loadOverview();
-  });
-}
-
-// --- View preferences -------------------------------------------------
+// Echolot UI core: API access, routing, live polling, shared helpers.
 //
-// Two switches, both about reading rather than about the system: pausing
-// the refresh so a log or a number stays put while you read it, and
-// keeping device cards open. They live in localStorage because they are
-// per-browser habits, not configuration the add-on should carry.
+// Every API path is relative (no leading slash) so it stays under Home
+// Assistant's Ingress token prefix. Routes live in the hash for the same
+// reason: a second real path would nest those relative URLs a level deep.
 
-const PREFS = { pause: "echolot.pause", expand: "echolot.expandCards" };
+const Echolot = (() => {
+  const LIVE_MS = 330;
+  const DATA_MS = 5000;
 
-function readPref(key) {
-  try {
-    return localStorage.getItem(key) === "1";
-  } catch (err) {
-    // Private windows and blocked site data throw on access rather than
-    // returning null, and a preference is never worth a broken page.
-    return false;
-  }
-}
-
-function writePref(key, value) {
-  try {
-    localStorage.setItem(key, value ? "1" : "0");
-  } catch (err) {
-    /* nothing to do — the switch still works for this page view */
-  }
-}
-
-//: Read by every poller on the page, so one switch stops all of them.
-function refreshPaused() {
-  return readPref(PREFS.pause);
-}
-
-// --- Header status chip -----------------------------------------------
-
-//: How the overall state is worded. A count beats a colour: "3 Hinweise"
-//: says what to expect before the panel is even open.
-function chipState(problems) {
-  if (!problems.length) return { state: "ok", text: "läuft" };
-  return {
-    state: "err",
-    text: problems.length === 1 ? "1 Hinweis" : `${problems.length} Hinweise`,
+  const state = {
+    rooms: [],
+    devices: [],
+    legacy: [],
+    live: {},
+    info: null,
+    loaded: false,
   };
-}
 
-function renderStatusChip(problems) {
-  const dot = document.querySelector("#status-chip .status-dot");
-  const text = document.getElementById("status-chip-text");
-  const { state, text: label } = chipState(problems);
-  dot.dataset.state = state;
-  text.textContent = label;
+  const ROOM_ICONS = {
+    living: "Wohnzimmer", bedroom: "Schlafzimmer", kitchen: "Küche", dining: "Essbereich",
+    office: "Arbeitszimmer", bath: "Bad", hall: "Flur", kids: "Kinderzimmer", generic: "Sonstiges",
+  };
 
-  const list = document.getElementById("status-panel-problems");
-  list.innerHTML = problems.length
-    ? problems
-        .map(
-          (p) =>
-            `<button type="button" class="status-panel-problem" data-goto="${escapeHtml(p.tab)}">` +
-            `${escapeHtml(p.message)}</button>`,
-        )
-        .join("")
-    : '<p class="hint">Keine offenen Hinweise.</p>';
-}
-
-function markStatusUnreachable() {
-  const dot = document.querySelector("#status-chip .status-dot");
-  dot.dataset.state = "warn";
-  document.getElementById("status-chip-text").textContent = "kein Backend";
-  document.getElementById("status-panel-problems").innerHTML =
-    '<p class="status status-err">Das Add-on antwortet nicht.</p>';
-}
-
-const chipButton = document.getElementById("status-chip");
-const chipPanel = document.getElementById("status-panel");
-
-function closeStatusPanel() {
-  chipPanel.hidden = true;
-  chipButton.setAttribute("aria-expanded", "false");
-}
-
-chipButton.addEventListener("click", (evt) => {
-  evt.stopPropagation();
-  const open = chipPanel.hidden;
-  chipPanel.hidden = !open;
-  chipButton.setAttribute("aria-expanded", String(open));
-});
-
-// Clicking anywhere else closes it — including a problem entry, which also
-// switches tab through the shared [data-goto] handler above.
-document.addEventListener("click", (evt) => {
-  if (!chipPanel.hidden && !chipPanel.contains(evt.target)) closeStatusPanel();
-});
-document.addEventListener("keydown", (evt) => {
-  if (evt.key === "Escape" && !chipPanel.hidden) {
-    closeStatusPanel();
-    chipButton.focus();
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
   }
-});
-chipPanel.addEventListener("click", (evt) => {
-  if (evt.target.closest("[data-goto]")) closeStatusPanel();
-});
 
-for (const [id, key] of [["pref-pause", PREFS.pause], ["pref-expand", PREFS.expand]]) {
-  const box = document.getElementById(id);
-  box.checked = readPref(key);
-  box.addEventListener("change", () => {
-    writePref(key, box.checked);
-    document.dispatchEvent(new CustomEvent("echolot:prefs"));
-  });
-}
+  function icon(name, cls = "icon") {
+    return `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+  }
 
-// --- Polling ----------------------------------------------------------
+  function formatNumber(value, digits = 1) {
+    return Number(value).toLocaleString("de-DE", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  }
 
-//: The overview tab wants fresh numbers every ten seconds; the chip is
-//: content with half a minute, and asking more often would cost Home
-//: Assistant requests for a single word.
-const CHIP_EVERY_N_TICKS = 3;
-let tick = 0;
+  function formatSeconds(seconds) {
+    if (seconds >= 60) {
+      const m = Math.floor(seconds / 60);
+      const rest = Math.round(seconds % 60);
+      return rest ? `${m} min ${rest} s` : `${m} min`;
+    }
+    return `${Math.round(seconds)} s`;
+  }
 
-loadOverview();
-setInterval(() => {
-  if (refreshPaused()) return;
-  const visible = !document.getElementById("tab-overview").hidden;
-  tick += 1;
-  // The overview renders from the same response, so a visible tab needs
-  // no second request for the chip.
-  if (visible || tick % CHIP_EVERY_N_TICKS === 0) loadOverview();
-}, OVERVIEW_REFRESH_MS);
+  function people(n) {
+    return n === 1 ? "1 Person" : `${n} Personen`;
+  }
+
+  // FastAPI speaks three error shapes: a string, a validation list, and
+  // the {message, …} object the room save uses for a conflict.
+  function errorText(detail, status) {
+    if (!detail) return `Fehler ${status}`;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail.map((e) => {
+        const where = (e.loc || []).filter((p) => p !== "body").join(" › ");
+        return where ? `${where}: ${e.msg}` : e.msg;
+      }).join("\n");
+    }
+    if (detail.message) return detail.message;
+    return JSON.stringify(detail);
+  }
+
+  class ApiError extends Error {
+    constructor(status, detail) {
+      super(errorText(detail, status));
+      this.status = status;
+      this.detail = detail;
+    }
+  }
+
+  async function api(path, options = {}) {
+    const init = { method: options.method || "GET", headers: {} };
+    if (options.body instanceof Blob || options.body instanceof ArrayBuffer) {
+      init.body = options.body;
+      init.headers["Content-Type"] = options.contentType || options.body.type || "application/octet-stream";
+    } else if (options.body !== undefined) {
+      init.body = JSON.stringify(options.body);
+      init.headers["Content-Type"] = "application/json";
+    }
+    const response = await fetch(path, init);
+    if (response.status === 204) return null;
+    let data = null;
+    const text = await response.text();
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    if (!response.ok) throw new ApiError(response.status, data && data.detail !== undefined ? data.detail : data);
+    return data;
+  }
+
+  function toast(message, kind = "") {
+    const host = document.getElementById("toasts");
+    const el = document.createElement("div");
+    el.className = `toast ${kind}`;
+    el.textContent = message;
+    host.appendChild(el);
+    setTimeout(() => el.remove(), kind === "err" ? 7000 : 3200);
+  }
+
+  function confirmDialog({ title, text, confirm = "OK", cancel = "Abbrechen", danger = false }) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "dialog-backdrop";
+      wrap.innerHTML = `
+        <div class="dialog" role="alertdialog" aria-modal="true">
+          <h2>${escapeHtml(title)}</h2>
+          <p>${escapeHtml(text)}</p>
+          <div class="actions">
+            <button class="btn" data-a="no">${escapeHtml(cancel)}</button>
+            <button class="btn ${danger ? "danger" : "primary"}" data-a="yes">${escapeHtml(confirm)}</button>
+          </div>
+        </div>`;
+      const done = (answer) => { wrap.remove(); document.removeEventListener("keydown", onKey); resolve(answer); };
+      const onKey = (e) => { if (e.key === "Escape") done(false); };
+      wrap.addEventListener("click", (e) => {
+        if (e.target === wrap) done(false);
+        const a = e.target.closest("[data-a]");
+        if (a) done(a.dataset.a === "yes");
+      });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(wrap);
+      wrap.querySelector('[data-a="yes"]').focus();
+    });
+  }
+
+  // A side sheet (bottom sheet on phones). Returns {el, body, close}.
+  function openSheet(title, { onClose } = {}) {
+    const wrap = document.createElement("div");
+    wrap.className = "sheet-backdrop";
+    wrap.innerHTML = `
+      <section class="sheet" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+        <div class="sheet-head">
+          <h2>${escapeHtml(title)}</h2>
+          <button class="btn ghost icon-only" data-close aria-label="Schließen">${icon("close")}</button>
+        </div>
+        <div class="sheet-body"></div>
+      </section>`;
+    const close = () => {
+      wrap.remove();
+      document.removeEventListener("keydown", onKey);
+      if (onClose) onClose();
+    };
+    const onKey = (e) => { if (e.key === "Escape" && !document.querySelector(".dialog-backdrop")) close(); };
+    wrap.addEventListener("click", (e) => {
+      if (e.target === wrap || e.target.closest("[data-close]")) close();
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(wrap);
+    return { el: wrap, body: wrap.querySelector(".sheet-body"), head: wrap.querySelector(".sheet-head h2"), close };
+  }
+
+  // ---------------------------------------------------------------- data
+
+  async function loadData() {
+    const [rooms, devices, legacy] = await Promise.all([
+      api("api/rooms"), api("api/devices"), api("api/legacy-devices"),
+    ]);
+    state.rooms = rooms;
+    state.devices = devices;
+    state.legacy = legacy;
+    state.loaded = true;
+    renderNav();
+    if (current && current.onData) current.onData();
+  }
+
+  async function loadInfo() {
+    try {
+      state.info = await api("api/info");
+      const foot = document.getElementById("sidebar-foot");
+      foot.textContent = `Version ${state.info.version}`;
+    } catch { /* the footer can wait */ }
+  }
+
+  let livePending = false;
+  async function pollLive() {
+    if (document.hidden || livePending) return;
+    livePending = true;
+    try {
+      const data = await api("api/live");
+      const next = {};
+      for (const r of data.rooms) next[r.room_id] = r;
+      state.live = next;
+      renderNavLive();
+      if (current && current.onLive) current.onLive();
+    } catch { /* the next tick tries again */ }
+    finally { livePending = false; }
+  }
+
+  function roomStatus(roomId) {
+    const r = state.live[roomId];
+    if (!r) return { kind: "pending", text: "wird ausgewertet…", count: null };
+    if (!r.available) return { kind: "off", text: "nicht verfügbar", count: null };
+    if (r.count > 0) return { kind: "present", text: people(r.count), count: r.count };
+    if (r.occupied) return { kind: "present", text: `hält noch ${formatSeconds(r.hold_remaining)}`, count: 0 };
+    return { kind: "empty", text: "niemand da", count: 0 };
+  }
+
+  // ---------------------------------------------------------------- nav
+
+  function renderNav() {
+    const host = document.getElementById("nav-rooms");
+    host.innerHTML = state.rooms.map((room) => `
+      <a class="nav-item" href="#/room/${encodeURIComponent(room.id)}" data-nav="room:${escapeHtml(room.id)}">
+        ${icon(room.icon)}
+        <span class="grow">${escapeHtml(room.name)}</span>
+        <span class="nav-count" data-room-count="${escapeHtml(room.id)}"></span>
+        <span class="nav-dot" data-room-dot="${escapeHtml(room.id)}"></span>
+      </a>`).join("");
+    document.getElementById("nav-device-count").textContent = state.devices.length || "";
+    renderNavLive();
+    markNav();
+  }
+
+  function renderNavLive() {
+    for (const room of state.rooms) {
+      const status = roomStatus(room.id);
+      const dot = document.querySelector(`[data-room-dot="${CSS.escape(room.id)}"]`);
+      const count = document.querySelector(`[data-room-count="${CSS.escape(room.id)}"]`);
+      if (dot) dot.className = `nav-dot ${status.kind === "present" ? "present" : status.kind === "empty" ? "empty" : ""}`;
+      if (count) count.textContent = status.count ? String(status.count) : "";
+    }
+  }
+
+  function markNav() {
+    const key = navKey();
+    document.querySelectorAll("[data-nav]").forEach((el) => {
+      el.classList.toggle("active", el.dataset.nav === key);
+    });
+  }
+
+  // -------------------------------------------------------------- router
+
+  const views = {};
+  let current = null;
+
+  function register(name, view) { views[name] = view; }
+
+  function parseRoute() {
+    const hash = location.hash.replace(/^#\/?/, "");
+    const parts = hash.split("/").filter(Boolean).map(decodeURIComponent);
+    if (!parts.length) return { view: "home", params: {} };
+    if (parts[0] === "room" && parts[1]) return { view: parts[2] === "edit" ? "editor" : "room", params: { id: parts[1] } };
+    if (parts[0] === "new-room") return { view: "newRoom", params: {} };
+    if (parts[0] === "devices") return { view: "devices", params: { action: parts[1] } };
+    if (parts[0] === "device" && parts[1]) return { view: "devices", params: { open: parts[1] } };
+    if (parts[0] === "system") return { view: "system", params: {} };
+    return { view: "home", params: {} };
+  }
+
+  function navKey() {
+    const route = parseRoute();
+    if (route.view === "room" || route.view === "editor") return `room:${route.params.id}`;
+    if (route.view === "newRoom") return "new-room";
+    return route.view;
+  }
+
+  let lastHash = location.hash;
+  async function route() {
+    const next = parseRoute();
+    if (current && current.canLeave && !(await current.canLeave())) {
+      history.replaceState(null, "", lastHash || "#/");
+      return;
+    }
+    if (current && current.unmount) current.unmount();
+    lastHash = location.hash;
+    const view = views[next.view] || views.home;
+    const el = document.getElementById("view");
+    el.innerHTML = "";
+    current = view;
+    markNav();
+    view.mount(el, next.params);
+    window.scrollTo(0, 0);
+  }
+
+  function go(hash) {
+    if (location.hash === hash) route();
+    else location.hash = hash;
+  }
+
+  async function start() {
+    window.addEventListener("hashchange", route);
+    window.addEventListener("beforeunload", (e) => {
+      if (current && current.dirty && current.dirty()) { e.preventDefault(); e.returnValue = ""; }
+    });
+    try {
+      await loadData();
+    } catch (err) {
+      document.getElementById("view").innerHTML =
+        `<div class="notice err"><div class="grow"><strong>Echolot antwortet nicht</strong>${escapeHtml(err.message)}</div></div>`;
+      return;
+    }
+    loadInfo();
+    await pollLive();
+    route();
+    setInterval(pollLive, LIVE_MS);
+    setInterval(() => { if (!document.hidden) loadData().catch(() => {}); }, DATA_MS);
+  }
+
+  return {
+    state, api, ApiError, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
+    people, roomStatus, register, go, start, loadData, loadInfo, ROOM_ICONS,
+    refresh: loadData,
+  };
+})();
