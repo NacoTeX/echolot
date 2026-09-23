@@ -50,6 +50,13 @@ BAND_AUTO = "auto"
 MODE_ROUTER = "router"
 MODE_PEER_LINK = "peer_link"
 
+#: What a device senses with. `espectre` is Wi-Fi CSI through ESPectre,
+#: which is every device stored before 0.14.0. `ld2460` is an HLK-LD2460
+#: radar module on a UART, read by Echolot's own ESPHome component
+#: (app/esphome_components/echolot_ld2460).
+SENSOR_ESPECTRE = "espectre"
+SENSOR_LD2460 = "ld2460"
+
 #: Config fields that must never reach a manifest, a log or a hash.
 _SECRET_CONFIG_FIELDS = ("wifi_password",)
 
@@ -61,7 +68,13 @@ _SECRET_CONFIG_FIELDS = ("wifi_password",)
 #: another image — and a baseline learned on the old one describes
 #: different hardware. Both are reasons to make a new device, which keeps
 #: the old one's recordings until somebody deletes it deliberately.
-IMMUTABLE_CONFIG_FIELDS = ("name", "board")
+#:
+#: `sensor` for the same reason as `board`, and one more: everything a
+#: CSI device has learned — calibration, presence profile, entity
+#: mapping — describes a Wi-Fi measurement, and none of it survives
+#: becoming a radar. Converting a device while keeping its identity is a
+#: separate, deliberate step; it is not a field edit.
+IMMUTABLE_CONFIG_FIELDS = ("name", "board", "sensor")
 
 
 _lock = threading.Lock()
@@ -79,6 +92,10 @@ class DeviceCreate(BaseModel):
     name: str = Field(..., description="ESPHome node name (lowercase, digits, hyphens)")
     friendly_name: str | None = None
     board: str
+    #: See SENSOR_ESPECTRE / SENSOR_LD2460. The default stays `espectre`
+    #: while both exist, so an API client written for an earlier version
+    #: keeps creating what it always created.
+    sensor: Literal["espectre", "ld2460"] = SENSOR_ESPECTRE
     wifi_ssid: str = Field(..., min_length=1, max_length=32)
     wifi_password: str = Field(default="", max_length=64)
     wifi_bssid: str | None = None
@@ -127,6 +144,24 @@ class DeviceCreate(BaseModel):
     #: viable for CSI sensing at all.
     diagnostics: bool = True
     log_level: Literal["NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"] = "INFO"
+
+    # --- radar (sensor == "ld2460") -----------------------------------
+    # Inert for ESPectre devices, and left at None there.
+
+    #: ESP pins wired to the module's Rx2 (pin 8) and Tx2 (pin 7). Left
+    #: empty, the board's suggestion applies — `Board.radar_uart_pins`.
+    radar_tx_pin: int | None = Field(default=None, ge=0, le=56)
+    radar_rx_pin: int | None = Field(default=None, ge=0, le=56)
+    #: A GPIO held low from boot, for boards that pick their antenna with
+    #: a pin. On the Waveshare ESP32-C5-Zero that is GPIO26, and low means
+    #: the on-board antenna. None on every board that has no such switch.
+    antenna_select_pin: int | None = Field(default=None, ge=0, le=56)
+    #: Whether a module that answers but reports nothing counts as an
+    #: empty room. Off until somebody has watched a module in an empty
+    #: room and knows — see `classify()` in ld2460_protocol.h. Changing it
+    #: changes what "0 people" means, so it counts as a new measurement
+    #: definition like the Wi-Fi band does for CSI.
+    radar_quiet_means_empty: bool = False
 
     @field_validator("name")
     @classmethod
@@ -191,12 +226,75 @@ class DeviceCreate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_radar(self) -> "DeviceCreate":
+        """Fill in and check the radar wiring; leave it alone otherwise.
+
+        Filled in here rather than at render time so the stored config
+        says which pins the firmware uses. A default that only exists in
+        the template is a default nobody can see, and one that changes
+        with a later board table would silently rewire a device on its
+        next build.
+        """
+        if self.sensor != SENSOR_LD2460:
+            return self
+        # Two ESPectre switches whose stored value would otherwise lie
+        # about a radar node. There is no ESPectre HTTP/SSE surface to
+        # probe or stream from, and the API is always encrypted — see
+        # templates/ld2460.yaml.j2. Set rather than refused, because both
+        # default to the ESPectre answer and a client that never heard of
+        # radar should still be able to create one.
+        self.direct_api = False
+        self.api_encryption = True
+        board = get_board(self.board)
+        if self.radar_tx_pin is None or self.radar_rx_pin is None:
+            if board.radar_uart_pins is None:
+                raise ValueError(
+                    f"Für {board.label} gibt es keinen Vorschlag für die Radar-Pins. "
+                    "Bitte radar_tx_pin und radar_rx_pin angeben."
+                )
+            default_tx, default_rx = board.radar_uart_pins
+            if self.radar_tx_pin is None:
+                self.radar_tx_pin = default_tx
+            if self.radar_rx_pin is None:
+                self.radar_rx_pin = default_rx
+        if self.radar_tx_pin == self.radar_rx_pin:
+            raise ValueError("TX und RX des Radars brauchen zwei verschiedene Pins")
+        if self.antenna_select_pin in (self.radar_tx_pin, self.radar_rx_pin):
+            raise ValueError(
+                f"GPIO{self.antenna_select_pin} ist schon eine Radar-Leitung und kann "
+                "nicht zugleich die Antenne umschalten"
+            )
+        return self
+
+
+#: Fields added after config hashes started being recorded, with the
+#: value that means "this field did not exist yet". A field holding that
+#: value is left out of the hash.
+#:
+#: Without this, adding a field changes the hash of every stored device —
+#: its dump grows a key — and every device built by the previous version
+#: reads as `firmware_behind_config` the moment the add-on updates,
+#: although nothing about what it would build has changed. A field that
+#: moves off its "absent" value is hashed like any other, so a real change
+#: is still a change.
+_FINGERPRINT_ABSENT_VALUES = {
+    "sensor": SENSOR_ESPECTRE,
+    "radar_tx_pin": None,
+    "radar_rx_pin": None,
+    "antenna_select_pin": None,
+    "radar_quiet_means_empty": False,
+}
+
 
 def config_fingerprint(device) -> str:
     """A short hash of what would be built, with the secrets left out."""
     payload = device.config.model_dump()
     for field in _SECRET_CONFIG_FIELDS:
         payload.pop(field, None)
+    for field, absent in _FINGERPRINT_ABSENT_VALUES.items():
+        if field in payload and payload[field] == absent:
+            del payload[field]
     encoded = json.dumps(payload, sort_keys=True, default=str).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
 
@@ -225,6 +323,34 @@ def effective_band(config: DeviceCreate) -> str:
     stored value claim a radio the board does not have.
     """
     return config.wifi_band if get_board(config.board).dual_band else BAND_24
+
+
+#: What 802.11 allows for an SSID, and what ESPHome enforces.
+_SSID_MAX = 32
+_FALLBACK_SUFFIX = " Fallback"
+
+
+def fallback_ssid(device_name: str) -> str:
+    """The fallback AP's SSID: the device name, shortened to fit.
+
+    Device names may be 32 characters, and "<name> Fallback" is then 41 —
+    which ESPHome refuses ("SSID can't be longer than 32 characters"), so
+    every device with a name longer than 23 characters failed to build.
+    The name is cut rather than the suffix, because the suffix is what
+    tells somebody scanning for networks what this one is.
+    """
+    return device_name[: _SSID_MAX - len(_FALLBACK_SUFFIX)] + _FALLBACK_SUFFIX
+
+
+def is_radar(device_or_config) -> bool:
+    """Whether this device senses with an LD2460 rather than CSI.
+
+    Takes a Device or its config, because both halves of the code base
+    ask: the builder has a config in hand, everything that looks at a
+    device's live state has the device.
+    """
+    config = getattr(device_or_config, "config", device_or_config)
+    return getattr(config, "sensor", SENSOR_ESPECTRE) == SENSOR_LD2460
 
 
 def available_sensing_modes(device) -> list[str]:
@@ -414,6 +540,9 @@ class Device(BaseModel):
         data["has_credentials"] = bool(self.api_encryption_key)
         data["firmware_behind_config"] = self.firmware_behind_config
         data["firmware_size"] = self.firmware_size()
+        # Computed here so the card shows the network the firmware really
+        # opens, not a longer name nobody can find.
+        data["fallback_ssid"] = fallback_ssid(self.config.name)
         return data
 
     def credentials(self) -> dict:
@@ -511,6 +640,13 @@ def _migrate_config(config: dict) -> bool:
     """
     changed = False
 
+    # Before 0.14.0 every device was a CSI device and said nothing about
+    # it. Written down explicitly, so that when the default changes the
+    # stored devices do not change with it.
+    if "sensor" not in config:
+        config["sensor"] = SENSOR_ESPECTRE
+        changed = True
+
     for old_field, new_field in _RENAMED_CONFIG_FIELDS.items():
         if old_field in config:
             config.setdefault(new_field, config.pop(old_field))
@@ -596,7 +732,10 @@ def create_device(payload: DeviceCreate) -> Device:
         created_at=now,
         updated_at=now,
         config=payload,
-        **default_entity_ids(payload.name, payload.friendly_name),
+        # A radar node has none of ESPectre's entities. Guessing their ids
+        # anyway would have every CSI code path read entities that will
+        # never exist and report the device as unavailable.
+        **({} if is_radar(payload) else default_entity_ids(payload.name, payload.friendly_name)),
     )
     with _lock:
         index = _read_index()

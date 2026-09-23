@@ -1,9 +1,9 @@
 name: Echolot
-version: "0.13.9"
+version: "0.14.0"
 slug: echolot
 description: >-
-  Wi-Fi CSI presence detection: build ESPectre firmware, flash it from the
-  browser, and publish zones to Home Assistant.
+  Presence detection with HLK-LD2460 radar or Wi-Fi CSI: build the firmware,
+  flash it from the browser, and publish zones to Home Assistant.
 url: "https://github.com/NacoTeX/echolot/tree/main/echolot"
 arch:
   - aarch64

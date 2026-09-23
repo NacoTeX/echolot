@@ -71,7 +71,7 @@ wifi:
     # passphrase. An open AP is therefore at its most open at the least
     # convenient moment. The password is per device and shown in the
     # add-on next to the other credentials.
-    ssid: {{ (device_name ~ " Fallback") | tojson }}
+    ssid: {{ fallback_ssid | tojson }}
     password: {{ fallback_password | tojson }}
 
 captive_portal:

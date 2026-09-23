@@ -1664,6 +1664,51 @@ esp-web-install-button { display: inline-flex; }
   grid-column: 1 / -1;
 }
 
+/* Im Formular heißt hidden verborgen. Das Attribut allein reicht hier
+   nicht: `.device-form label` und `.checkbox-field` setzen display und
+   überstimmen es. So stand seit 0.13.8 das WLAN-Band auch bei Boards mit
+   nur einem Band im Formular — abgeschaltet, aber sichtbar —, und ohne
+   diese Regel stünden die Felder des jeweils anderen Sensortyps ebenso da. */
+.device-form [hidden] {
+  display: none !important;
+}
+
+/* Die CSI-Gruppe ist nur eine Klammer zum Ein- und Ausblenden; ihre Felder
+   gehören ins Raster des Formulars wie vorher. */
+.device-form div.sensor-fields {
+  display: contents;
+}
+
+/* Die Verkabelung ist eine Einheit mit Erklärung, also ein eigener Block
+   über die volle Breite statt einer schmalen Rasterspalte. */
+.device-form fieldset.sensor-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 0;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.device-form fieldset.sensor-fields > legend {
+  padding: 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--faint);
+}
+
+.device-form fieldset.sensor-fields > .hint,
+.device-form fieldset.sensor-fields > .field-note,
+.device-form fieldset.sensor-fields > .checkbox-field {
+  grid-column: 1 / -1;
+}
+
+.device-form fieldset.sensor-fields > button {
+  justify-self: start;
+}
+
 .device-extras code {
   font-size: 0.92em;
   background: var(--glass-well);

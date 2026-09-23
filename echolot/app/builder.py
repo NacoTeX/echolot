@@ -22,12 +22,21 @@ from app.devices import (
     config_path,
     device_dir,
     effective_band,
+    fallback_ssid,
+    is_radar,
     update_device,
 )
 
 logger = logging.getLogger("echolot.builder")
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+#: Echolot's own ESPHome components, referenced from radar configs as a
+#: local source. Inside app/ because that is the directory the add-on
+#: image carries.
+COMPONENTS_DIR = Path(__file__).parent / "esphome_components"
+RADAR_COMPONENT = "echolot_ld2460"
+#: The frame line the component publishes, see app/radar_frame.py.
+RADAR_FRAME_FORMAT = 1
 _env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
     autoescape=select_autoescape(disabled_extensions=("j2",), default=False),
@@ -213,6 +222,21 @@ def framework_base(build_dir: Path | None = None) -> dict:
     return base
 
 
+def radar_component_digest() -> str:
+    """One hash over the component sources that go into a radar image.
+
+    The component ships inside the add-on rather than being fetched at a
+    pinned commit, so "which version" has no ref to name — this is its
+    equivalent. Sorted and path-prefixed so a renamed file changes it too.
+    """
+    digest = hashlib.sha256()
+    root = COMPONENTS_DIR / RADAR_COMPONENT
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def build_manifest(device: Device, firmware: Path | None) -> dict:
     """What this artefact was made of, so a later question has an answer.
 
@@ -233,12 +257,9 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "build_id": uuid.uuid4().hex,
         "echolot_version": addon_version(),
         "echolot_revision": addon_revision(),
-        "espectre_ref": ESPECTRE_REF,
-        # What that commit measures, recorded with the image rather
-        # than looked up later. A device flashed a year ago runs the
-        # firmware of a year ago, and asking today's add-on what it
-        # can do would be asking the wrong build.
-        "firmware_capabilities": dict(FIRMWARE_CAPABILITIES),
+        # What the image senses with. Absent from manifests written
+        # before 0.14.0, all of which are ESPectre builds.
+        "sensor": device.config.sensor,
         "esphome_version": esphome_version(),
         # The requirement as written: the installed version alone does not
         # say what the next build would have been allowed to pick.
@@ -258,6 +279,22 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "fallback_ap_secured": True,
         "built_at": time.time(),
     }
+    if is_radar(device):
+        manifest["radar_component"] = {
+            "name": RADAR_COMPONENT,
+            "sha256": radar_component_digest(),
+            "frame_format": RADAR_FRAME_FORMAT,
+        }
+        # What the stored "quiet" rule was when this image was made: it
+        # decides whether a silent module reads as nobody or as unknown.
+        manifest["radar_quiet_means_empty"] = device.config.radar_quiet_means_empty
+    else:
+        manifest["espectre_ref"] = ESPECTRE_REF
+        # What that commit measures, recorded with the image rather
+        # than looked up later. A device flashed a year ago runs the
+        # firmware of a year ago, and asking today's add-on what it
+        # can do would be asking the wrong build.
+        manifest["firmware_capabilities"] = dict(FIRMWARE_CAPABILITIES)
     if firmware is not None and firmware.exists():
         digest = hashlib.sha256()
         with firmware.open("rb") as fh:
@@ -270,6 +307,8 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
 
 def render_yaml(device: Device) -> str:
     board = get_board(device.config.board)
+    if is_radar(device):
+        return _render_radar_yaml(device, board)
     template = _env.get_template("espectre.yaml.j2")
     return template.render(
         espectre_ref=ESPECTRE_REF,
@@ -292,7 +331,33 @@ def render_yaml(device: Device) -> str:
         api_encryption=device.config.api_encryption,
         api_encryption_key=device.api_encryption_key,
         ota_password=device.ota_password,
+        fallback_ssid=fallback_ssid(device.config.name),
         fallback_password=device.fallback_password,
+    )
+
+
+def _render_radar_yaml(device: Device, board) -> str:
+    config = device.config
+    return _env.get_template("ld2460.yaml.j2").render(
+        device_name=config.name,
+        friendly_name=config.friendly_name or config.name,
+        board=board,
+        wifi_ssid=config.wifi_ssid,
+        wifi_password=config.wifi_password,
+        wifi_bssid=config.wifi_bssid,
+        wifi_band=effective_band(config),
+        web_server=config.web_server,
+        diagnostics=config.diagnostics,
+        log_level=config.log_level,
+        api_encryption_key=device.api_encryption_key,
+        ota_password=device.ota_password,
+        fallback_ssid=fallback_ssid(config.name),
+        fallback_password=device.fallback_password,
+        radar_tx_pin=config.radar_tx_pin,
+        radar_rx_pin=config.radar_rx_pin,
+        antenna_select_pin=config.antenna_select_pin,
+        quiet_means_empty=config.radar_quiet_means_empty,
+        components_path=str(COMPONENTS_DIR),
     )
 
 

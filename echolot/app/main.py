@@ -953,7 +953,9 @@ async def api_overview() -> dict:
     device_list = devices.list_devices()
     zone_list = zones.list_zones()
 
-    built = [d for d in device_list if str(d.status) == "success"]
+    # Radar nodes have no CSI entities to read. Their live state comes
+    # over the native API, not through Home Assistant's state machine.
+    built = [d for d in device_list if str(d.status) == "success" and not devices.is_radar(d)]
     built_states = dict(
         zip(
             (d.id for d in built),
@@ -1075,6 +1077,9 @@ def list_boards() -> list[dict]:
             # choose. Everywhere else the field would be a control with
             # no radio behind it.
             "dual_band": b.dual_band,
+            # Prefills the radar wiring; a suggestion, see
+            # Board.radar_uart_pins.
+            "radar_uart_pins": list(b.radar_uart_pins) if b.radar_uart_pins else None,
         }
         for b in BOARDS.values()
     ]
@@ -1407,7 +1412,10 @@ async def api_reachability(device_id: str, host: str | None = None) -> dict:
     return {
         **result,
         "message": reachability.explain(result),
-        "direct_message": reachability.explain_direct(result),
+        # Port 62587 is ESPectre's. On a radar node its silence is not a
+        # finding, and the sentence about `direct_api` would send somebody
+        # looking for a switch that node never had.
+        "direct_message": None if devices.is_radar(device) else reachability.explain_direct(result),
     }
 
 
@@ -1560,15 +1568,42 @@ def api_list_zones() -> list[dict]:
     return [z.model_dump() for z in zones.list_zones()]
 
 
+def _check_zone_members(device_ids: list[str]) -> None:
+    """Refuse members a CSI zone cannot evaluate.
+
+    Unknown ids, as always — and radar nodes, which have no motion entity
+    and no movement score. The zone machine would read them as
+    permanently unavailable, and a zone that contains only them would
+    never be anything but "unknown". Radar positions become zones through
+    the room model, not through this list.
+    """
+    unknown = []
+    radar = []
+    for device_id in device_ids:
+        device = devices.get_device(device_id)
+        if device is None:
+            unknown.append(device_id)
+        elif devices.is_radar(device):
+            radar.append(device.config.friendly_name or device.config.name)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unbekannte Geräte-ID(s): {', '.join(unknown)}")
+    if radar:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{', '.join(radar)} misst mit Radar, nicht mit WLAN-CSI, und kann "
+                "keiner CSI-Zone angehören."
+            ),
+        )
+
+
 @app.post("/api/zones", status_code=201)
 def api_create_zone(payload: dict) -> dict:
     try:
         config = zones.ZoneCreate.model_validate(payload)
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
-    unknown = [d for d in config.device_ids if devices.get_device(d) is None]
-    if unknown:
-        raise HTTPException(status_code=422, detail=f"Unbekannte Geräte-ID(s): {', '.join(unknown)}")
+    _check_zone_members(config.device_ids)
     zone = zones.create_zone(config)
     # A zone appearing has no event behind it, and evaluation no longer
     # happens on request: without this the new zone reads "wird
@@ -1595,9 +1630,7 @@ def api_update_zone(zone_id: str, payload: dict) -> dict:
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
     if patch.device_ids is not None:
-        unknown = [d for d in patch.device_ids if devices.get_device(d) is None]
-        if unknown:
-            raise HTTPException(status_code=422, detail=f"Unbekannte Geräte-ID(s): {', '.join(unknown)}")
+        _check_zone_members(patch.device_ids)
     try:
         # apply_update re-validates the merged zone, so a patch that only
         # moves one threshold can still break the enter/exit invariant.

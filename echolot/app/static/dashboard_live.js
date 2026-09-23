@@ -77,7 +77,8 @@ async function startLiveDashboard() {
   // kanonischen Quelle, und die ist standardmäßig Home Assistant. Ein Gerät
   // mit abgeschalteter Direct-API hatte sonst nie eine Live-Kurve, obwohl
   // seine Messwerte durchgehend ankamen.
-  for (const device of devices.filter((item) => item.status === "success")) {
+  // Radar nodes have no CSI telemetry to stream.
+  for (const device of devices.filter((item) => item.status === "success" && item.config.sensor !== "ld2460")) {
     if (!await waitForDashboardTile(device.id)) continue;
     if (generation !== liveGeneration) return;
     await seedHistory(device.id);

@@ -46,5 +46,5 @@ WORKDIR /opt/echolot
 
 LABEL \
     io.hass.name="Echolot" \
-    io.hass.description="Self-hosted Wi-Fi CSI presence detection hub built on ESPectre" \
+    io.hass.description="Self-hosted presence detection hub: HLK-LD2460 radar and Wi-Fi CSI" \
     io.hass.type="addon"

@@ -36,6 +36,16 @@ class Board:
     #: returns a flat "2g" for every other variant — so this one flag
     #: governs both halves.
     dual_band: bool = False
+    #: Where a radar module's UART goes when nobody says otherwise, as
+    #: (ESP TX, ESP RX). A suggestion, not a fact about any particular
+    #: board: on the chips whose logger runs over the built-in USB
+    #: (ESPHome's default for C3, C5, C6 and S3) these are the chip's
+    #: UART0 pins, which are then free; on the classic ESP32, whose logger
+    #: keeps UART0, they are the pins UART2 is usually routed to. Only the
+    #: C5 pair has been wired to a module — on a Waveshare ESP32-C5-Zero,
+    #: running the wohnzimmer-radar prototype. Every other pair is a
+    #: default to check against the board's pinout.
+    radar_uart_pins: tuple[int, int] | None = None
 
     @property
     def toolchain_package(self) -> str:
@@ -73,16 +83,18 @@ BOARDS: dict[str, Board] = {
     b.key: b
     for b in [
         Board("esp32", "ESP32 (classic)", None, "ESP32",
-              esphome_board="esp32dev", cpu_frequency="240MHz"),
-        Board("esp32c3", "ESP32-C3", "ESP32C3", "ESP32-C3"),
+              esphome_board="esp32dev", cpu_frequency="240MHz",
+              radar_uart_pins=(17, 16)),
+        Board("esp32c3", "ESP32-C3", "ESP32C3", "ESP32-C3", radar_uart_pins=(21, 20)),
         Board("esp32c5", "ESP32-C5", "ESP32C5", "ESP32-C5", cpu_frequency="240MHz",
-              dual_band=True),
-        Board("esp32c6", "ESP32-C6", "ESP32C6", "ESP32-C6"),
+              dual_band=True, radar_uart_pins=(11, 12)),
+        Board("esp32c6", "ESP32-C6", "ESP32C6", "ESP32-C6", radar_uart_pins=(16, 17)),
         # ESPectre still ships an S2 example, but flags less testing on it
         # than the chips it maintains as canonical.
         Board("esp32s2", "ESP32-S2 (experimentell)", "ESP32S2", "ESP32-S2",
-              cpu_frequency="240MHz", experimental=True),
-        Board("esp32s3", "ESP32-S3", "ESP32S3", "ESP32-S3", cpu_frequency="240MHz"),
+              cpu_frequency="240MHz", experimental=True, radar_uart_pins=(17, 18)),
+        Board("esp32s3", "ESP32-S3", "ESP32S3", "ESP32-S3", cpu_frequency="240MHz",
+              radar_uart_pins=(43, 44)),
     ]
 }
 

@@ -160,6 +160,20 @@ function renderDeviceTile(device, zoneNamesByDevice) {
       </div>`;
   }
 
+  // No CSI trace for a radar node, and nothing for refreshDevice() to
+  // poll: without a [data-dot] it leaves the tile alone.
+  if (c.sensor === "ld2460") {
+    return `
+      <div class="glass-tile tile-idle" data-radar-id="${device.id}">
+        <div class="glass-tile-header">
+          <span class="tile-dot"></span>
+          <h3>${escapeHtml(c.friendly_name || c.name)}</h3>
+          <span class="tile-state">Radar</span>
+        </div>
+        <p class="tile-sub">Ziele in Home Assistant — Raumkarte folgt</p>
+      </div>`;
+  }
+
   return `
     <div class="glass-tile" data-dash-id="${device.id}">
       <div class="glass-tile-header">

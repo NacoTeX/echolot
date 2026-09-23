@@ -29,9 +29,70 @@ async function loadBoards() {
     };
     select.addEventListener("change", applyBand);
     applyBand();
+
+    radarPinsByBoard = new Map(boards.map((b) => [b.key, b.radar_uart_pins]));
+    select.addEventListener("change", applyRadarDefaults);
+    applyRadarDefaults();
   } catch (err) {
     select.innerHTML = '<option value="">Boards konnten nicht geladen werden</option>';
   }
+}
+
+// Each board's suggested radar UART pins, [tx, rx] or null. Filled by
+// loadBoards().
+let radarPinsByBoard = new Map();
+
+// Show only the fields of the chosen sensor. Hidden fields are also
+// disabled: FormData leaves disabled controls out, and a hidden
+// `required` field would otherwise block the submit with nothing to see.
+function applySensor() {
+  const form = document.getElementById("device-form");
+  const sensor = form.elements.sensor.value;
+  for (const el of form.querySelectorAll("[data-sensor]")) {
+    const shown = el.dataset.sensor === sensor;
+    el.hidden = !shown;
+    for (const control of el.querySelectorAll("input, select, textarea")) {
+      control.disabled = !shown;
+    }
+  }
+  applyRadarDefaults();
+}
+
+// Fill the UART pins from the board's suggestion — unless somebody typed
+// their own, which a board change must not silently undo.
+function applyRadarDefaults() {
+  const form = document.getElementById("device-form");
+  const pins = radarPinsByBoard.get(form.elements.board.value);
+  for (const [index, name] of [[0, "radar_tx_pin"], [1, "radar_rx_pin"]]) {
+    const input = form.elements[name];
+    if (!input || input.dataset.touched) continue;
+    input.value = pins ? pins[index] : "";
+  }
+}
+
+function initSensorFields() {
+  const form = document.getElementById("device-form");
+  form.elements.sensor.addEventListener("change", applySensor);
+  for (const name of ["radar_tx_pin", "radar_rx_pin"]) {
+    form.elements[name].addEventListener("input", (evt) => {
+      evt.target.dataset.touched = "1";
+    });
+  }
+  // The one board this has been wired to: a Waveshare ESP32-C5-Zero,
+  // UART on GP11/GP12, antenna switch on GP26.
+  document.getElementById("waveshare-c5-preset").addEventListener("click", () => {
+    const board = form.elements.board;
+    if ([...board.options].some((o) => o.value === "esp32c5")) {
+      board.value = "esp32c5";
+      board.dispatchEvent(new Event("change"));
+    }
+    form.elements.radar_tx_pin.value = 11;
+    form.elements.radar_rx_pin.value = 12;
+    form.elements.antenna_select_pin.value = 26;
+    form.elements.radar_tx_pin.dataset.touched = "1";
+    form.elements.radar_rx_pin.dataset.touched = "1";
+  });
+  applySensor();
 }
 
 let kbPerPps = 0.09; // vom Backend überschrieben
@@ -158,8 +219,17 @@ function section(title, body, { open = false } = {}) {
     </details>`;
 }
 
+// One line under the title: what it is and how it senses.
+function deviceMeta(c) {
+  const how = c.sensor === "ld2460"
+    ? `Radar · TX ${c.radar_tx_pin} / RX ${c.radar_rx_pin}`
+    : c.detection_algorithm;
+  return `${c.name} · ${c.board}${bandSuffix(c)} · ${how}`;
+}
+
 function renderDevice(device, deviceCount) {
   const c = device.config;
+  const radar = c.sensor === "ld2460";
   const title = c.friendly_name || c.name;
   const canBuild = device.status !== "queued" && device.status !== "running";
   const built = device.status === "success";
@@ -219,7 +289,16 @@ function renderDevice(device, deviceCount) {
   // The live state stays out of a collapsible group: it is the reason to
   // open the card at all, and burying it behind a second click would put
   // the most-wanted number two clicks deep.
-  const liveBlock = built
+  const liveBlock = built && radar
+    ? `<div class="radar-block">
+         <p class="hint">
+           Ziele, Radarstatus und die Firmware des Moduls erscheinen in Home
+           Assistant als Entitäten dieses Geräts, sobald es dort übernommen
+           ist. Die Raumkarte mit Grundriss und Zonen kommt als nächster
+           Schritt in Echolot.
+         </p>
+       </div>`
+    : built
     ? `<div class="live-block" data-live-id="${device.id}">
          <div class="live-row"><span class="live-label">Bewegung</span><span class="live-motion status status-pending">wird geprüft…</span></div>
          <div class="live-row"><span class="live-label">Bewegungswert</span><span class="live-score">—</span></div>
@@ -254,12 +333,12 @@ function renderDevice(device, deviceCount) {
            <p class="probe-result status" hidden></p>
            <p class="probe-direct status status-pending" hidden></p>
          </div>`)
-      + section("Diagnose", `
+      + (radar ? "" : section("Diagnose", `
          <div class="health-block">
            <p class="hint">Prüft, ob das Gerät wirklich misst — und nicht nur erreichbar ist.</p>
            <button type="button" class="health-btn btn-secondary">Diagnose stellen</button>
            <div class="health-result" hidden></div>
-         </div>`)
+         </div>`))
       + section("Verschlüsselungscode für Home Assistant", `
          <div class="key-block">
            <p class="hint">
@@ -272,12 +351,12 @@ function renderDevice(device, deviceCount) {
              <button type="button" class="copy-key-btn btn-secondary">Kopieren</button>
            </div>
            <p class="hint">
-             Notfall-WLAN <code>${escapeHtml(device.config.name)} Fallback</code> —
+             Notfall-WLAN <code>${escapeHtml(device.fallback_ssid || device.config.name + " Fallback")}</code> —
              das Gerät öffnet es, wenn es dein WLAN nicht erreicht.
              Passwort: <code class="fallback-password">— aufklappen zum Anzeigen —</code>
            </p>
          </div>`)
-      + section("HA-Entity-IDs", `
+      + (radar ? "" : section("HA-Entity-IDs", `
          <div class="entity-editor">
            <p class="hint">
              Über diese IDs holt Echolot Zustand und Schwelle aus Home
@@ -289,7 +368,7 @@ function renderDevice(device, deviceCount) {
                <input class="entity-input" data-field="${f}" value="${escapeHtml(device[f] || "")}">
              </label>`).join("")}
            <button type="button" class="save-entities-btn">Entity-IDs speichern</button>
-         </div>`)
+         </div>`))
     : "";
 
   // Editable at any point in a device's life, built or not. Changing one
@@ -301,8 +380,8 @@ function renderDevice(device, deviceCount) {
        <p class="hint">
          Diese Werte stecken im Image. Nach dem Speichern muss die Firmware
          neu gebaut und übertragen werden, sonst läuft auf dem Gerät weiter
-         die alte. Gerätename und Board lassen sich nicht ändern — dafür ist
-         ein neues Gerät der ehrliche Weg.
+         die alte. Gerätename, Board und Sensor lassen sich nicht ändern —
+         dafür ist ein neues Gerät der ehrliche Weg.
        </p>
        <label>Anzeigename
          <input class="cfg" data-field="friendly_name" value="${escapeHtml(c.friendly_name || "")}">
@@ -321,10 +400,31 @@ function renderDevice(device, deviceCount) {
              <option value="${b}"${c.wifi_band === b ? " selected" : ""}>${escapeHtml(BAND_LABELS[b] || b)}</option>`).join("")}
          </select>
          <span class="field-hint">
-           Gemessen ist bisher nur 2,4 GHz. Ein Bandwechsel entwertet ein
-           gelerntes Profil — es beschreibt dann eine andere Messung.
+           ${radar
+             ? "Beim Radar entscheidet das Band nur, worüber die Daten laufen."
+             : "Gemessen ist bisher nur 2,4 GHz. Ein Bandwechsel entwertet ein gelerntes Profil — es beschreibt dann eine andere Messung."}
          </span>
        </label>` : ""}
+       ${radar ? `
+       <label>ESP-TX → Radar Rx2 (GPIO)
+         <input class="cfg" data-field="radar_tx_pin" type="number" min="0" max="56" value="${Number(c.radar_tx_pin)}">
+       </label>
+       <label>ESP-RX ← Radar Tx2 (GPIO)
+         <input class="cfg" data-field="radar_rx_pin" type="number" min="0" max="56" value="${Number(c.radar_rx_pin)}">
+       </label>
+       <label>Antennen-Umschaltung (GPIO)
+         <input class="cfg" data-field="antenna_select_pin" data-nullable="1" type="number" min="0" max="56"
+                placeholder="keine" value="${c.antenna_select_pin == null ? "" : Number(c.antenna_select_pin)}">
+       </label>
+       <label class="checkbox-field">
+         <input type="checkbox" class="cfg" data-field="radar_quiet_means_empty"${c.radar_quiet_means_empty ? " checked" : ""}>
+         <span>Stiller Radar heißt „niemand da“
+           <span class="field-hint">
+             Erst einschalten, wenn du beobachtet hast, dass das Modul in
+             einem leeren Raum verstummt, statt leere Meldungen zu schicken.
+           </span>
+         </span>
+       </label>` : `
        <label>Erkennungsprofil
          <select class="cfg" data-field="detection_algorithm">
            <option value="lightweight"${c.detection_algorithm === "lightweight" ? " selected" : ""}>Lightweight</option>
@@ -336,7 +436,7 @@ function renderDevice(device, deviceCount) {
        </label>
        <label>Auswerteintervall (ms)
          <input class="cfg" data-field="evaluation_interval_ms" type="number" min="10" max="10000" value="${Number(c.evaluation_interval_ms)}">
-       </label>
+       </label>`}
        <label>Log-Level
          <select class="cfg" data-field="log_level">
            ${["NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"].map((l) => `
@@ -351,6 +451,7 @@ function renderDevice(device, deviceCount) {
          <input type="checkbox" class="cfg" data-field="diagnostics"${c.diagnostics ? " checked" : ""}>
          <span>Diagnose-Sensoren</span>
        </label>
+       ${radar ? "" : `
        <label class="checkbox-field">
          <input type="checkbox" class="cfg" data-field="direct_api"${c.direct_api ? " checked" : ""}>
          <span>Direkte Telemetrie (Port 62587)</span>
@@ -362,14 +463,14 @@ function renderDevice(device, deviceCount) {
              Baut derzeit nicht — siehe „Der Verschlüsselungscode“ in der Doku.
            </span>
          </span>
-       </label>
+       </label>`}
        <button type="button" class="save-config-btn">Firmware-Optionen speichern</button>
        <p class="config-result status" hidden></p>
      </div>`);
 
   // The summary carries the two things worth scanning a list for: what the
   // build is doing, and — once built — whether the room is occupied.
-  const summaryLive = built
+  const summaryLive = built && !radar
     ? `<span class="summary-live" data-summary-id="${device.id}">
          <span class="summary-dot"></span><span class="summary-live-text">…</span>
        </span>`
@@ -380,7 +481,7 @@ function renderDevice(device, deviceCount) {
       <summary class="device-summary">
         <span class="device-summary-text">
           <span class="device-title">${escapeHtml(title)}</span>
-          <span class="device-meta">${escapeHtml(c.name)} · ${escapeHtml(c.board)}${bandSuffix(c)} · ${escapeHtml(c.detection_algorithm)}</span>
+          <span class="device-meta">${escapeHtml(deviceMeta(c))}</span>
         </span>
         <span class="device-summary-state">
           ${summaryLive}
@@ -819,7 +920,9 @@ async function saveConfig(id, cardEl) {
     if (field.type === "checkbox") {
       patch[name] = field.checked;
     } else if (field.type === "number") {
-      patch[name] = Number(field.value);
+      // An empty optional pin means "none", not GPIO0 — which is what
+      // Number("") would make of it.
+      patch[name] = field.dataset.nullable && field.value === "" ? null : Number(field.value);
     } else if (name === "wifi_password") {
       // Empty means "leave it alone": the API never hands the real one
       // back, so sending the placeholder would overwrite a working
@@ -857,7 +960,7 @@ async function saveConfig(id, cardEl) {
     markStale(cardEl, body.firmware_behind_config);
     const meta = cardEl.querySelector(".device-meta");
     if (meta && body.config) {
-      meta.textContent = `${body.config.name} · ${body.config.board}${bandSuffix(body.config)} · ${body.config.detection_algorithm}`;
+      meta.textContent = deviceMeta(body.config);
     }
   } catch (err) {
     out.className = "config-result status status-err";
@@ -917,13 +1020,24 @@ document.getElementById("device-form").addEventListener("submit", async (evt) =>
 
   const form = evt.target;
   const data = Object.fromEntries(new FormData(form).entries());
-  data.csi_target_pps = Number(data.csi_target_pps);
-  data.evaluation_interval_ms = Number(data.evaluation_interval_ms);
+  // Only the fields of the chosen sensor are in `data` — the others are
+  // disabled, see applySensor() — so each conversion checks first.
+  // Number(undefined) is NaN, which JSON sends as null and the API
+  // rightly refuses.
+  for (const name of ["csi_target_pps", "evaluation_interval_ms", "radar_tx_pin", "radar_rx_pin"]) {
+    if (name in data) data[name] = Number(data[name]);
+  }
+  if ("antenna_select_pin" in data) {
+    if (data.antenna_select_pin === "") delete data.antenna_select_pin;
+    else data.antenna_select_pin = Number(data.antenna_select_pin);
+  }
   // FormData drops unchecked boxes entirely and reports "on" for checked
   // ones, so neither state survives as the boolean the API expects.
   data.web_server = form.elements.web_server.checked;
   data.diagnostics = form.elements.diagnostics.checked;
-  data.api_encryption = form.elements.api_encryption.checked;
+  for (const name of ["api_encryption", "radar_quiet_means_empty"]) {
+    if (!form.elements[name].disabled) data[name] = form.elements[name].checked;
+  }
   if (!data.friendly_name) delete data.friendly_name;
   if (!data.wifi_password) delete data.wifi_password;
 
@@ -943,6 +1057,8 @@ document.getElementById("device-form").addEventListener("submit", async (evt) =>
       return;
     }
     form.reset();
+    for (const name of ["radar_tx_pin", "radar_rx_pin"]) delete form.elements[name].dataset.touched;
+    applySensor();
     await loadDevices();
   } catch (err) {
     errorEl.textContent = "Backend nicht erreichbar";
@@ -967,6 +1083,7 @@ if (!window.isSecureContext) {
 // gone by the time the event arrived. A click on the summary only ever
 // comes from a person; the keyboard sends one too.
 
+initSensorFields();
 loadBoards();
 loadPresets();
 loadDevices();
