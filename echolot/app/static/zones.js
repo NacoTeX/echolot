@@ -35,6 +35,10 @@ async function loadZoneDevicePicker() {
     picker.innerHTML = '<p class="status status-err">Geräte konnten nicht geladen werden</p>';
     return;
   }
+  // CSI zones group CSI devices. A radar node has no motion entity for
+  // them to read, and the API refuses it as a member; see
+  // _check_zone_members in main.py.
+  devices = devices.filter((d) => d.config.sensor !== "ld2460");
   picker.innerHTML = devices.length
     ? devices
         .map(

@@ -241,7 +241,17 @@
           <span class="card-summary-hint">Board, WLAN und Erkennungsprofil</span>
         </summary>
         <form id="device-form" class="device-form">
-          <label class="preset-label">Voreinstellung
+          <label>Sensor
+            <select name="sensor" id="sensor-select">
+              <option value="ld2460" selected>Radar — HLK-LD2460 (24 GHz)</option>
+              <option value="espectre">WLAN-CSI — ESPectre</option>
+            </select>
+            <span class="field-note">
+              Der Radar liefert Positionen im Raum. WLAN-CSI misst Bewegung
+              über das Funksignal und läuft aus, sobald der Radar trägt.
+            </span>
+          </label>
+          <label class="preset-label" data-sensor="espectre">Voreinstellung
             <select id="preset-select">
               <option value="">— eigene Werte —</option>
             </select>
@@ -256,6 +266,47 @@
           <label>Board
             <select name="board" id="board-select" required></select>
           </label>
+          <fieldset class="sensor-fields" data-sensor="ld2460">
+            <legend>Verkabelung zum Radar</legend>
+            <p class="hint">
+              ESP-TX an Pin&nbsp;8 (Rx2) des Moduls, ESP-RX an Pin&nbsp;7 (Tx2),
+              dazu 5&nbsp;V und GND. VDD33 und die UART1-Pins bleiben frei.
+            </p>
+            <button type="button" id="waveshare-c5-preset" class="btn-secondary">
+              Waveshare ESP32-C5-Zero übernehmen
+            </button>
+            <label>ESP-TX → Radar Rx2 (GPIO)
+              <input name="radar_tx_pin" type="number" min="0" max="56" required>
+            </label>
+            <label>ESP-RX ← Radar Tx2 (GPIO)
+              <input name="radar_rx_pin" type="number" min="0" max="56" required>
+            </label>
+            <span class="field-note">
+              Vorgeschlagen sind die Pins, die beim gewählten Chip frei sind.
+              Geprüft mit echter Verkabelung ist nur der ESP32-C5 (11/12) —
+              bei anderen Boards gegen die Pinbelegung prüfen.
+            </span>
+            <label>Antennen-Umschaltung (GPIO, optional)
+              <input name="antenna_select_pin" type="number" min="0" max="56" placeholder="keine">
+              <span class="field-note">
+                Wird ab dem Start auf LOW gehalten. Beim Waveshare
+                ESP32-C5-Zero wählt GPIO26 auf LOW die Antenne auf der
+                Platine. Leer lassen, wenn das Board keine Umschaltung hat.
+              </span>
+            </label>
+            <label class="checkbox-field">
+              <input type="checkbox" name="radar_quiet_means_empty">
+              <span>Stiller Radar heißt „niemand da“
+                <span class="field-hint">
+                  Ob das LD2460 in einem leeren Raum weiter leere Meldungen
+                  schickt oder verstummt, steht in keiner Unterlage. Aus
+                  heißt: Ein Modul, das antwortet, aber nichts meldet, gilt
+                  als „unbekannt“ statt als „leer“. Erst einschalten, wenn du
+                  es im leeren Raum beobachtet hast.
+                </span>
+              </span>
+            </label>
+          </fieldset>
           <label>WLAN-Name (SSID)
             <input name="wifi_ssid" placeholder="dein WLAN" required maxlength="32">
           </label>
@@ -268,7 +319,11 @@
               <option value="5GHz">5 GHz — Erkennungsqualität unbekannt</option>
               <option value="auto">Automatisch — Router entscheidet</option>
             </select>
-            <span class="field-note">
+            <span class="field-note" data-sensor="ld2460">
+              Nur der ESP32-C5 hat zwei Funkbänder. Beim Radar entscheidet das
+              Band nur, worüber die Daten laufen — gemessen wird mit 24 GHz.
+            </span>
+            <span class="field-note" data-sensor="espectre">
               Nur der ESP32-C5 hat zwei Funkbänder. Gemessen ist bisher nur
               2,4 GHz: ESPectre selbst schreibt, die Erkennungsqualität auf
               5 GHz sei noch nicht charakterisiert. „Automatisch“ überlässt
@@ -276,6 +331,7 @@
               welchem Band sie entstanden ist.
             </span>
           </label>
+          <div class="sensor-fields" data-sensor="espectre">
           <label>Erkennungsprofil
             <select name="detection_algorithm">
               <option value="lightweight" selected>Lightweight — gewichtetes Modell, lernt beim Start ein</option>
@@ -290,6 +346,7 @@
             <input name="evaluation_interval_ms" type="number" min="10" max="10000" value="250">
             <span class="field-note">Kürzer reagiert schneller und kostet mehr Rechenzeit.</span>
           </label>
+          </div>
 
           <details class="tuning device-extras">
             <summary>Weitere Firmware-Optionen</summary>
@@ -318,7 +375,12 @@
                   </span>
                 </span>
               </label>
-              <label class="checkbox-field">
+              <p class="field-hint" data-sensor="ld2460">
+                API-Verschlüsselung ist bei Radar-Geräten immer an —
+                Positionen von Menschen im Raum gehen nicht im Klartext
+                durchs Netz.
+              </p>
+              <label class="checkbox-field" data-sensor="espectre">
                 <input type="checkbox" name="api_encryption">
                 <span>API-Verschlüsselung
                   <span class="field-hint">

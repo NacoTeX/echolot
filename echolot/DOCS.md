@@ -1,8 +1,15 @@
 # Echolot
 
-Self-hosted Wi-Fi CSI presence detection hub, built on
-[ESPectre](https://github.com/francescopace/espectre) — an open-source,
-license-free alternative to [TOMMY](https://www.tommysense.com).
+Self-hosted presence detection hub for Home Assistant. Two kinds of
+sensor node, both built and flashed from here:
+
+- **Radar** with the Hi-Link HLK-LD2460 (24 GHz, up to five targets with
+  X/Y position), read by Echolot's own ESPHome component — since 0.14.0,
+  and the direction Echolot is heading.
+- **Wi-Fi CSI** through [ESPectre](https://github.com/francescopace/espectre)
+  — an open-source, license-free alternative to
+  [TOMMY](https://www.tommysense.com). Everything below that talks about
+  movement scores, thresholds and calibration is about these.
 
 ## Installation
 
@@ -23,6 +30,93 @@ license-free alternative to [TOMMY](https://www.tommysense.com).
 All five planned phases are implemented: add-on skeleton, device
 flashing, zones and runtime configuration, the live dashboard, and the
 Phase 5 polish (traffic estimation, presets, zone export).
+
+### Radar mit dem HLK-LD2460
+
+Seit 0.14.0 baut Echolot neben ESPectre-Knoten auch Radar-Knoten: ein
+ESP32 mit einem Hi-Link HLK-LD2460 am UART. Im Formular **Gerät anlegen**
+oben „Radar — HLK-LD2460“ wählen.
+
+**Verkabelung.** Das Modul hat zwei UARTs; Ziele und Befehle laufen über
+UART2 (Pins 7/8), UART1 bleibt frei.
+
+| ESP | LD2460 |
+| --- | --- |
+| 5 V | Pin 1 · 5V |
+| GND | Pin 2 oder 6 · GND |
+| TX (Formularfeld „ESP-TX“) | Pin 8 · Rx2 |
+| RX (Formularfeld „ESP-RX“) | Pin 7 · Tx2 |
+
+Pin 5 (VDD33) bleibt frei. Vorgeschlagen werden je Chip die Pins, die bei
+ESPHomes Standard-Logger frei sind; **mit echter Verkabelung geprüft ist
+nur der ESP32-C5** (GPIO11/12, Waveshare ESP32-C5-Zero). Der Knopf
+„Waveshare ESP32-C5-Zero übernehmen“ trägt dazu GPIO26 als
+Antennen-Umschaltung ein — auf LOW gehalten wählt er die Antenne auf der
+Platine.
+
+**Was die Firmware tut.** Sie liest die Zielmeldungen des Moduls (Kopf
+`F4 F3 F2 F1`, Funktion `04`, bis zu fünf Ziele in Dezimetern) und
+veröffentlicht jede Meldung als *eine* Zeile:
+
+```
+1|R|42|15,23;-1,39
+```
+
+Format 1, Zustand, laufende Nummer, Ziele. Eine Zeile pro Meldung, damit
+X und Y eines Ziels immer aus derselben Meldung stammen — das Modul
+liefert keine Ziel-IDs, und zwei getrennt gedrosselte Sensoren könnten das
+nicht versprechen. Die Zeile ist die Entität „Radar Frame“, in Home
+Assistant von Anfang an deaktiviert, damit der Recorder nicht zehn Zeilen
+pro Sekunde schreibt; Echolot liest sie direkt über die native API.
+
+Der Zustand ist die eigentliche Arbeit:
+
+| | Bedeutung |
+| --- | --- |
+| `R` receiving | Meldung innerhalb der letzten 3 s. Die Ziele sind aktuell. |
+| `Q` quiet | Keine Meldung, aber das Modul hat „Meldungen an“ kürzlich quittiert. Es ist da und hat nichts zu sagen. |
+| `U` unknown | Weder noch — Verkabelung, Strom, ein Modul, das noch startet. |
+
+Bleiben Meldungen aus, schickt die Firmware alle 5 s „Meldungen
+einschalten“ (Funktion `06`). Das ist der Werkszustand, ändert an einem
+normal laufenden Modul also nichts — und die Quittung ist der einzige
+Weg, ein stilles Modul von einem fehlenden zu unterscheiden.
+
+**Was offen ist, und deshalb eine Einstellung statt einer Annahme:** Ob
+das LD2460 in einem leeren Raum weiter leere Meldungen schickt oder
+verstummt, steht in keiner Unterlage, die uns vorlag. Schickt es leere
+Meldungen, kommt `Q` außerhalb eines Fehlers nie vor. Verstummt es, sieht
+ein leerer Raum aus wie `Q`. Deshalb gilt `Q` als „unbekannt“, bis jemand
+es im leeren Raum beobachtet hat und **„Stiller Radar heißt niemand da“**
+einschaltet. Die Diagnose-Entität „Radar Empty Reports“ zählt leere
+Meldungen — steigt sie im leeren Raum, ist die Frage beantwortet.
+
+Ebenfalls ungeprüft: das Vorzeichen der X-Achse (links oder rechts vom
+Sensor aus gesehen) und der Aufbau der Quittungen für `06` und `0B`, der
+aus dem MIT-lizenzierten
+[smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460) stammt
+(seinerseits auf ciriousjoker/esphome_ld2460 aufgebaut), weil der
+entsprechende Teil des Handbuchs nicht vorlag.
+
+**In Home Assistant** erscheinen nach der Übernahme „Targets“ (Anzahl,
+unbekannt statt 0, solange keine aktuelle Meldung da ist), „Radar
+Status“, „Radar Firmware“ und die Diagnosezähler. Die API ist bei
+Radar-Knoten immer verschlüsselt: Den Grund, der das bei ESPectre-Knoten
+verhindert, gibt es ohne ESPectre nicht.
+
+**Noch nicht da:** die Raumkarte — Grundriss, Möbel, Zonen als Flächen,
+Sensorposition — und Zonen aus Positionen. Das ist der nächste Schritt.
+Radar-Knoten können deshalb keiner der bisherigen Zonen angehören; die
+gruppieren CSI-Geräte und lesen deren Bewegungs-Entität, die ein
+Radar-Knoten nicht hat.
+
+**Vom Prototyp umsteigen.** Wer den „wohnzimmer-radar“-Prototyp mit
+eigener Arduino-Firmware betreibt: in Echolot ein Radar-Gerät anlegen,
+bauen und **per USB** flashen. Der Update-Endpunkt des Prototyps nimmt
+zwar App-Images an, aber dessen Partitionstabelle ist nicht die von
+ESPHome — ein sauberer Wechsel geht über das vollständige Image. Die
+Integration `wohnzimmer_radar` in Home Assistant bleibt bis zur
+Raumkarte in Echolot bestehen und kann danach entfernt werden.
 
 ### Flashing a device
 
@@ -511,11 +605,29 @@ Label ein Mechanismus, der nie auslöst. Der PlatformIO-Cache wird auf beide Pin
 ESPHome-Anforderung und ESPectre-Commit —, sodass ein Bump von einem der
 beiden von vorn baut statt gegen ein altes Framework zu linken.
 
+Seit 0.14.0 kommen zwei Radar-Ziele dazu, `esp32c5:ld2460` und
+`esp32:ld2460`: eine andere Firmware auf denselben Chips — ohne
+ESPectre, mit Echolots eigenem Baustein `echolot_ld2460` und mit
+API-Verschlüsselung, die bei ESPectre-Builds nicht linkt. Der C5, weil
+der Radar auf ihm läuft; der klassische ESP32 als anderer Befehlssatz.
+
+Den Baustein selbst prüfen zwei Tests ohne ESP-Toolchain:
+`tests/test_ld2460_protocol.py` übersetzt den Protokollkern mit dem
+Host-Compiler und prüft Parser, Zustandslogik und Zeilenformat;
+`tests/test_ld2460_component.py` lässt ESPHome eine Firmware für seine
+`host`-Plattform erzeugen, übersetzt sie, und spielt über ein
+Pseudo-Terminal das Modul — Quittungen, Meldungen, Stille. Geprüft wird,
+was die Komponente auf die Leitung schreibt und was sie veröffentlicht.
+Nicht geprüft wird damit der ESP-IDF-UART-Treiber, das Timing auf dem
+Chip oder das Modul; dafür gibt es den Cross-Compile oben und am Ende
+ein Modul auf dem Tisch.
+
 Lokal genauso aufrufbar:
 
 ```bash
-python echolot/tools/compile_firmware.py            # alle drei
-python echolot/tools/compile_firmware.py esp32c5    # nur eines
+python echolot/tools/compile_firmware.py                  # die drei ESPectre-Boards
+python echolot/tools/compile_firmware.py esp32c5          # nur eines
+python echolot/tools/compile_firmware.py esp32c5:ld2460   # ein Radar-Knoten
 ```
 
 ### Dashboard

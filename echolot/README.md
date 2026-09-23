@@ -1,9 +1,16 @@
 # Echolot
 
-Wi-Fi CSI presence detection for Home Assistant. Echolot compiles per-device
-[ESPectre][espectre] firmware, flashes it from the browser, groups devices
-into zones, and publishes those zones back to Home Assistant as occupancy
-sensors.
+Presence detection for Home Assistant. Echolot compiles per-device
+firmware, flashes it from the browser, groups devices into zones, and
+publishes those zones back to Home Assistant as occupancy sensors.
+
+Two kinds of sensor node:
+
+- **Radar** — a Hi-Link HLK-LD2460 on an ESP32, reporting up to five
+  targets with their position. Since 0.14.0; the room map that turns
+  positions into zones is the next step. See "Radar mit dem HLK-LD2460"
+  in [DOCS.md](DOCS.md).
+- **Wi-Fi CSI** through [ESPectre][espectre], described below.
 
 It reads Channel State Information — how a body moving through a room
 disturbs the Wi-Fi between the board and the router — so detection needs no

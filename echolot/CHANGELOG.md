@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.14.0
+
+**Radar-Knoten mit dem HLK-LD2460.** Echolot baut jetzt neben
+ESPectre-Knoten auch Radar-Knoten: ein ESP32 mit einem Hi-Link HLK-LD2460
+am UART. Anlegen, bauen, per USB flashen und per WLAN aktualisieren wie
+jedes andere Gerät — im Formular oben „Radar — HLK-LD2460“ wählen. Für den
+Waveshare ESP32-C5-Zero gibt es einen Knopf, der Pins 11/12 und die
+Antennen-Umschaltung auf GPIO26 einträgt. Das ist der erste Schritt;
+Raumkarte und Zonen aus Positionen folgen.
+
+Die Firmware ist ein eigener ESPHome-Baustein (`echolot_ld2460`) statt
+eines der Community-Bausteine, aus einem Grund, den das Entitätsmodell
+erzwingt: Die veröffentlichen X und Y jedes Ziels als getrennte Sensoren,
+nur bei Änderung. Das Modul liefert keine Ziel-IDs — wer Menschen über
+Meldungen hinweg verfolgen will, braucht beide Koordinaten aller Ziele
+aus *derselben* Meldung. Der Baustein veröffentlicht deshalb jede Meldung
+als eine Zeile (`1|R|42|15,23;-1,39`), in Home Assistant deaktiviert,
+damit der Recorder nicht zehn Zeilen pro Sekunde schreibt. Kern ist der
+Parser des „wohnzimmer-radar“-Prototyps, der am 23.09. echte Meldungen
+eines Moduls gelesen hat, erweitert um Quittungsrahmen.
+
+**Ein stiller Radar ist nicht dasselbe wie ein leerer Raum.** Bleiben
+Meldungen aus, fragt die Firmware das Modul, ob Meldungen eingeschaltet
+sind. Antwortet es, ist es da (`quiet`); antwortet es nicht, ist der
+Zustand `unknown`. Ob `quiet` einen leeren Raum bedeutet, hängt davon ab,
+ob das LD2460 im leeren Raum leere Meldungen schickt oder verstummt — das
+steht in keiner Unterlage, die vorlag. Deshalb ist es eine Einstellung,
+standardmäßig aus, bis jemand es beobachtet hat, und keine Annahme.
+
+**API-Verschlüsselung ist bei Radar-Knoten immer an.** Der Grund, der
+sie bei ESPectre-Knoten verhindert — ESPectre legt eine C++-`utils.h` in
+jeden Include-Pfad —, existiert ohne ESPectre nicht. CI linkt deshalb
+zwei Radar-Ziele (`esp32c5:ld2460`, `esp32:ld2460`) mit Verschlüsselung.
+
+**Der Baustein wird ohne ESP getestet.** Der Protokollkern ist
+ESPHome-freies C++ und läuft im Test mit dem Host-Compiler: Parser mit
+den Fällen des Prototyps, Quittungen, Zustandslogik über den
+`millis()`-Überlauf, das Zeilenformat — und Echolots Python-Leser liest
+jede Zeile, die der C++-Code schreibt. Außerdem erzeugt ESPHome im Test
+eine Firmware für seine `host`-Plattform, die gegen ein Pseudo-Terminal
+läuft, auf dem der Test das Modul spielt: Stille, Probe, Quittung,
+Versionsabfrage, Meldungen, wieder Stille. Jede der geprüften Regeln fällt
+auf, wenn man sie ausbaut; das ist für jede einzeln nachgeprüft.
+
+**Unverändert für CSI-Geräte.** Jedes gespeicherte Gerät bekommt
+`sensor: espectre` ausdrücklich eingetragen, damit es sich nicht bewegt,
+wenn sich der Standard einmal ändert. Neue Felder zählen in den
+Konfigurations-Fingerabdruck nur, wenn sie von ihrem „gab es noch nicht“-
+Wert abweichen — sonst hätte das Update jedes mit 0.13.9 gebaute Gerät als
+„umkonfiguriert, aber nicht neu gebaut“ gemeldet, ohne dass sich etwas
+geändert hätte. Radar-Knoten bekommen keine geratenen CSI-Entitäten,
+werden in der Übersicht nicht als „liefert keine Werte“ gemeldet und
+können keiner CSI-Zone angehören.
+
+**Behoben, für alle Geräte:** Ein Gerätename mit mehr als 23 Zeichen
+machte den Build unmöglich — `<Name> Fallback` wurde länger als die 32
+Zeichen, die eine SSID haben darf. Der Name wird jetzt gekürzt, nicht der
+Zusatz. Kürzere Namen behalten ihre SSID; längere hatten nie eine
+funktionierende Firmware.
+
+**Behoben, seit 0.13.8:** Das Feld „WLAN-Band“ stand auch bei Boards mit
+nur einem Band im Formular — abgeschaltet und nicht mitgesendet, aber
+sichtbar. `.device-form label` setzt `display` und überstimmte damit das
+`hidden`-Attribut. Aufgefallen beim Ein- und Ausblenden der Felder je
+Sensortyp, die am selben Fehler hingen.
+
 ## 0.13.9
 
 **Aufzeichnungen liegen jetzt in SQLite.** Sie lagen in einer JSON-Datei,

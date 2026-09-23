@@ -47,13 +47,30 @@ def main() -> int:
     # check that "2.4GHz" in a stored config really reaches the firmware
     # as 2.4GHZ rather than as a validation error at build time.
     cases += [("esp32c5", True, True, False, band) for band in ("5GHz", "auto")]
+    cases = [(*case, {}) for case in cases]
+
+    # Radar nodes: every board on its suggested pins, then the branches
+    # that only a radar config has — the Waveshare C5-Zero's antenna pin,
+    # the optional blocks off, and the "quiet means empty" rule on. The
+    # external component is validated along with the YAML, so a schema
+    # error in echolot_ld2460/__init__.py fails here, not at compile time.
+    radar = {"sensor": "ld2460"}
+    cases += [(key, True, True, True, None, radar) for key in BOARDS]
+    cases.append(("esp32c5", True, True, True, None, {**radar, "antenna_select_pin": 26}))
+    cases.append(("esp32c5", False, False, True, None, {**radar, "radar_quiet_means_empty": True}))
 
     failures = []
-    for board, web, diag, encryption, band in cases:
+    for board, web, diag, encryption, band, extra in cases:
         name = f"probe-{board}"
+        if extra.get("sensor") == "ld2460":
+            name += "-radar"
+        if extra.get("antenna_select_pin") is not None:
+            name += "-antenna"
         if not (web and diag):
             name += "-minimal"
-        if encryption:
+        # Radar nodes are always encrypted; saying so in the name only
+        # makes it longer.
+        if encryption and extra.get("sensor") != "ld2460":
             name += "-encrypted"
         if band:
             name += "-" + band.replace(".", "").replace("GHz", "g").lower()
@@ -71,6 +88,7 @@ def main() -> int:
                 diagnostics=diag,
                 api_encryption=encryption,
                 **({"wifi_band": band} if band else {}),
+                **extra,
             ),
         )
         path = workdir / f"{name}.yaml"
@@ -83,15 +101,18 @@ def main() -> int:
             cwd=workdir,
         )
         label = (
-            f"{board:9s} web_server={int(web)} diagnostics={int(diag)} "
-            f"encryption={int(encryption)} band={band or '-'}"
+            f"{board:9s} sensor={device.config.sensor:8s} web_server={int(web)} "
+            f"diagnostics={int(diag)} encryption={int(encryption)} band={band or '-'}"
+            + (f" antenna=GPIO{extra['antenna_select_pin']}" if "antenna_select_pin" in extra else "")
         )
         if result.returncode == 0:
             print(f"  ok   {label}")
         else:
             failures.append(label)
             print(f"  FAIL {label}")
-            tail = (result.stderr or result.stdout).strip().splitlines()[-20:]
+            # ESPHome prints "Failed config" and the offending block to
+            # stdout, and only its INFO lines to stderr.
+            tail = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()[-20:]
             print("\n".join(f"       {line}" for line in tail))
 
     print()
