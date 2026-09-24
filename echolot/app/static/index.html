@@ -4,9 +4,56 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Echolot</title>
-  <link rel="stylesheet" href="static/style.css">
+  <!-- Enough to keep the page legible if style.css never arrives, and a
+       watcher that then says which file failed and how, instead of
+       leaving a page of black shapes. -->
+  <style>svg.icon{width:1.2em;height:1.2em}.brand img{width:34px;height:34px}</style>
+  <script>
+    (function () {
+      var failed = [];
+      window.echolotAssetFailed = function (el) { failed.push(el.getAttribute("href") || el.getAttribute("src")); };
+      window.addEventListener("load", function () {
+        var styled = getComputedStyle(document.documentElement).getPropertyValue("--echolot-css").trim() === "1";
+        // `const Echolot` in app.js is a global binding, not a window property.
+        var scripted = typeof Echolot !== "undefined";
+        if (styled && scripted) return;
+        var urls = failed.slice();
+        var css = document.querySelector('link[rel="stylesheet"]').getAttribute("href");
+        var app = document.querySelector('script[src*="static/app.js"]').getAttribute("src");
+        if (!styled && urls.indexOf(css) < 0) urls.push(css);
+        if (!scripted && urls.indexOf(app) < 0) urls.push(app);
+        var box = document.createElement("div");
+        box.setAttribute("role", "alert");
+        box.style.cssText = "position:fixed;inset:16px auto auto 16px;right:16px;z-index:99;max-width:760px;margin:auto;" +
+          "padding:18px 20px;border-radius:14px;background:#fff;color:#1b1f24;font:14px/1.5 system-ui,sans-serif;" +
+          "box-shadow:0 12px 40px rgba(0,0,0,.35)";
+        box.innerHTML = "<strong style='font-size:16px'>Echolot konnte nicht vollständig laden</strong>" +
+          "<p style='margin:6px 0 10px'>Diese Dateien kamen nicht so an, wie der Browser sie braucht. " +
+          "Die Angaben unten zeigen, woran es liegt — bitte abfotografieren oder kopieren.</p>" +
+          "<pre id='echolot-diag' style='white-space:pre-wrap;margin:0;padding:10px;background:#f2f3f5;border-radius:8px;font:12px/1.45 ui-monospace,monospace'>" +
+          "Seite: " + location.protocol + " · " + navigator.userAgent + "\n</pre>";
+        document.body.appendChild(box);
+        var out = box.querySelector("#echolot-diag");
+        urls.forEach(function (url) {
+          fetch(url, { cache: "no-store", credentials: "same-origin" }).then(function (r) {
+            return r.text().then(function (text) {
+              var h = function (n) { return r.headers.get(n) || "—"; };
+              out.textContent += "\n" + url + "\n  Status " + r.status + (r.redirected ? " (umgeleitet nach " + r.url + ")" : "") +
+                "\n  Content-Type: " + h("content-type") + " · Content-Encoding: " + h("content-encoding") +
+                " · nosniff: " + h("x-content-type-options") +
+                "\n  Content-Length: " + h("content-length") + " · empfangen: " + text.length + " Zeichen" +
+                "\n  Anfang: " + JSON.stringify(text.slice(0, 60)) + "\n";
+            });
+          }).catch(function (err) {
+            out.textContent += "\n" + url + "\n  Abruf gescheitert: " + err + "\n";
+          });
+        });
+      });
+    })();
+  </script>
+  <link rel="stylesheet" href="static/style.css" onerror="echolotAssetFailed(this)">
   <link rel="icon" href="static/icon.svg" type="image/svg+xml">
-  <script type="module" src="static/vendor/esp-web-tools/install-button.js"></script>
+  <script type="module" src="static/vendor/esp-web-tools/install-button.js" onerror="echolotAssetFailed(this)"></script>
 </head>
 <body>
   <!-- Line icons, 24×24, drawn with the text colour. -->
@@ -86,13 +133,13 @@
 
   <div class="toast-host" id="toasts" aria-live="polite"></div>
 
-  <script src="static/geometry.js"></script>
-  <script src="static/app.js"></script>
-  <script src="static/plan.js"></script>
-  <script src="static/rooms.js"></script>
-  <script src="static/calibrate.js"></script>
-  <script src="static/devices.js"></script>
-  <script src="static/flash_watch.js"></script>
-  <script>Echolot.start();</script>
+  <script src="static/geometry.js" onerror="echolotAssetFailed(this)"></script>
+  <script src="static/app.js" onerror="echolotAssetFailed(this)"></script>
+  <script src="static/plan.js" onerror="echolotAssetFailed(this)"></script>
+  <script src="static/rooms.js" onerror="echolotAssetFailed(this)"></script>
+  <script src="static/calibrate.js" onerror="echolotAssetFailed(this)"></script>
+  <script src="static/devices.js" onerror="echolotAssetFailed(this)"></script>
+  <script src="static/flash_watch.js" onerror="echolotAssetFailed(this)"></script>
+  <script>if (typeof Echolot !== "undefined") Echolot.start();</script>
 </body>
 </html>

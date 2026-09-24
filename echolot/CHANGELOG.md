@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.1.1
+
+**Wenn die Oberfläche ohne Aussehen lädt.** Über HTTPS kam bei einem
+Nutzer die Seite an, ihr Stylesheet und ihre Skripte aber nicht: schwarze
+Symbole, keine Räume, und ohne die Skripte auch kein Flashen über USB. Die
+Ursache ist von hier aus nicht zu sehen — vermutlich ein Proxy vor Home
+Assistant, der die komprimiert ausgelieferten CSS- und JS-Dateien verändert
+(das kleine Logo, das nicht komprimiert wird, kam an). Deshalb zuerst zwei
+Dinge, die auf jeden Fall helfen:
+
+- **Die Seite sagt jetzt selbst, was fehlt.** Kommt `style.css` oder
+  `app.js` nicht an oder nicht als das, was der Browser braucht, erscheint
+  ein Kasten mit Datei, Status, Content-Type, Kompression, Länge und den
+  ersten Zeichen — genau die Angaben, die die Ursache zeigen. Auch ohne
+  Stylesheet bleiben die Symbole klein und die Seite lesbar.
+- **Stylesheet und Skripte tragen die Add-on-Version** in der Adresse
+  (`style.css?v=1.1.1`), die Seite selbst wird nicht zwischengespeichert.
+  Ein Browser oder Proxy kann die Seite so nicht mit Dateien einer anderen
+  Version zusammenbringen.
+
+**Behoben, beim Bauen gefunden:** Die erste Fassung der Prüfung fragte
+`window.Echolot` ab — `const` auf oberster Ebene legt aber keine
+Fenster-Eigenschaft an. Sie hätte immer Alarm geschlagen und den Start der
+App verhindert; der Browsertest hat es gezeigt, bevor es ausgeliefert
+wurde.
+
+**Getestet:** 282 Tests; im Headless-Browser der Normalfall (kein Kasten)
+und drei Fehlerbilder — Stylesheet als `text/plain` mit `nosniff`, Skript
+als unerklärt komprimierter Datensalat, Stylesheet mit 404 —, die jeweils
+richtig benannt werden. Der Durchlauf der Kalibrierung läuft weiter ohne
+JS-Fehler.
+
+**Offen:** die eigentliche Ursache über HTTPS. Der Kasten liefert die
+Angaben dafür.
+
 ## 1.1.0
 
 **Live-Kalibrierung.** Das Radar meldet Ziele, wo niemand ist, und die

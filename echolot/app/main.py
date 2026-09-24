@@ -9,6 +9,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -651,9 +652,19 @@ def api_live() -> dict:
     return {"rooms": list(engine.latest.values())}
 
 
+_ASSET_RE = re.compile(r'((?:href|src)="static/[^"?]+\.(?:css|js))"')
+
+
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index() -> HTMLResponse:
     # Single-page app: Ingress serves this behind a per-session token path
     # prefix, and every asset/API call uses relative URLs so they resolve
     # under it. A second HTML route would nest them one level too deep.
-    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    #
+    # Stylesheet and scripts carry the add-on version, so a browser (or a
+    # proxy in front of Home Assistant) never pairs this page with the
+    # files of another release; the page itself is never cached.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    version = builder.addon_version() or "0"
+    html = _ASSET_RE.sub(lambda m: f'{m.group(1)}?v={version}"', html)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

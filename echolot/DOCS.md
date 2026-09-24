@@ -371,6 +371,18 @@ Entity-IDs und die Hardware.
 | Nur Statusseite | Gerät lebt; `http://<ip>/` sagt, woran es hakt |
 | API antwortet | Netz in Ordnung |
 
+### Wenn die Oberfläche ohne Aussehen lädt
+
+Große schwarze Symbole, keine Räume, nichts lässt sich anklicken: Die Seite
+kam an, ihr Stylesheet oder ihre Skripte nicht. Echolot zeigt dann einen
+Kasten mit den betroffenen Dateien und wie sie ankamen — Status,
+Content-Type, Kompression, Länge. Meist steckt ein Proxy vor Home Assistant
+dahinter (NGINX, Cloudflare, ein Reverse Proxy für HTTPS), der CSS- oder
+JavaScript-Antworten verändert: falscher Content-Type, doppelt oder falsch
+komprimiert, abgeschnitten. Zum Flashen über USB braucht der Browser HTTPS
+**und** die Skripte; ohne sie gibt es keinen Flash-Knopf. Den Kasten
+abfotografieren und mitschicken, wenn du ein Problem meldest.
+
 ### Wenn „Preparing installation“ nicht weitergeht
 
 Hinter der Meldung stecken zwei Schritte: der serielle Kontakt zum Chip und
