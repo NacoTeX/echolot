@@ -51,6 +51,10 @@ def room(**extra):
             {"id": "fan", "name": "Ventilator", "kind": "exclude", "points": [[5, 0], [6, 0], [6, 1], [5, 1]]},
         ],
         "hold_s": 10,
+        # The zone and availability rules, on raw reports: definition 1's
+        # behaviour, which definition 2 keeps with its filters off.
+        # tests/test_tracking.py covers the filters.
+        "calibration": {"confirm_s": 0, "smoothing": "off"},
     }
     data.update(extra)
     return Room.model_validate(data)
@@ -191,3 +195,25 @@ def test_the_latest_results_are_kept_for_the_live_map(rig):
     engine, _, _, frame = rig
     frame("1|R|1|-15,30")
     assert engine.latest["r1"]["count"] == 1
+
+
+
+def test_with_walls_the_cut_out_corner_does_not_count():
+    """A 6 × 4 room with its bottom-left 2 × 1 m missing — the hallway
+    behind the wall is on the plan, but not in the room."""
+    clock, links = Clock(), Links()
+    engine = RoomEngine(links, clock=clock)
+    walls = [[0, 0], [6, 0], [6, 4], [2, 4], [2, 3], [0, 3]]
+    engine.load([room(outline=walls)], [device()])
+    # Sensor at (3, 0) looking down: (-20 dm, 36 dm) -> (1.0, 3.6), 0.6 m
+    # into the cut-out; (-20, 32) -> (1.0, 3.2), against its wall.
+    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
+                                     frame=parse_frame("1|R|1|-20,36;-20,32"), frame_at=clock.now)
+    result = engine.evaluate()[0]
+    assert [t["status"] for t in result["targets"]] == ["outside", "counted"]
+    assert result["count"] == 1
+    # The same report in the plain rectangle counts both.
+    engine.load([room()], [device()])
+    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
+                                     frame=parse_frame("1|R|2|-20,36;-20,32"), frame_at=clock.now)
+    assert engine.evaluate()[0]["count"] == 2

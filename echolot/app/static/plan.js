@@ -6,6 +6,10 @@
 //          sensor; every change goes through commit() so it can be undone
 //   thumb  the small map on an overview tile
 //
+// Live maps can also take a tap on the floor (options.onPick) and carry an
+// extra layer of their owner's drawing (setExtra) — the calibration uses
+// both to mark standpoints and to preview a proposed placement.
+//
 // Room coordinates: metres, origin top-left, x right, y down. A sensor at
 // angle 0 looks down the plan; see app/geometry.py.
 
@@ -86,6 +90,7 @@ const Plan = (() => {
       this.onChange = options.onChange || (() => {});
       this.onSelect = options.onSelect || (() => {});
       this.onHint = options.onHint || (() => {});
+      this.onPick = options.onPick || null;
       this.room = null;
       this.live = null;
       this.tool = "select";
@@ -104,8 +109,20 @@ const Plan = (() => {
       this.svg.setAttribute("aria-label", "Raumkarte");
       this.host.appendChild(this.svg);
       this.gStatic = this.layer("pl-static");
+      this.gExtra = this.layer("pl-extra");
       this.gLive = this.layer("pl-live");
       this.gOverlay = this.layer("pl-overlay");
+
+      if (this.mode === "live" && this.onPick) {
+        this.svg.classList.add("picking");
+        this.svg.addEventListener("click", (e) => {
+          if (!this.room) return;
+          const [x, y] = this.point(e);
+          const r = this.room;
+          if (x < -0.05 || y < -0.05 || x > r.width + 0.05 || y > r.height + 0.05) return;
+          this.onPick([r3(G.clamp(x, 0, r.width)), r3(G.clamp(y, 0, r.height))]);
+        });
+      }
 
       if (this.mode === "edit") {
         this.svg.classList.add("editing");
@@ -145,7 +162,7 @@ const Plan = (() => {
 
     snapshotable() {
       const r = this.room;
-      return { name: r.name, icon: r.icon, width: r.width, height: r.height, sensor: r.sensor,
+      return { name: r.name, icon: r.icon, width: r.width, height: r.height, outline: r.outline || null, sensor: r.sensor,
         furniture: r.furniture, zones: r.zones, hold_s: r.hold_s, edge_margin_m: r.edge_margin_m,
         image: r.image ? { opacity: r.image.opacity } : null };
     }
@@ -186,6 +203,8 @@ const Plan = (() => {
     find(sel) {
       if (!sel) return null;
       if (sel.kind === "sensor") return this.room.sensor;
+      // The walls edit like a zone's corners; the wrapper shares the array.
+      if (sel.kind === "outline") return this.room.outline ? { points: this.room.outline } : null;
       const list = sel.kind === "zone" ? this.room.zones : this.room.furniture;
       return list.find((x) => x.id === sel.id) || null;
     }
@@ -196,16 +215,26 @@ const Plan = (() => {
       this.onSelect(sel);
     }
 
-    setTool(tool) {
+    setTool(tool, { target = "zone" } = {}) {
       this.tool = tool;
+      this.polyTarget = tool === "poly" ? target : "zone";
       this.draft = null;
       this.render();
       const hints = {
         select: "Antippen wählt aus, Ziehen verschiebt. Eckpunkte ziehen, Mittelpunkte ziehen fügt einen Eckpunkt hinzu, Doppelklick auf einen Eckpunkt entfernt ihn.",
         rect: "Rechteck aufziehen, um eine Zone anzulegen.",
-        poly: "Eckpunkte antippen. Auf den ersten Punkt tippen oder Enter schließt die Zone, Esc bricht ab.",
+        poly: this.polyTarget === "outline"
+          ? "Die Wände Ecke für Ecke nachzeichnen, rundherum. Auf die erste Ecke tippen oder Enter schließt, Esc bricht ab."
+          : "Eckpunkte antippen. Auf den ersten Punkt tippen oder Enter schließt die Zone, Esc bricht ab.",
       };
       this.onHint(hints[tool] || "");
+    }
+
+    // The walls as drawn: the outline, or the plan's rectangle.
+    wallPoints() {
+      const r = this.room;
+      return r.outline && r.outline.length >= 3 ? r.outline
+        : [[0, 0], [r.width, 0], [r.width, r.height], [0, r.height]];
     }
 
     setLive(result) {
@@ -231,17 +260,34 @@ const Plan = (() => {
       this.svg.setAttribute("viewBox", `${-pad} ${-pad} ${r.width + 2 * pad} ${r.height + 2 * pad}`);
       this.svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
       const uid = this.uid || (this.uid = Math.random().toString(36).slice(2, 8));
+      const shaped = !!(r.outline && r.outline.length >= 3);
+      const walls = this.wallPoints();
+      const wallPts = walls.map((p) => `${fmt(p[0])},${fmt(p[1])}`).join(" ");
+      const crossed = shaped && G.selfIntersects(walls);
       let html = `<defs>
-        <clipPath id="clip-${uid}"><rect x="0" y="0" width="${r.width}" height="${r.height}"/></clipPath>
+        <clipPath id="clip-${uid}"><polygon points="${wallPts}"/></clipPath>
         <pattern id="hatch-${uid}" width="0.18" height="0.18" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
           <path d="M0 0 V0.18" stroke="var(--danger)" stroke-opacity=".35" stroke-width=".03"/>
+        </pattern>
+        <pattern id="out-${uid}" width="0.14" height="0.14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <path d="M0 0 V0.14" stroke="var(--faint)" stroke-opacity=".45" stroke-width=".02"/>
         </pattern></defs>`;
-      html += `<rect class="pl-floor" x="0" y="0" width="${r.width}" height="${r.height}" data-kind="floor"/>`;
-      html += `<g clip-path="url(#clip-${uid})">`;
+      // Outside the walls but on the plan: still clickable, drawn as
+      // not-room.
+      if (shaped) html += `<rect class="pl-canvas" x="0" y="0" width="${r.width}" height="${r.height}" data-kind="floor"/>`;
+      html += `<polygon class="pl-floor" points="${wallPts}" data-kind="floor"/>`;
       if (r.image && r.image.url) {
         html += `<image href="${escapeHtml(r.image.url)}" x="0" y="0" width="${r.width}" height="${r.height}"
                  preserveAspectRatio="none" opacity="${r.image.opacity}" pointer-events="none"/>`;
       }
+      if (shaped) {
+        html += `<path class="pl-outside" fill-rule="evenodd" pointer-events="none"
+                  d="M0 0H${r.width}V${r.height}H0Z M${walls.map((p) => `${fmt(p[0])} ${fmt(p[1])}`).join(" L")}Z"/>
+                 <path fill="url(#out-${uid})" fill-rule="evenodd" pointer-events="none"
+                  d="M0 0H${r.width}V${r.height}H0Z M${walls.map((p) => `${fmt(p[0])} ${fmt(p[1])}`).join(" L")}Z"/>`;
+      }
+      if (this.mode === "edit") html += `<polygon class="pl-wall-hit" points="${wallPts}" data-kind="outline"/>`;
+      html += `<g clip-path="url(#clip-${uid})">`;
       if (this.mode !== "thumb") {
         let d = "";
         for (let x = 0.5; x < r.width; x += 0.5) d += `M${fmt(x)} 0V${r.height}`;
@@ -252,7 +298,9 @@ const Plan = (() => {
       html += `</g>`;
       for (const item of r.furniture) html += this.furnitureSvg(item);
       r.zones.forEach((zone) => { html += this.zoneSvg(zone, uid); });
-      html += `<rect class="pl-wall" x="0" y="0" width="${r.width}" height="${r.height}" rx="0.03" pointer-events="none"/>`;
+      if (this.mode !== "thumb") html += this.spotsSvg();
+      const wallSel = this.mode === "edit" && this.selection && this.selection.kind === "outline";
+      html += `<polygon class="pl-wall ${crossed ? "invalid" : ""} ${wallSel ? "selected" : ""}" points="${wallPts}" pointer-events="none"/>`;
       if (this.mode !== "thumb") {
         for (let x = 0; x <= r.width + 1e-6; x += 1) html += `<text class="pl-ruler" x="${x}" y="-0.18" text-anchor="middle">${x}</text>`;
         for (let y = 1; y <= r.height + 1e-6; y += 1) html += `<text class="pl-ruler" x="-0.14" y="${y}" text-anchor="end" dominant-baseline="middle">${y}</text>`;
@@ -262,6 +310,40 @@ const Plan = (() => {
       this.gStatic.innerHTML = html;
       this.renderOverlay();
       this.renderLive();
+    }
+
+    // Learned reflectors: stored in sensor coordinates, drawn where the
+    // current placement puts them. Only the sensor they were learned
+    // with has them.
+    activeSpots() {
+      const r = this.room;
+      const cal = r.calibration;
+      if (!cal || !r.sensor.device_id || cal.interference_device_id !== r.sensor.device_id) return [];
+      return cal.interference || [];
+    }
+
+    spotsSvg(spots = this.activeSpots(), placement = this.room.sensor, cls = "") {
+      return spots.map((spot) => {
+        const c = G.toRoom(spot.x, spot.y, placement);
+        return `<g class="pl-spot ${cls}" pointer-events="none">
+            <circle cx="${fmt(c.x)}" cy="${fmt(c.y)}" r="${fmt(spot.r)}"/>
+            <path d="M${fmt(c.x - 0.07)} ${fmt(c.y - 0.07)} L${fmt(c.x + 0.07)} ${fmt(c.y + 0.07)} M${fmt(c.x + 0.07)} ${fmt(c.y - 0.07)} L${fmt(c.x - 0.07)} ${fmt(c.y + 0.07)}"/>
+          </g>`;
+      }).join("");
+    }
+
+    // Anything the owner wants drawn in room metres, under the targets.
+    setExtra(svg) {
+      this.gExtra.innerHTML = svg || "";
+    }
+
+    sensorGhostSvg(placement) {
+      const size = 0.17;
+      return `<g class="pl-sensor ghost" pointer-events="none"
+                transform="translate(${fmt(placement.x)} ${fmt(placement.y)}) rotate(${placement.angle || 0})">
+          <circle class="pl-sensor-body" r="${size}"/>
+          <path class="pl-sensor-nose" d="M${-size * 0.45} ${-size * 0.1} L${size * 0.45} ${-size * 0.1} L0 ${size * 0.62} Z"/>
+        </g>`;
     }
 
     fovPath() {
@@ -365,15 +447,17 @@ const Plan = (() => {
       }
       ghostLayer.innerHTML = ghosts;
 
-      // Keep each dot's element across frames by matching to the nearest
-      // previous position, so a dot glides instead of jumping between
-      // people when the module reorders its list.
+      // Keep each dot's element across frames — by the target's id where
+      // the server follows targets, else by the nearest previous position
+      // — so a dot glides instead of jumping between people when the
+      // module reorders its list.
       const previous = this.targetEls.slice();
       const next = [];
       for (const t of targets) {
-        let best = -1, bestDist = 1.2;
-        previous.forEach((el, i) => {
-          if (!el) return;
+        let best = t.id !== undefined ? previous.findIndex((el) => el && el._id === t.id) : -1;
+        let bestDist = 1.2;
+        if (best < 0) previous.forEach((el, i) => {
+          if (!el || (t.id !== undefined && el._id !== undefined)) return;
           const d = Math.hypot(el._x - t.x, el._y - t.y);
           if (d < bestDist) { bestDist = d; best = i; }
         });
@@ -386,11 +470,15 @@ const Plan = (() => {
           el.style.transform = `translate(${t.x}px, ${t.y}px)`;
           this.gLive.appendChild(el);
         }
-        el._x = t.x; el._y = t.y;
+        el._x = t.x; el._y = t.y; el._id = t.id;
         el.setAttribute("class", `pl-target ${t.status}`);
         el.style.transform = `translate(${t.x}px, ${t.y}px)`;
-        const title = t.status === "outside" ? "außerhalb des Raums — zählt nicht"
-          : t.status === "excluded" ? "in einer Ausschlusszone — zählt nicht" : "erkanntes Ziel";
+        const title = {
+          outside: "außerhalb des Raums — zählt nicht",
+          excluded: "in einer Ausschlusszone — zählt nicht",
+          pending: "noch nicht bestätigt — zählt, wenn es bleibt",
+          interference: "an einer bekannten Störquelle — zählt nicht",
+        }[t.status] || "erkanntes Ziel";
         el.setAttribute("aria-label", title);
         next.push(el);
       }
@@ -407,7 +495,7 @@ const Plan = (() => {
       const sel = this.selection;
       const item = this.find(sel);
       const hr = 0.09;
-      if (sel && sel.kind === "zone" && item) {
+      if (sel && (sel.kind === "zone" || sel.kind === "outline") && item) {
         item.points.forEach((p, i) => {
           const q = item.points[(i + 1) % item.points.length];
           const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
@@ -512,9 +600,13 @@ const Plan = (() => {
         this.drag = null;
         return;
       }
-      const sel = kind === "sensor" ? { kind: "sensor" } : { kind, id: target.dataset.id };
+      const sel = kind === "sensor" || kind === "outline" ? { kind } : { kind, id: target.dataset.id };
       const item = this.find(sel);
       if (!this.selection || this.selection.kind !== sel.kind || this.selection.id !== sel.id) this.select(sel);
+      if (kind === "outline") {
+        this.drag = null;
+        return;
+      }
       if (kind === "zone") {
         this.drag = { type: "move-zone", item, start: raw, origin: item.points.map((q) => q.slice()) };
       } else {
@@ -635,7 +727,8 @@ const Plan = (() => {
         else this.select(null);
       } else if (e.key === "Enter" && this.draft && this.draft.type === "poly" && this.draft.points.length >= 3) {
         this.finishPolygon();
-      } else if ((e.key === "Delete" || e.key === "Backspace") && this.selection && this.selection.kind !== "sensor") {
+      } else if ((e.key === "Delete" || e.key === "Backspace") && this.selection
+                 && this.selection.kind !== "sensor" && this.selection.kind !== "outline") {
         e.preventDefault();
         this.removeSelected();
       } else if (!mod && e.key === "v") this.setToolFromKey("select");
@@ -651,12 +744,54 @@ const Plan = (() => {
     finishPolygon() {
       const pts = this.draft.points;
       this.draft = null;
+      if (this.polyTarget === "outline") {
+        if (G.polygonArea(pts) < 1) {
+          this.renderOverlay();
+          this.onHint("Zu klein — innerhalb der Wände braucht der Raum mindestens 1 m².");
+          return;
+        }
+        if (G.selfIntersects(pts)) {
+          this.renderOverlay();
+          this.onHint("Die Wände kreuzen sich. Noch einmal, Ecke für Ecke rundherum.");
+          return;
+        }
+        this.room.outline = pts.slice(0, 32).map((p) => [r3(p[0]), r3(p[1])]);
+        this.setToolFromKey("select");
+        this.select({ kind: "outline" });
+        this.commit();
+        return;
+      }
       if (G.polygonArea(pts) < 0.04) {
         this.renderOverlay();
         this.onHint("Zu klein — eine Zone braucht mindestens 20 × 20 cm Fläche.");
         return;
       }
       this.addZone(pts.slice(0, 16));
+    }
+
+    // From the rectangle to walls that can be reshaped: its four corners.
+    shapeWalls() {
+      if (!this.room.outline) {
+        this.room.outline = this.wallPoints().map((p) => p.slice());
+        this.commit();
+      }
+      this.setToolFromKey("select");
+      this.select({ kind: "outline" });
+    }
+
+    drawWalls() {
+      this.select(null);
+      this.setTool("poly", { target: "outline" });
+      if (this.onToolChange) this.onToolChange("poly");
+    }
+
+    rectangleWalls() {
+      if (!this.room.outline) return;
+      this.room.outline = null;
+      if (this.selection && this.selection.kind === "outline") this.selection = null;
+      this.render();
+      this.commit();
+      this.onSelect(this.selection);
     }
 
     addZone(points) {
@@ -687,7 +822,7 @@ const Plan = (() => {
 
     removeSelected() {
       const sel = this.selection;
-      if (!sel || sel.kind === "sensor") return;
+      if (!sel || sel.kind === "sensor" || sel.kind === "outline") return;
       if (sel.kind === "zone") this.room.zones = this.room.zones.filter((z) => z.id !== sel.id);
       else this.room.furniture = this.room.furniture.filter((f) => f.id !== sel.id);
       this.select(null);

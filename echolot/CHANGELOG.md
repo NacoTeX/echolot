@@ -1,5 +1,93 @@
 # Changelog
 
+## 1.1.0
+
+**Live-Kalibrierung.** Das Radar meldet Ziele, wo niemand ist, und die
+Karte sitzt nicht genau, wenn der Sensor nach Augenmaß eingezeichnet ist.
+Beides lässt sich jetzt am lebenden Raum beheben: *Raum → Kalibrieren*,
+mit drei Reitern.
+
+- **Störquellen lernen.** Den Raum verlassen, Echolot hört 30 bis 120 s zu
+  (mit Zeit zum Hinausgehen) und merkt sich, wo das Radar im leeren Raum
+  immer wieder etwas meldet — Heizkörper, Spiegel, Metall. Ziele, die dort
+  *entstehen*, zählen danach nicht. Wer aus dem Raum in so eine Stelle
+  hineingeht, zählt weiter; wer herausgeht, nimmt sein Ziel mit. Was sich
+  während der Aufnahme bewegt hat, wird nicht gelernt und gemeldet. Die
+  Stellen stehen in Sensorkoordinaten, gehören zu genau diesem Sensor und
+  lassen sich einzeln entfernen. Nebenbei beantwortet die Aufnahme eine der
+  offenen Hardwarefragen: ob das Modul im leeren Raum leere Berichte
+  schickt oder verstummt.
+- **Sensor ausrichten.** Auf dem Plan einen Punkt antippen, sich dort
+  hinstellen, *Messen*. Aus zwei oder mehr Standpunkten errechnet Echolot
+  Position, Blickrichtung und — bei drei Punkten aus der Passung selbst —
+  ob links und rechts getauscht sind. Vorschlag mit Abweichung vorher und
+  nachher, Vorschau des verschobenen Sensors, erst *Übernehmen* speichert.
+- **Filter.** Bestätigungszeit (Standard 1 s): ein neues Ziel zählt erst,
+  wenn das Radar es so lange meldet — kurz aufblitzende Reflexionen
+  erreichen das nie. Glättung aus/normal/stark.
+
+**Räume in Freiform.** Bisher war jeder Raum ein Rechteck, und alles darin
+zählte — auch die Ecke, die in einer L-förmigen Wohnung zum Flur gehört.
+Jetzt können die Wände dem echten Grundriss folgen: im Editor *Wände*
+(oder *Form → Freiform*), dann Ecken ziehen, über die Punkte zwischen zwei
+Ecken neue einfügen, per Doppelklick entfernen — oder die Wände mit
+*Neu nachzeichnen* Ecke für Ecke über dem Grundrissbild ziehen. Was
+außerhalb liegt, ist schraffiert und **zählt nicht**, bis auf die
+Randtoleranz, die jetzt als Abstand zur nächsten Wand gilt. Breite × Tiefe
+bleiben der Plan, auf dem die Wände liegen. Gekreuzte Wände werden rot
+markiert und nicht gespeichert; ein Raum innerhalb der Wände braucht
+mindestens 1 m², höchstens 32 Ecken. Räume ohne Umriss bleiben Rechtecke
+und zählen genau wie bisher.
+
+**Messdefinition 2.** Echolot folgt den Zielen jetzt von Meldung zu
+Meldung, statt jede Meldung einzeln zu zählen, und „außerhalb“ misst sich
+an den Wänden des Raums. Das ist eine Änderung dessen, was gezählt wird,
+und deshalb versioniert: Jede Auswertung und jede Home-Assistant-Entität
+trägt `definition_version`, Bestätigungszeit, Glättung und die Zahl der
+Störquellen als Attribute. Für einen Raum ohne Umriss, mit
+Bestätigungszeit 0 s, Glättung aus und ohne Störquellen rechnet
+Definition 2 genau wie Definition 1 — geprüft an 400 zufälligen Meldungen
+gegen die Rechnung von 1.0. **Bestehende Räume bekommen beim Update die neuen Standardwerte**
+(1 s, normal): wer genau das alte Verhalten will, stellt beides auf 0 / aus.
+
+Grenzen, bewusst gewählt: Eine Person, die länger als 20 s genau auf einer
+gelernten Störquelle steht, zählt dort nicht mehr — lieber jemanden kurz
+verlieren (die Abwesenheitsverzögerung überbrückt) als einen Heizkörper
+für immer zählen. Neue Ziele erscheinen um die Bestätigungszeit später.
+
+**Karte.** Noch nicht bestätigte Ziele sind gestrichelt, Ziele an einer
+Störquelle orange umrandet, die Störquellen selbst als orange Kreise mit
+Kreuz. Die Punkte behalten ihre Kennung, statt nach Nähe zugeordnet zu
+werden.
+
+**Gespeichert** wird die Kalibrierung auf einem eigenen Weg
+(`PUT /api/rooms/{id}/calibration`), wie das Grundrissbild: ein Editor mit
+einer älteren Kopie kann sie nicht überschreiben, und die Revision steigt,
+sodass er beim Speichern neu lädt. Räume aus 1.0 laden unverändert, mit
+denselben Kennungen.
+
+**Behoben, während der Arbeit gefunden:** Im Browser-Durchlauf zählte ein
+Heizkörper nach dem Lernen weiter, weil sein Ziel schon vorher bestätigt
+war. Ändern sich Sensor, Bestätigungszeit oder Störquellen, beginnt die
+Bestätigung jetzt neu.
+
+**Getestet:** 281 Tests, die Wandgeometrie in Python und im Browser gegen
+dieselben Fälle. Für jede neue Regel wurde sie einmal ausgebaut, um zu
+sehen, dass ihr Test dann scheitert (25 von 25). Im Headless-Browser gegen
+ein simuliertes Radar mit Heizkörper, Blitzen und einem absichtlich falsch
+eingezeichneten Sensor (40 cm, 10°, gespiegelt): Störquelle gelernt und
+übernommen, leerer Raum zählt danach 0; Ausrichtung aus drei Standpunkten
+landet 2,4 cm und 0,5° neben der Wahrheit und erkennt die Spiegelung;
+Filter gespeichert. Wände als L nachgezeichnet, eine Ecke eingefügt,
+gekreuzte Wände markiert und zurückgenommen, gespeichert; eine Person in der
+ausgesparten Ecke zählt nicht, eine im Raum schon. Keine JS-Fehler, kein
+seitliches Scrollen auf 390 px.
+
+**Offen, nur mit Hardware klärbar:** Die Kenngrößen (Zuordnung bis 0,9 m,
+Ziele 1,5 s über Aussetzer halten, Trefferquote 50 %, 20 s Vertrauen in
+Störquellen) sind an simulierten Daten gewählt, nicht an einem echten
+LD2460 im Raum.
+
 ## 1.0.0
 
 **Echolot ist ein Radar-Produkt.** Die WLAN-CSI-Erkennung über ESPectre ist

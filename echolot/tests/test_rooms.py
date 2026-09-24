@@ -141,3 +141,56 @@ def test_deleting_a_room_deletes_its_image():
     assert rooms.delete_room(room.id)
     assert list(rooms.image_dir().iterdir()) == []
     assert rooms.get_room(room.id) is None
+
+
+def test_a_room_saved_by_1_0_loads_with_the_filter_defaults_and_its_ids(store):
+    import json
+
+    stored = {"version": 1, "rooms": [{
+        "id": "r1a2b3c4", "name": "Wohnzimmer", "icon": "living", "width": 5, "height": 4,
+        "sensor": {"device_id": "dev-1", "x": 2.5, "y": 0, "angle": 0, "mirror": False},
+        "zones": [ZONE], "furniture": [], "hold_s": 10, "edge_margin_m": 0.3,
+        "image": None, "revision": 7, "created_at": 1.0, "updated_at": 2.0,
+    }]}
+    (store / "rooms.json").write_text(json.dumps(stored))
+    (room,) = rooms.list_rooms()
+    assert room.id == "r1a2b3c4" and room.zones[0].id == "zsofa" and room.revision == 7
+    assert room.calibration.confirm_s == 1.0 and room.calibration.smoothing == "normal"
+    assert rooms.active_interference(room) == []
+
+
+def test_a_calibration_update_keeps_the_rest_of_the_room(store):
+    base = create(device_id="dev")
+    room = rooms.save_room(base.id, payload(base, zones=[ZONE]))
+    updated = rooms.update_calibration(room.id, sensor={"x": 1.0, "angle": 12.5},
+                                       calibration={"confirm_s": 2.0})
+    assert updated.revision == room.revision + 1
+    assert (updated.sensor.x, updated.sensor.angle, updated.sensor.device_id) == (1.0, 12.5, "dev")
+    assert updated.zones[0].id == "zsofa" and updated.calibration.confirm_s == 2.0
+    with pytest.raises(ValueError):
+        rooms.update_calibration(room.id, sensor={"device_id": "other"})
+    assert rooms.update_calibration("nope", calibration={"confirm_s": 1}) is None
+
+
+NOTCHED = [[0, 0], [6, 0], [6, 4], [2, 4], [2, 3], [0, 3]]
+
+
+def test_walls_can_follow_the_room_and_are_kept(store):
+    base = create(width=6, height=4)
+    saved = rooms.save_room(base.id, payload(base, outline=NOTCHED))
+    assert saved.outline == [tuple(p) for p in NOTCHED]
+    assert rooms.get_room(base.id).outline == saved.outline
+    back = rooms.save_room(base.id, payload(saved, outline=None))
+    assert back.outline is None
+
+
+@pytest.mark.parametrize("outline, message", [
+    ([[0, 0], [6, 0]], "3 bis"),
+    ([[0, 0], [7, 0], [6, 4], [0, 4]], "außerhalb"),
+    ([[0, 0], [2, 2], [2, 0], [0, 2]], "kreuzen"),
+    ([[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]], "1 m²"),
+])
+def test_bad_walls_are_refused(store, outline, message):
+    base = create(width=6, height=4)
+    with pytest.raises(ValueError, match=message):
+        rooms.save_room(base.id, payload(base, outline=outline))

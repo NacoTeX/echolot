@@ -38,12 +38,19 @@ into `/data/platformio`, where it stays.
   `echolot_ld2460` component and serves it to [ESP Web Tools][ewt], so the
   first flash runs over USB from Chrome or Edge. Later updates go over
   Wi-Fi, from any browser — iPad included.
-- **Rooms on a floor plan.** Room size, an optional floor-plan image,
-  furniture, and where the sensor hangs and which way it looks. Targets
-  appear live on the plan, with a short trail.
+- **Rooms on a floor plan.** Room size or free-form walls for niches and
+  L-shaped rooms, an optional floor-plan image, furniture, and where the
+  sensor hangs and which way it looks. Targets appear live on the plan,
+  with a short trail; what lies outside the walls does not count.
 - **Zones like on the mmWave apps.** Draw rectangles or free shapes; drag
   corners, add and remove them. Detection zones count people; exclusion
   zones hide the fan and the curtain. Each zone has its own absence delay.
+- **Live calibration.** Learn where the radar reports targets in the empty
+  room (radiators, mirrors, metal) so targets appearing there stop
+  counting; align the sensor by standing on points marked on the plan,
+  which corrects its position, direction and left/right; and a
+  confirmation time that keeps reflections flashing up for a report or
+  two from counting.
 - **Home Assistant.** Per room an occupancy sensor and a person count, and
   another pair per zone, over MQTT discovery — and from there on to
   HomeKit, Matter, Google or Alexa through Home Assistant's own bridges.
@@ -53,8 +60,9 @@ into `/data/platformio`, where it stays.
 - **Tested with simulated sensors, not yet in a real room.** The firmware
   links on real toolchains and reads real frames in a host build; the room
   map, zones and MQTT export are tested against a simulated node.
-- **The module has no target IDs.** Echolot counts and places targets per
-  report; it does not claim to follow a person across reports.
+- **The module has no target IDs.** Echolot follows targets from report to
+  report by position. That tells a lingering person from a flash of
+  reflection; it does not tell two people apart who cross paths.
 - **Three hardware questions are open** — whether the LD2460 goes silent in
   an empty room, the sign of its X axis, and the layout of two
   acknowledgement frames. Each is a setting or a visible diagnostic rather

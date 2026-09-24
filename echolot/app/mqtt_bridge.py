@@ -25,6 +25,8 @@ from pathlib import Path
 import httpx
 import paho.mqtt.client as mqtt
 
+from app.room_engine import filter_settings
+
 logger = logging.getLogger("echolot.mqtt")
 
 DISCOVERY_PREFIX = "homeassistant"
@@ -123,6 +125,9 @@ class Entity:
     discovery: dict
     state_topic: str
     availability_topic: str
+    #: The rules behind the value (room_engine.filter_settings), retained
+    #: next to it, so a history can be read with the rules that made it.
+    attributes_topic: str = ""
     #: "occupancy" or "count".
     measure: str = "occupancy"
     #: None for the room itself.
@@ -136,7 +141,8 @@ class Entity:
         return f"{DISCOVERY_PREFIX}/{self.component}/{BASE_TOPIC}/{self.key}/config"
 
     def topics(self) -> list[str]:
-        return [self.discovery_topic, self.state_topic, *self.owned]
+        extra = [self.attributes_topic] if self.attributes_topic else []
+        return [self.discovery_topic, self.state_topic, *extra, *self.owned]
 
 
 def room_availability_topic(room_id: str) -> str:
@@ -175,6 +181,8 @@ def room_entities(room) -> list[Entity]:
         count_key = f"room_{key}_count"
         occupancy_state = f"{BASE_TOPIC}/{occupancy_key}/state"
         count_state = f"{BASE_TOPIC}/{count_key}/state"
+        occupancy_attributes = f"{BASE_TOPIC}/{occupancy_key}/attributes"
+        count_attributes = f"{BASE_TOPIC}/{count_key}/attributes"
         out.append(Entity(
             key=occupancy_key,
             component="binary_sensor",
@@ -182,6 +190,7 @@ def room_entities(room) -> list[Entity]:
                 "name": name,
                 "unique_id": f"echolot_{occupancy_key}",
                 "state_topic": occupancy_state,
+                "json_attributes_topic": occupancy_attributes,
                 "device_class": "occupancy",
                 "payload_on": "ON",
                 "payload_off": "OFF",
@@ -191,6 +200,7 @@ def room_entities(room) -> list[Entity]:
             },
             state_topic=occupancy_state,
             availability_topic=availability_topic,
+            attributes_topic=occupancy_attributes,
             measure="occupancy",
             zone_id=zone_id,
             owned=occupancy_extra,
@@ -202,6 +212,7 @@ def room_entities(room) -> list[Entity]:
                 "name": f"{name} Personen" if name != "Anwesenheit" else "Personen",
                 "unique_id": f"echolot_{count_key}",
                 "state_topic": count_state,
+                "json_attributes_topic": count_attributes,
                 "state_class": "measurement",
                 "icon": "mdi:account-multiple",
                 "availability": _availability(room.id),
@@ -210,6 +221,7 @@ def room_entities(room) -> list[Entity]:
             },
             state_topic=count_state,
             availability_topic=availability_topic,
+            attributes_topic=count_attributes,
             measure="count",
             zone_id=zone_id,
         ))
@@ -405,12 +417,14 @@ class RoomPublisher:
             result = by_room.get(room.id)
             available = bool(result and result["available"])
             zone_state = {z["id"]: z for z in (result or {}).get("zones", [])}
+            attributes = json.dumps(filter_settings(room), sort_keys=True)
             for entity in room_entities(room):
                 if not self.bridge.announce(entity):
                     continue
                 if entity.key not in self.announced or self.announced[entity.key] != entity.topics():
                     self.announced[entity.key] = entity.topics()
                     self._remember()
+                self.bridge.publish(entity.attributes_topic, attributes)
                 if not available:
                     continue
                 source = result if entity.zone_id is None else zone_state.get(entity.zone_id)

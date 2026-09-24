@@ -150,3 +150,157 @@ def test_every_icon_the_scripts_ask_for_is_defined():
     from app.rooms import ROOM_ICONS
     used |= set(ROOM_ICONS)
     assert used <= defined, used - defined
+
+
+# --- calibration -------------------------------------------------------------
+
+
+def room_with_sensor(c):
+    device = new_device(c)
+    room = c.post("/api/rooms", json={"name": "Wohnzimmer", "width": 6, "height": 4,
+                                       "device_id": device["id"]}).json()
+    return device, room
+
+
+def test_a_new_room_filters_by_default(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    assert room["calibration"]["confirm_s"] == 1.0
+    assert room["calibration"]["smoothing"] == "normal"
+    assert room["calibration"]["interference"] == []
+
+
+def test_filter_settings_are_saved_and_move_the_revision_on(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    r = c.put(f"/api/rooms/{room['id']}/calibration", json={"filter": {"confirm_s": 2.5, "smoothing": "strong"}})
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    assert saved["calibration"]["confirm_s"] == 2.5 and saved["calibration"]["smoothing"] == "strong"
+    assert saved["revision"] == room["revision"] + 1
+    # An editor still holding the old copy is refused, not allowed to
+    # save the old settings back.
+    assert c.put(f"/api/rooms/{room['id']}", json=room).status_code == 409
+    bad = c.put(f"/api/rooms/{room['id']}/calibration", json={"filter": {"smoothing": "max"}})
+    assert bad.status_code == 422
+
+
+def test_the_editor_cannot_overwrite_a_calibration(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    room = c.put(f"/api/rooms/{room['id']}/calibration", json={"filter": {"confirm_s": 3}}).json()
+    room["calibration"]["confirm_s"] = 0
+    room["name"] = "Stube"
+    saved = c.put(f"/api/rooms/{room['id']}", json=room).json()
+    assert saved["name"] == "Stube" and saved["calibration"]["confirm_s"] == 3
+
+
+def test_an_alignment_is_proposed_then_applied(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    # The sensor is drawn at (3, 0) looking down; someone at (3, 2) was
+    # reported 2 m ahead and 0.5 m off to the side -> turn it.
+    proposal = c.post(f"/api/rooms/{room['id']}/alignment",
+                      json={"points": [{"raw": [0.5, 2.0], "ref": [3.0, 2.0]}]})
+    assert proposal.status_code == 200, proposal.text
+    body = proposal.json()
+    assert body["mode"] == "direction" and body["turn_deg"] != 0
+    assert c.get(f"/api/rooms/{room['id']}").json()["sensor"]["angle"] == 0  # nothing saved yet
+    applied = c.put(f"/api/rooms/{room['id']}/calibration", json={"alignment": {
+        "x": body["x"], "y": body["y"], "angle": body["angle"], "mirror": body["mirror"],
+        "rms_m": body["rms_m"], "points": body["points"]}})
+    assert applied.status_code == 200, applied.text
+    saved = applied.json()
+    assert saved["sensor"]["angle"] == body["angle"]
+    assert saved["sensor"]["device_id"] == room["sensor"]["device_id"]
+    assert saved["calibration"]["alignment_points"] == 1
+
+
+def test_an_alignment_cannot_move_the_sensor_off_the_plan_or_swap_it(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    off = c.put(f"/api/rooms/{room['id']}/calibration",
+                json={"alignment": {"x": 9, "y": 0, "angle": 0, "mirror": False}})
+    assert off.status_code == 422
+    assert c.post(f"/api/rooms/{room['id']}/alignment", json={"points": []}).status_code == 422
+    assert c.post(f"/api/rooms/{room['id']}/alignment", json={"points": [{"raw": [1]}]}).status_code == 422
+
+
+def test_interference_spots_belong_to_the_sensor_they_were_learned_with(client):
+    c, _ = client
+    device, room = room_with_sensor(c)
+    spots = [{"x": 1.0, "y": 1.5, "r": 0.4, "share": 0.6}]
+    wrong = c.put(f"/api/rooms/{room['id']}/calibration",
+                  json={"interference": {"spots": spots, "device_id": "someone-else"}})
+    assert wrong.status_code == 409
+    ok = c.put(f"/api/rooms/{room['id']}/calibration",
+               json={"interference": {"spots": spots, "device_id": device["id"]}})
+    assert ok.status_code == 200, ok.text
+    cal = ok.json()["calibration"]
+    assert cal["interference"][0]["x"] == 1.0 and cal["interference_device_id"] == device["id"]
+    live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
+    assert live["filter"]["interference_spots"] == 1
+    cleared = c.put(f"/api/rooms/{room['id']}/calibration", json={"interference": None}).json()
+    assert cleared["calibration"]["interference"] == []
+    assert c.put(f"/api/rooms/{room['id']}/calibration", json={"interference": "x"}).status_code == 422
+    assert c.put(f"/api/rooms/{room['id']}/calibration", json={}).status_code == 422
+
+
+def test_a_capture_starts_reports_and_can_be_cancelled(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    r = c.post(f"/api/rooms/{room['id']}/capture", json={"kind": "empty", "delay_s": 20, "duration_s": 30})
+    assert r.status_code == 201, r.text
+    assert r.json()["phase"] == "waiting" and r.json()["sensor_fresh"] is False
+    assert c.get(f"/api/rooms/{room['id']}/capture").json()["kind"] == "empty"
+    assert c.delete(f"/api/rooms/{room['id']}/capture").status_code == 204
+    assert c.get(f"/api/rooms/{room['id']}/capture").status_code == 204  # none running
+    assert c.delete(f"/api/rooms/{room['id']}/capture").status_code == 404
+    assert c.get("/api/rooms/nope/capture").status_code == 404
+    assert c.post(f"/api/rooms/{room['id']}/capture", json={"kind": "empty", "duration_s": 1}).status_code == 422
+
+
+def test_a_room_without_a_sensor_cannot_be_calibrated(client):
+    c, _ = client
+    room = c.post("/api/rooms", json={"name": "Flur"}).json()
+    r = c.post(f"/api/rooms/{room['id']}/capture", json={"kind": "empty"})
+    assert r.status_code == 422 and "kein Sensor" in r.json()["detail"]
+
+
+def test_live_names_the_measurement_definition(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
+    assert live["filter"]["definition_version"] == 2
+
+
+def test_taking_single_spots_away_keeps_the_learning_date(client):
+    c, _ = client
+    device, room = room_with_sensor(c)
+    spots = [{"x": 1.0, "y": 1.5, "r": 0.4, "share": 0.6}, {"x": -1.0, "y": 2.0, "r": 0.3, "share": 0.2}]
+    first = c.put(f"/api/rooms/{room['id']}/calibration",
+                  json={"interference": {"spots": spots, "device_id": device["id"]}}).json()
+    learned_at = first["calibration"]["interference_learned_at"]
+    edited = c.put(f"/api/rooms/{room['id']}/calibration",
+                   json={"interference": {"spots": spots[:1], "device_id": device["id"]}}).json()
+    assert len(edited["calibration"]["interference"]) == 1
+    assert edited["calibration"]["interference_learned_at"] == learned_at
+    relearned = c.put(f"/api/rooms/{room['id']}/calibration",
+                      json={"interference": {"spots": [{"x": 0.0, "y": 3.0, "r": 0.3, "share": 0.1}],
+                                             "device_id": device["id"]}}).json()
+    assert relearned["calibration"]["interference_learned_at"] >= learned_at
+    assert relearned["calibration"]["interference"][0]["y"] == 3.0
+
+
+
+def test_walls_are_saved_through_the_editor_route(client):
+    c, _ = client
+    room = c.post("/api/rooms", json={"name": "Flur", "width": 6, "height": 4}).json()
+    room["outline"] = [[0, 0], [6, 0], [6, 4], [2, 4], [2, 3], [0, 3]]
+    saved = c.put(f"/api/rooms/{room['id']}", json=room)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["outline"][3] == [2, 4]
+    crossed = saved.json()
+    crossed["outline"] = [[0, 0], [2, 2], [2, 0], [0, 2]]
+    r = c.put(f"/api/rooms/{room['id']}", json=crossed)
+    assert r.status_code == 422 and "kreuzen" in r.text

@@ -159,7 +159,8 @@
             <div class="plan-stage" id="stage"><div class="plan-overlay" id="overlay" hidden></div></div>
             <div class="plan-legend">
               <span><i class="lg-dot"></i>erkanntes Ziel</span>
-              <span><i class="lg-ring"></i>zählt nicht (außerhalb / ausgeschlossen)</span>
+              <span><i class="lg-pending"></i>noch nicht bestätigt</span>
+              <span><i class="lg-ring"></i>zählt nicht (außerhalb / ausgeschlossen / Störquelle)</span>
               <span><i class="lg-zone"></i>Zone</span>
               <span><i class="lg-fov"></i>geplanter Sichtbereich</span>
               <span>Raster 0,5 m</span>
@@ -182,10 +183,13 @@
       this.el.querySelector("#room-head").innerHTML = `
         <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1></div>
         <div class="head-actions">
+          <a class="btn" href="#/room/${encodeURIComponent(room.id)}/calibrate">${icon("target")}Kalibrieren</a>
           <a class="btn primary" href="#/room/${encodeURIComponent(room.id)}/edit">${icon("edit")}Raum einrichten</a>
         </div>`;
       this.el.querySelector("#room-dims").textContent =
-        `${E.formatNumber(room.width)} × ${E.formatNumber(room.height)} m`;
+        room.outline
+          ? `${E.formatNumber(window.EcholotGeometry.polygonArea(room.outline))} m² · ${E.formatNumber(room.width)} × ${E.formatNumber(room.height)} m`
+          : `${E.formatNumber(room.width)} × ${E.formatNumber(room.height)} m`;
     },
     update() {
       if (!this.plan) return;
@@ -201,7 +205,7 @@
       this.el.querySelector("#room-state").innerHTML = live && live.available && live.occupied && !live.count
         ? `<span class="chip present">hält noch ${E.formatSeconds(live.hold_remaining)}</span>` : "";
       const reason = this.el.querySelector("#room-reason");
-      reason.textContent = live && !live.available ? live.reason_text : live && live.available ? "Erkannte Ziele — das Modul vergibt keine festen Personen-IDs." : "";
+      reason.textContent = live && !live.available ? live.reason_text : live && live.available ? "Gezählt werden bestätigte Ziele. Echolot folgt ihnen von Meldung zu Meldung — wer wer ist, weiß das Radar nicht." : "";
 
       const overlay = this.el.querySelector("#overlay");
       if (live && !live.available && (live.reason === "no_sensor" || live.reason === "offline" || live.reason === "device_missing" || live.reason === "no_frame_entity")) {
@@ -270,6 +274,7 @@
                 <span class="tool-sep"></span>
                 <button class="tool" id="t-furn" title="Möbel hinzufügen">${icon("armchair")}Möbel</button>
                 <button class="tool" id="t-sensor" title="Sensor auswählen">${icon("sensor")}Sensor</button>
+                <button class="tool" id="t-walls" title="Wände formen: Nischen, L-Form">${icon("walls")}Wände</button>
                 <span class="tool-sep"></span>
                 <button class="tool active" id="t-snap" title="Am 5-cm-Raster einrasten">${icon("magnet")}</button>
                 <button class="tool" id="t-undo" title="Rückgängig (⌘Z)" disabled>${icon("undo")}</button>
@@ -314,6 +319,7 @@
       }));
       el.querySelector("#t-furn").addEventListener("click", () => { this.plan.select(null); this.showPalette = true; this.inspect(); });
       el.querySelector("#t-sensor").addEventListener("click", () => this.plan.select({ kind: "sensor" }));
+      el.querySelector("#t-walls").addEventListener("click", () => this.plan.shapeWalls());
       el.querySelector("#t-snap").addEventListener("click", (e) => {
         this.plan.snap = !this.plan.snap;
         e.currentTarget.classList.toggle("active", this.plan.snap);
@@ -332,7 +338,9 @@
       this.el.querySelector("#t-undo").disabled = !this.plan.canUndo();
       this.el.querySelector("#t-redo").disabled = !this.plan.canRedo();
       this.el.querySelector("#ed-save").disabled = !this.plan.isDirty() || this.saving;
-      this.el.querySelector("#ed-dims").textContent = `${E.formatNumber(r.width)} × ${E.formatNumber(r.height)} m`;
+      this.el.querySelector("#ed-dims").textContent = r.outline
+        ? `${E.formatNumber(window.EcholotGeometry.polygonArea(r.outline))} m² · ${E.formatNumber(r.width)} × ${E.formatNumber(r.height)} m`
+        : `${E.formatNumber(r.width)} × ${E.formatNumber(r.height)} m`;
       this.el.querySelector("#ed-title").textContent = r.name;
       if (!this.plan.drag) this.inspect(false, true);
     },
@@ -355,6 +363,7 @@
       if (sel && sel.kind === "zone" && item) this.showPalette = false, host.innerHTML = this.zoneForm(item);
       else if (sel && sel.kind === "furniture" && item) this.showPalette = false, host.innerHTML = this.furnitureForm(item);
       else if (sel && sel.kind === "sensor") this.showPalette = false, host.innerHTML = this.sensorForm(this.plan.room.sensor);
+      else if (sel && sel.kind === "outline" && item) this.showPalette = false, host.innerHTML = this.outlineForm(item.points);
       else host.innerHTML = (this.showPalette ? this.paletteCard() : "") + this.roomForm(this.plan.room);
       this.bindInspector(host, sel, item);
     },
@@ -377,6 +386,12 @@
             ${field("Breite · m", `<input type="number" data-room="width" value="${r.width}" min="1" max="30" step="0.1" inputmode="decimal">`)}
             ${field("Tiefe · m", `<input type="number" data-room="height" value="${r.height}" min="1" max="30" step="0.1" inputmode="decimal">`)}
           </div>
+          <div class="field"><span>Form</span><div class="segmented">
+            <button type="button" data-shape="rect" class="${r.outline ? "" : "active"}">Rechteck</button>
+            <button type="button" data-shape="free" class="${r.outline ? "active" : ""}">Freiform</button></div>
+            <p class="hint">${r.outline
+              ? `Die Wände folgen dem Umriss (${r.outline.length} Ecken). Alles außerhalb zählt nicht. <a href="#" data-walls>Wände bearbeiten</a>`
+              : "Mit Freiform formst du Nischen, L-Formen und Vorsprünge nach; was außerhalb der Wände liegt, zählt dann nicht."}</p></div>
           ${field("Sensor", `<select data-room="device"><option value="">— keiner —</option>${options}</select>`,
             state.devices.length ? "" : 'Noch kein Sensor angelegt. <a href="#/devices/new">Sensor anlegen</a>')}
           ${field(`Abwesenheitsverzögerung · <b data-out="hold">${E.formatSeconds(r.hold_s)}</b>`,
@@ -420,7 +435,29 @@
           <span>Links und rechts tauschen<small>Welche Seite das Modul positiv zählt, steht nicht im Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die Gegenrichtung, hier umschalten.</small></span></label>
         <div class="row2">${field("Reichweite · m", num("range_m", s.range_m, { min: 1, max: 12, step: 0.5 }))}${field("Öffnungswinkel · °", num("fov_deg", s.fov_deg, { min: 30, max: 180, step: 5 }))}</div>
         <p class="hint">Reichweite und Winkel zeichnen nur den gestrichelten Planungsbereich. Wie weit das Modul wirklich sieht, zeigen die Live-Punkte.</p>
+        ${this.plan.room.outline && !window.EcholotGeometry.withinWalls(s.x, s.y, 0, 0, this.plan.room.outline, 0.3)
+          ? `<div class="notice warn" style="margin-top:12px">${icon("alert")}<div class="grow">Der Sensor steht außerhalb der Wände.</div></div>` : ""}
+        <p class="hint">Genauer als von Hand: <a href="#/room/${encodeURIComponent(this.id)}/calibrate">Kalibrieren</a> richtet den Sensor an Standpunkten aus.</p>
         <div class="actions" style="margin-top:14px"><button class="btn" data-done>Fertig</button></div></div>`;
+    },
+
+    outlineForm(points) {
+      const G = window.EcholotGeometry;
+      const r = this.plan.room;
+      const crossed = G.selfIntersects(points);
+      const sensorOut = !G.withinWalls(r.sensor.x, r.sensor.y, r.width, r.height, points, 0.3);
+      return `<div class="card"><h2>Wände</h2>
+        <p class="hint" style="margin-bottom:12px">Ecken ziehen formt Nischen und Vorsprünge nach. Die kleinen Punkte zwischen zwei Ecken fügen eine hinzu, Doppelklick auf eine Ecke entfernt sie. Was außerhalb der Wände liegt — schraffiert —, zählt nicht, bis auf die Randtoleranz von ${Math.round(r.edge_margin_m * 100)} cm.</p>
+        <div class="stat-lines">
+          <div class="stat-line"><span>Fläche</span><span>${E.formatNumber(G.polygonArea(points))} m²</span></div>
+          <div class="stat-line"><span>Ecken</span><span>${points.length}</span></div>
+        </div>
+        ${crossed ? `<div class="notice err" style="margin-top:12px">${icon("alert")}<div class="grow">Die Wände kreuzen sich. Zieh die Ecke zurück, die auf der falschen Seite liegt — so lässt sich der Raum nicht speichern.</div></div>` : ""}
+        ${sensorOut ? `<div class="notice warn" style="margin-top:12px">${icon("alert")}<div class="grow">Der Sensor steht außerhalb der Wände. Er gehört an eine Wand oder in den Raum.</div></div>` : ""}
+        <div class="actions" style="margin-top:14px">
+          <button class="btn" data-done>Fertig</button>
+          <button class="btn" data-redraw>${icon("polygon")}Neu nachzeichnen</button>
+          <button class="btn" data-rect>Zurück zum Rechteck</button></div></div>`;
     },
 
     zoneForm(z) {
@@ -464,6 +501,12 @@
       host.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => plan.select({ kind: "zone", id: b.dataset.pick })));
       host.querySelectorAll("[data-done]").forEach((b) => b.addEventListener("click", () => plan.select(null)));
       host.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => plan.removeSelected()));
+      host.querySelectorAll("[data-redraw]").forEach((b) => b.addEventListener("click", () => plan.drawWalls()));
+      host.querySelectorAll("[data-rect]").forEach((b) => b.addEventListener("click", () => plan.rectangleWalls()));
+      host.querySelectorAll("[data-walls]").forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); plan.shapeWalls(); }));
+      host.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => {
+        if (b.dataset.shape === "free") plan.shapeWalls(); else { plan.rectangleWalls(); this.inspect(); }
+      }));
 
       // Item fields.
       host.querySelectorAll("[data-f]").forEach((input) => {
@@ -544,9 +587,10 @@
       const limit = value;
       const axis = key === "width" ? 0 : 1;
       const tooFar = r.zones.some((z) => z.points.some((p) => p[axis] > limit + 1e-6))
+        || (r.outline || []).some((p) => p[axis] > limit + 1e-6)
         || r.furniture.some((f) => (axis === 0 ? f.x + f.w / 2 : f.y + f.h / 2) > limit);
       if (tooFar) {
-        toast("Erst Zonen und Möbel verschieben — sonst lägen sie außerhalb des Raums.", "err");
+        toast("Erst Wände, Zonen und Möbel verschieben — sonst lägen sie außerhalb des Plans.", "err");
         this.inspect();
         return;
       }
@@ -592,6 +636,11 @@
 
     async save() {
       if (this.saving) return;
+      if (this.plan.room.outline && window.EcholotGeometry.selfIntersects(this.plan.room.outline)) {
+        toast("Die Wände kreuzen sich — erst die Ecke zurückziehen, dann speichern.", "err");
+        this.plan.select({ kind: "outline" });
+        return;
+      }
       this.saving = true;
       this.changed();
       const room = this.plan.room;
@@ -638,6 +687,7 @@
             ${field("Breite · m", `<input name="width" type="number" min="1" max="30" step="0.1" value="5" inputmode="decimal">`)}
             ${field("Tiefe · m", `<input name="height" type="number" min="1" max="30" step="0.1" value="4" inputmode="decimal">`)}
           </div>
+          <p class="hint" style="margin:-4px 0 12px">Außenmaße des Raums. Nischen, L-Formen und Vorsprünge formst du danach im Editor unter „Wände“ nach.</p>
           ${field("Sensor", `<select name="device_id"><option value="">— später zuordnen —</option>
             ${free.map((d) => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.config.friendly_name || d.config.name)}</option>`).join("")}</select>`,
             free.length ? "Ein Radar sieht einen Raum; jeder Sensor steht in höchstens einem." : 'Kein freier Sensor. <a href="#/devices/new">Sensor anlegen</a>')}
