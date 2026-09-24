@@ -64,6 +64,66 @@ def in_room(x: float, y: float, width: float, height: float, margin: float = 0.0
     return -margin <= x <= width + margin and -margin <= y <= height + margin
 
 
+def _segment_distance(x: float, y: float, ax: float, ay: float, bx: float, by: float) -> float:
+    dx, dy = bx - ax, by - ay
+    length = dx * dx + dy * dy
+    t = 0.0 if length == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / length))
+    return math.hypot(x - (ax + t * dx), y - (ay + t * dy))
+
+
+def distance_to_polygon(x: float, y: float, points: list) -> float:
+    """Distance to the nearest edge — the nearest wall, for an outline."""
+    n = len(points)
+    return min(
+        _segment_distance(x, y, *points[i], *points[(i + 1) % n]) for i in range(n)
+    ) if n >= 2 else math.inf
+
+
+def within_walls(x: float, y: float, width: float, height: float, outline, margin: float = 0.0) -> bool:
+    """Inside the room, or no farther than `margin` outside its walls.
+
+    Without an outline the room is its width × depth rectangle, and the
+    margin is added to each side, as it always was. With one, the walls
+    are the outline: a niche is inside, the corner cut out of an L-shaped
+    room is not.
+    """
+    if not outline:
+        return in_room(x, y, width, height, margin)
+    return point_in_polygon(x, y, outline) or distance_to_polygon(x, y, outline) <= margin
+
+
+def _cross(ax, ay, bx, by, cx, cy) -> float:
+    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+
+def _segments_cross(p1, p2, p3, p4) -> bool:
+    """Proper crossing or touching of two segments."""
+    d1 = _cross(*p3, *p4, *p1)
+    d2 = _cross(*p3, *p4, *p2)
+    d3 = _cross(*p1, *p2, *p3)
+    d4 = _cross(*p1, *p2, *p4)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 and d2 and d3 and d4:
+        return True
+
+    def on(a, b, c, d):
+        return d == 0 and min(a[0], b[0]) <= c[0] <= max(a[0], b[0]) and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+
+    return on(p3, p4, p1, d1) or on(p3, p4, p2, d2) or on(p1, p2, p3, d3) or on(p1, p2, p4, d4)
+
+
+def self_intersects(points: list) -> bool:
+    """Whether any two edges that are not neighbours cross or touch."""
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        for j in range(i + 1, n):
+            if j == i or (j + 1) % n == i or j == (i + 1) % n:
+                continue
+            if _segments_cross(a, b, points[j], points[(j + 1) % n]):
+                return True
+    return False
+
+
 def polygon_area(points: list) -> float:
     """Unsigned area (shoelace). Used to refuse degenerate zones."""
     total = 0.0

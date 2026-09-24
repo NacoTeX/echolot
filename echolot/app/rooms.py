@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.geometry import polygon_area
+from app.geometry import polygon_area, self_intersects
 
 DATA_DIR = Path(os.environ.get("ECHOLOT_DATA_DIR", "/data"))
 
@@ -38,6 +38,7 @@ MAX_ROOMS = 30
 MAX_FURNITURE = 60
 MAX_ZONES = 16
 MAX_ZONE_POINTS = 16
+MAX_OUTLINE_POINTS = 32
 #: Floor plans are photos and exports; a few megabytes is plenty and
 #: keeps a backup of /data from growing without bound.
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
@@ -158,6 +159,10 @@ class Room(BaseModel):
     icon: Literal[ROOM_ICONS] = "generic"  # type: ignore[valid-type]
     width: float = Field(ge=1, le=30)
     height: float = Field(ge=1, le=30)
+    #: The walls, as a polygon on the width × depth plan — for niches,
+    #: L-shaped rooms, a chimney breast. None is the plain rectangle.
+    #: Targets outside the walls (beyond the edge margin) count nowhere.
+    outline: list[tuple[float, float]] | None = None
     sensor: SensorPlacement
     furniture: list[Furniture] = Field(default_factory=list)
     zones: list[Zone] = Field(default_factory=list)
@@ -184,6 +189,16 @@ class Room(BaseModel):
                 raise ValueError(f"{what} liegt außerhalb des Raums ({x:.2f} m, {y:.2f} m)")
 
         on_plan(self.sensor.x, self.sensor.y, "Der Sensor")
+        if self.outline is not None:
+            if not 3 <= len(self.outline) <= MAX_OUTLINE_POINTS:
+                raise ValueError(f"Die Wände brauchen 3 bis {MAX_OUTLINE_POINTS} Ecken")
+            for x, y in self.outline:
+                on_plan(x, y, "Eine Wandecke")
+            # Crossing first: a figure-eight's area cancels out to nothing.
+            if self_intersects(self.outline):
+                raise ValueError("Die Wände kreuzen sich — eine Ecke liegt auf der falschen Seite")
+            if polygon_area(self.outline) < 1.0:
+                raise ValueError("Der Raum innerhalb der Wände ist kleiner als 1 m²")
         if len(self.furniture) > MAX_FURNITURE:
             raise ValueError(f"Höchstens {MAX_FURNITURE} Möbel je Raum")
         if len(self.zones) > MAX_ZONES:

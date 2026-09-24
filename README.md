@@ -38,9 +38,10 @@ into `/data/platformio`, where it stays.
   `echolot_ld2460` component and serves it to [ESP Web Tools][ewt], so the
   first flash runs over USB from Chrome or Edge. Later updates go over
   Wi-Fi, from any browser — iPad included.
-- **Rooms on a floor plan.** Room size, an optional floor-plan image,
-  furniture, and where the sensor hangs and which way it looks. Targets
-  appear live on the plan, with a short trail.
+- **Rooms on a floor plan.** Room size or free-form walls for niches and
+  L-shaped rooms, an optional floor-plan image, furniture, and where the
+  sensor hangs and which way it looks. Targets appear live on the plan,
+  with a short trail; what lies outside the walls does not count.
 - **Zones like on the mmWave apps.** Draw rectangles or free shapes; drag
   corners, add and remove them. Detection zones count people; exclusion
   zones hide the fan and the curtain. Each zone has its own absence delay.

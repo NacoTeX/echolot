@@ -290,3 +290,17 @@ def test_taking_single_spots_away_keeps_the_learning_date(client):
                                              "device_id": device["id"]}}).json()
     assert relearned["calibration"]["interference_learned_at"] >= learned_at
     assert relearned["calibration"]["interference"][0]["y"] == 3.0
+
+
+
+def test_walls_are_saved_through_the_editor_route(client):
+    c, _ = client
+    room = c.post("/api/rooms", json={"name": "Flur", "width": 6, "height": 4}).json()
+    room["outline"] = [[0, 0], [6, 0], [6, 4], [2, 4], [2, 3], [0, 3]]
+    saved = c.put(f"/api/rooms/{room['id']}", json=room)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["outline"][3] == [2, 4]
+    crossed = saved.json()
+    crossed["outline"] = [[0, 0], [2, 2], [2, 0], [0, 2]]
+    r = c.put(f"/api/rooms/{room['id']}", json=crossed)
+    assert r.status_code == 422 and "kreuzen" in r.text

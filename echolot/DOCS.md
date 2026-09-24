@@ -88,10 +88,20 @@ Raum zu zeigen.
 | Rechteck | R | Zone aufziehen. |
 | Freiform | P | Ecken antippen; auf die erste tippen oder Enter schließt, Esc bricht ab. |
 | Möbel | | Sofa, Bett, Tisch, Schrank, Tür, Fenster … als Orientierung. Gezählt wird nur in Zonen. |
+| Wände | | Der Umriss des Raums, für Nischen, L-Formen, Vorsprünge. Ecken ziehen, über die Punkte dazwischen neue einfügen, Doppelklick entfernt eine. *Neu nachzeichnen* zieht die Wände Ecke für Ecke, etwa über dem Grundrissbild. |
 | Einrasten | | 5-cm-Raster, Drehungen in 15°-Schritten (Sensor 5°). |
 | Rückgängig / Wiederholen | ⌘Z / ⇧⌘Z | |
 
-Nichts ausgewählt zeigt die Raumeinstellungen: Name, Art, Maße, Sensor,
+**Wände.** Ein neuer Raum ist ein Rechteck aus Breite × Tiefe. Folgt der
+Raum nicht einem Rechteck — eine L-förmige Wohnküche, ein Erker, eine
+Nische für den Schrank —, schalte in den Raumeinstellungen *Form* auf
+*Freiform* oder tippe *Wände*. Breite × Tiefe bleiben dann der Plan, auf
+dem die Wände liegen; was außerhalb der Wände liegt, ist schraffiert und
+zählt nicht. Die Fläche innerhalb steht über der Karte. Kreuzen sich zwei
+Wände, werden sie rot und der Raum lässt sich so nicht speichern; *Zurück
+zum Rechteck* verwirft den Umriss (rückgängig machbar).
+
+Nichts ausgewählt zeigt die Raumeinstellungen: Name, Art, Maße, Form, Sensor,
 Abwesenheitsverzögerung, Randtoleranz, Grundrissbild (PNG, JPEG oder WebP
 bis 4 MB, auf Breite × Tiefe gestreckt) und Deckkraft. Die Live-Punkte sind
 auch im Editor zu sehen — zum Einzeichnen einer Zone einfach in die Ecke
@@ -185,7 +195,9 @@ Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
 
 1. Umrechnung vom Sensor in den Raum — Position, Blickrichtung, Spiegelung.
 2. Liegt es weiter als die **Randtoleranz** (Standard 30 cm) außerhalb der
-   Wände, zählt es nicht. Radar sieht durch Trockenbau.
+   Wände, zählt es nicht. Radar sieht durch Trockenbau. Die Wände sind der
+   Umriss des Raums, wenn er einen hat, sonst sein Rechteck; bei einem
+   Umriss gilt die Toleranz als Abstand zur nächsten Wand.
 3. Liegt es in einer **Ausschlusszone**, zählt es nicht — für Ventilator,
    Vorhang im Luftzug, Aquarium.
 4. Ist es noch nicht bestätigt, zählt es nicht.
@@ -198,8 +210,9 @@ Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
 Definition 1 (Echolot 1.0) waren die Schritte 1–3 und 5 auf jede Meldung
-einzeln. Mit Bestätigungszeit 0 s, Glättung aus und ohne Störquellen
-rechnet Definition 2 genauso.
+einzeln, mit dem Rechteck als Wänden. Für einen Raum ohne Umriss, mit
+Bestätigungszeit 0 s, Glättung aus und ohne Störquellen rechnet
+Definition 2 genauso.
 
 Raum und Zone gelten als belegt, solange ein Ziel darin ist, und danach
 noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar).

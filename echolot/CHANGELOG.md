@@ -26,14 +26,28 @@ mit drei Reitern.
   wenn das Radar es so lange meldet — kurz aufblitzende Reflexionen
   erreichen das nie. Glättung aus/normal/stark.
 
+**Räume in Freiform.** Bisher war jeder Raum ein Rechteck, und alles darin
+zählte — auch die Ecke, die in einer L-förmigen Wohnung zum Flur gehört.
+Jetzt können die Wände dem echten Grundriss folgen: im Editor *Wände*
+(oder *Form → Freiform*), dann Ecken ziehen, über die Punkte zwischen zwei
+Ecken neue einfügen, per Doppelklick entfernen — oder die Wände mit
+*Neu nachzeichnen* Ecke für Ecke über dem Grundrissbild ziehen. Was
+außerhalb liegt, ist schraffiert und **zählt nicht**, bis auf die
+Randtoleranz, die jetzt als Abstand zur nächsten Wand gilt. Breite × Tiefe
+bleiben der Plan, auf dem die Wände liegen. Gekreuzte Wände werden rot
+markiert und nicht gespeichert; ein Raum innerhalb der Wände braucht
+mindestens 1 m², höchstens 32 Ecken. Räume ohne Umriss bleiben Rechtecke
+und zählen genau wie bisher.
+
 **Messdefinition 2.** Echolot folgt den Zielen jetzt von Meldung zu
-Meldung, statt jede Meldung einzeln zu zählen. Das ist eine Änderung
-dessen, was gezählt wird, und deshalb versioniert: Jede Auswertung und
-jede Home-Assistant-Entität trägt `definition_version`, Bestätigungszeit,
-Glättung und die Zahl der Störquellen als Attribute. Mit Bestätigungszeit
-0 s, Glättung aus und ohne Störquellen rechnet Definition 2 genau wie
-Definition 1 — geprüft an 400 zufälligen Meldungen gegen die Rechnung von
-1.0. **Bestehende Räume bekommen beim Update die neuen Standardwerte**
+Meldung, statt jede Meldung einzeln zu zählen, und „außerhalb“ misst sich
+an den Wänden des Raums. Das ist eine Änderung dessen, was gezählt wird,
+und deshalb versioniert: Jede Auswertung und jede Home-Assistant-Entität
+trägt `definition_version`, Bestätigungszeit, Glättung und die Zahl der
+Störquellen als Attribute. Für einen Raum ohne Umriss, mit
+Bestätigungszeit 0 s, Glättung aus und ohne Störquellen rechnet
+Definition 2 genau wie Definition 1 — geprüft an 400 zufälligen Meldungen
+gegen die Rechnung von 1.0. **Bestehende Räume bekommen beim Update die neuen Standardwerte**
 (1 s, normal): wer genau das alte Verhalten will, stellt beides auf 0 / aus.
 
 Grenzen, bewusst gewählt: Eine Person, die länger als 20 s genau auf einer
@@ -57,13 +71,17 @@ Heizkörper nach dem Lernen weiter, weil sein Ziel schon vorher bestätigt
 war. Ändern sich Sensor, Bestätigungszeit oder Störquellen, beginnt die
 Bestätigung jetzt neu.
 
-**Getestet:** 270 Tests. Für jede neue Regel wurde sie einmal ausgebaut, um
-zu sehen, dass ihr Test dann scheitert (19 von 19). Im Headless-Browser gegen
+**Getestet:** 281 Tests, die Wandgeometrie in Python und im Browser gegen
+dieselben Fälle. Für jede neue Regel wurde sie einmal ausgebaut, um zu
+sehen, dass ihr Test dann scheitert (25 von 25). Im Headless-Browser gegen
 ein simuliertes Radar mit Heizkörper, Blitzen und einem absichtlich falsch
 eingezeichneten Sensor (40 cm, 10°, gespiegelt): Störquelle gelernt und
 übernommen, leerer Raum zählt danach 0; Ausrichtung aus drei Standpunkten
 landet 2,4 cm und 0,5° neben der Wahrheit und erkennt die Spiegelung;
-Filter gespeichert; keine JS-Fehler, kein seitliches Scrollen auf 390 px.
+Filter gespeichert. Wände als L nachgezeichnet, eine Ecke eingefügt,
+gekreuzte Wände markiert und zurückgenommen, gespeichert; eine Person in der
+ausgesparten Ecke zählt nicht, eine im Raum schon. Keine JS-Fehler, kein
+seitliches Scrollen auf 390 px.
 
 **Offen, nur mit Hardware klärbar:** Die Kenngrößen (Zuordnung bis 0,9 m,
 Ziele 1,5 s über Aussetzer halten, Trefferquote 50 %, 20 s Vertrauen in

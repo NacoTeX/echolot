@@ -170,3 +170,27 @@ def test_a_calibration_update_keeps_the_rest_of_the_room(store):
     with pytest.raises(ValueError):
         rooms.update_calibration(room.id, sensor={"device_id": "other"})
     assert rooms.update_calibration("nope", calibration={"confirm_s": 1}) is None
+
+
+NOTCHED = [[0, 0], [6, 0], [6, 4], [2, 4], [2, 3], [0, 3]]
+
+
+def test_walls_can_follow_the_room_and_are_kept(store):
+    base = create(width=6, height=4)
+    saved = rooms.save_room(base.id, payload(base, outline=NOTCHED))
+    assert saved.outline == [tuple(p) for p in NOTCHED]
+    assert rooms.get_room(base.id).outline == saved.outline
+    back = rooms.save_room(base.id, payload(saved, outline=None))
+    assert back.outline is None
+
+
+@pytest.mark.parametrize("outline, message", [
+    ([[0, 0], [6, 0]], "3 bis"),
+    ([[0, 0], [7, 0], [6, 4], [0, 4]], "außerhalb"),
+    ([[0, 0], [2, 2], [2, 0], [0, 2]], "kreuzen"),
+    ([[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]], "1 m²"),
+])
+def test_bad_walls_are_refused(store, outline, message):
+    base = create(width=6, height=4)
+    with pytest.raises(ValueError, match=message):
+        rooms.save_room(base.id, payload(base, outline=outline))

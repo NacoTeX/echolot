@@ -12,8 +12,8 @@ flash runs over USB from Chrome or Edge; every update after that goes over
 Wi-Fi from any browser. A button fills in the wiring of the Waveshare
 ESP32-C5-Zero.
 
-**Rooms.** Size, floor-plan image, furniture, and the sensor's position and
-direction. The plan shows every target live, marks those behind a wall or in
+**Rooms.** Size or free-form walls, floor-plan image, furniture, and the
+sensor's position and direction. The plan shows every target live, marks those behind a wall or in
 an exclusion zone as not counting, and says why when a room has no current
 measurement instead of calling it empty.
 

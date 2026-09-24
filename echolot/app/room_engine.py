@@ -14,14 +14,17 @@ The rules, in order — measurement definition 2 (`MEASUREMENT_VERSION`):
   2. Each target of the latest report is turned into room coordinates
      (geometry.to_room).
   3. Outside the walls by more than the room's edge margin: shown on the
-     map, counted nowhere. Radar sees through drywall.
+     map, counted nowhere. Radar sees through drywall. The walls are the
+     room's outline when it has one (niches, L-shapes), else its
+     width × depth rectangle.
   4. Inside an exclusion zone: shown, counted nowhere.
   5. Not confirmed yet: shown, counted nowhere.
   6. Otherwise it counts for the room and for every detection zone that
      contains it. Zones may overlap; a target in two counts in both.
 
-Definition 1 (Echolot 1.0) was rules 2–4 and 6 on the raw report. With
-a confirmation time of 0 s, smoothing off and no interference spots,
+Definition 1 (Echolot 1.0) was rules 2–4 and 6 on the raw report, with
+the rectangle as the walls. For a room without an outline, with a
+confirmation time of 0 s, smoothing off and no interference spots,
 definition 2 gives the same answers.
 
 A room or zone is occupied while it has a target, and for its hold time
@@ -245,7 +248,7 @@ class RoomEngine:
         for track in self._tracker(room, points, frame, now).visible():
             x, y = geometry.to_room(track.x, track.y, placement)
             zone_ids: list[str] = []
-            if not geometry.in_room(x, y, room.width, room.height, room.edge_margin_m):
+            if not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):
                 status = "outside"
             elif any(geometry.point_in_polygon(x, y, z.points) for z in exclude):
                 status = "excluded"

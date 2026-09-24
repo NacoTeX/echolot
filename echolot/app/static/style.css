@@ -264,6 +264,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pl-floor { fill: var(--plan-floor); }
 .pl-grid-line { stroke: var(--plan-grid); stroke-width: .01; }
 .pl-wall { fill: none; stroke: var(--plan-wall); stroke-width: .06; stroke-linejoin: round; }
+.pl-wall.selected { stroke: var(--accent); }
+.pl-wall.invalid { stroke: var(--danger); stroke-dasharray: .12 .08; }
+.pl-wall-hit { fill: none; stroke: transparent; stroke-width: .2; pointer-events: stroke; cursor: pointer; }
+.pl-canvas { fill: var(--surface-2); }
+.pl-outside { fill: var(--surface-2); fill-opacity: .72; }
 .pl-ruler { font-size: .16px; fill: var(--faint); font-variant-numeric: tabular-nums; }
 .pl-fov { fill: var(--accent); fill-opacity: .06; stroke: var(--accent); stroke-opacity: .45;
   stroke-width: .018; stroke-dasharray: .08 .07; }
