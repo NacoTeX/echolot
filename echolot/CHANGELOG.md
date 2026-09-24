@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.2
+
+**Behoben: Über HTTPS lud die Oberfläche das Stylesheet und die Skripte von
+0.x.** Der Diagnosekasten aus 1.1.1 hat es gezeigt: `style.css?v=1.1.1` kam
+mit Status 200 an, war aber das Stylesheet aus der Zeit vor 1.0 („design
+system. Frosted-glass surfaces…“), `app.js` ebenso. Die Datei im Add-on war
+die richtige. Dazwischen hat ein Cache geantwortet, der die Anfrage-Parameter
+ignoriert und nur über HTTPS da ist — ein Service Worker, nach allem, was
+passt der von Home Assistant. Service Worker gibt es nur in sicheren
+Kontexten, deshalb lief es über HTTP und nicht über Tailscale-HTTPS.
+
+Stylesheet, Skripte, Bilder und der Flash-Baustein kommen jetzt aus einem
+Pfad, der die Version enthält: `assets/1.1.2/style.css` statt
+`static/style.css`. Eine neue Version ist damit ein neuer Pfad, den kein
+Cache kennt, ob er Parameter beachtet oder nicht. `static/` bleibt für
+alles, was noch danach fragt, erreichbar.
+
+**Getestet:** 282 Tests. Nachgestellt im Browser mit einem Service Worker,
+der Pfade mit `/static/` aus einem Cache der 0.x-Dateien beantwortet und die
+Parameter ignoriert: 1.1.1 zeigt darunter genau das gemeldete Bild (kein
+Stil, App startet nicht, Diagnosekasten), 1.1.2 lädt vollständig. Der
+Flash-Baustein (`esp-web-install-button`) wird geladen; der
+Kalibrier-Durchlauf läuft ohne JS-Fehler. Der neue Test scheitert, sobald
+wieder eine Datei aus `static/` geladen wird.
+
+**Grenze:** Dass es genau Home Assistants Service Worker ist, ist aus den
+Angaben geschlossen, nicht in deiner Instanz nachgesehen. Der Fix hängt
+davon nicht ab: Er umgeht jeden Cache, der alte Dateien unter dem alten Pfad
+hält.
+
 ## 1.1.1
 
 **Wenn die Oberfläche ohne Aussehen lädt.** Über HTTPS kam bei einem

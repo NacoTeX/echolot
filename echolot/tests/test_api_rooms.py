@@ -131,30 +131,37 @@ def test_a_csi_device_is_converted_through_the_route(client):
 
 
 def test_the_page_loads_only_scripts_that_exist(client):
+    from app.main import ASSET_PREFIX
+
     c, _ = client
     html = c.get("/").text
-    for src in re.findall(r'(?:src|href)="static/([^"?]+)', html):
+    files = re.findall(r'(?:src|href)="' + re.escape(ASSET_PREFIX) + r'/([^"?]+)', html)
+    assert "style.css" in files and "app.js" in files
+    for src in files:
         assert (STATIC / src).exists(), src
+        assert c.get(f"/{ASSET_PREFIX}/{src}").status_code == 200, src
     for gone in ("calibration.js", "dashboard.js", "zones.js", "dashboard_live.js"):
         assert gone not in html
 
 
-def test_stylesheet_and_scripts_carry_the_version_and_the_page_is_not_cached(client):
-    """A browser or a proxy in front of Home Assistant must not pair this
-    page with the files of another release."""
+def test_every_file_comes_from_a_path_that_names_the_version(client):
+    """Home Assistant's service worker answered `static/style.css?v=1.1.1`
+    with the stylesheet of 0.x: it ignores the query for some paths. The
+    version therefore sits in the path, and no file loads from
+    `static/` any more."""
     from app import builder
 
     c, _ = client
     r = c.get("/")
     assert r.headers["cache-control"] == "no-cache"
     version = builder.addon_version()
-    assets = re.findall(r'(?:src|href)="(static/[^"]+\.(?:css|js)[^"]*)"', r.text)
-    assert "static/style.css?v=" + version in assets
-    assert "static/app.js?v=" + version in assets
-    assert all(a.endswith("?v=" + version) for a in assets), assets
-    # Every one of them reports a failed load to the diagnosis.
-    assert r.text.count('onerror="echolotAssetFailed(this)"') == len(assets)
-    served = c.get("/static/style.css?v=" + version)
+    refs = re.findall(r'(?:src|href)="([^"#:]+\.(?:css|js|svg))"', r.text)
+    assert refs and all(ref.startswith(f"assets/{version}/") for ref in refs), refs
+    assert '="static/' not in r.text
+    # Every stylesheet and script reports a failed load to the diagnosis.
+    code = [ref for ref in refs if ref.endswith((".css", ".js"))]
+    assert r.text.count('onerror="echolotAssetFailed(this)"') == len(code)
+    served = c.get(f"/assets/{version}/style.css")
     assert served.status_code == 200 and served.headers["content-type"].startswith("text/css")
     assert "--echolot-css: 1" in served.text
 

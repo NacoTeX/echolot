@@ -376,10 +376,14 @@ Entity-IDs und die Hardware.
 Große schwarze Symbole, keine Räume, nichts lässt sich anklicken: Die Seite
 kam an, ihr Stylesheet oder ihre Skripte nicht. Echolot zeigt dann einen
 Kasten mit den betroffenen Dateien und wie sie ankamen — Status,
-Content-Type, Kompression, Länge. Meist steckt ein Proxy vor Home Assistant
-dahinter (NGINX, Cloudflare, ein Reverse Proxy für HTTPS), der CSS- oder
-JavaScript-Antworten verändert: falscher Content-Type, doppelt oder falsch
-komprimiert, abgeschnitten. Zum Flashen über USB braucht der Browser HTTPS
+Content-Type, Kompression, Länge. Steht dort Status 200 und beginnt die Datei
+mit Text, der nicht zur installierten Version passt, hat ein Cache
+geantwortet — bis 1.1.1 konnte das über HTTPS der Service Worker von Home
+Assistant sein; seit 1.1.2 kommen die Dateien aus einem Pfad mit der
+Version darin (`assets/<version>/`) und sind davor sicher. Andere Ursachen
+sind Proxys vor Home Assistant (NGINX, Cloudflare, ein Reverse Proxy für
+HTTPS), die CSS- oder JavaScript-Antworten verändern: falscher
+Content-Type, doppelt oder falsch komprimiert, abgeschnitten. Zum Flashen über USB braucht der Browser HTTPS
 **und** die Skripte; ohne sie gibt es keinen Flash-Knopf. Den Kasten
 abfotografieren und mitschicken, wenn du ein Problem meldest.
 
