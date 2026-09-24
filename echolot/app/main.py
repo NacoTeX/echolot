@@ -103,6 +103,14 @@ async def _run_mqtt_export() -> None:
 
 
 app = FastAPI(title="Echolot", lifespan=lifespan)
+#: Where the page loads its stylesheet, scripts and images from. The
+#: version is part of the path, not a query: Home Assistant's service
+#: worker (active only over HTTPS) answers some paths from its own cache
+#: with the query ignored, and handed out the 0.x stylesheet for
+#: `static/style.css?v=1.1.1`. A new path per release cannot be answered
+#: from any cache. `/static` stays mounted for anything that still asks.
+ASSET_PREFIX = f"assets/{builder.addon_version() or '0'}"
+app.mount(f"/{ASSET_PREFIX}", StaticFiles(directory=STATIC_DIR), name="assets")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Builds run for minutes in a background task; asyncio only keeps a weak
@@ -652,7 +660,7 @@ def api_live() -> dict:
     return {"rooms": list(engine.latest.values())}
 
 
-_ASSET_RE = re.compile(r'((?:href|src)="static/[^"?]+\.(?:css|js))"')
+_ASSET_RE = re.compile(r'((?:href|src)=")static/')
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -661,10 +669,10 @@ def index() -> HTMLResponse:
     # prefix, and every asset/API call uses relative URLs so they resolve
     # under it. A second HTML route would nest them one level too deep.
     #
-    # Stylesheet and scripts carry the add-on version, so a browser (or a
-    # proxy in front of Home Assistant) never pairs this page with the
-    # files of another release; the page itself is never cached.
+    # Every file the page loads comes from the versioned asset path (see
+    # ASSET_PREFIX), so nothing between here and the browser can pair
+    # this page with the files of another release; the page itself is
+    # never cached.
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    version = builder.addon_version() or "0"
-    html = _ASSET_RE.sub(lambda m: f'{m.group(1)}?v={version}"', html)
+    html = _ASSET_RE.sub(lambda m: f"{m.group(1)}{ASSET_PREFIX}/", html)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

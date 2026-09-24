@@ -19,7 +19,7 @@
         if (styled && scripted) return;
         var urls = failed.slice();
         var css = document.querySelector('link[rel="stylesheet"]').getAttribute("href");
-        var app = document.querySelector('script[src*="static/app.js"]').getAttribute("src");
+        var app = document.querySelector('script[src$="/app.js"]').getAttribute("src");
         if (!styled && urls.indexOf(css) < 0) urls.push(css);
         if (!scripted && urls.indexOf(app) < 0) urls.push(app);
         var box = document.createElement("div");
