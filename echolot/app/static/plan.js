@@ -6,6 +6,10 @@
 //          sensor; every change goes through commit() so it can be undone
 //   thumb  the small map on an overview tile
 //
+// Live maps can also take a tap on the floor (options.onPick) and carry an
+// extra layer of their owner's drawing (setExtra) — the calibration uses
+// both to mark standpoints and to preview a proposed placement.
+//
 // Room coordinates: metres, origin top-left, x right, y down. A sensor at
 // angle 0 looks down the plan; see app/geometry.py.
 
@@ -86,6 +90,7 @@ const Plan = (() => {
       this.onChange = options.onChange || (() => {});
       this.onSelect = options.onSelect || (() => {});
       this.onHint = options.onHint || (() => {});
+      this.onPick = options.onPick || null;
       this.room = null;
       this.live = null;
       this.tool = "select";
@@ -104,8 +109,20 @@ const Plan = (() => {
       this.svg.setAttribute("aria-label", "Raumkarte");
       this.host.appendChild(this.svg);
       this.gStatic = this.layer("pl-static");
+      this.gExtra = this.layer("pl-extra");
       this.gLive = this.layer("pl-live");
       this.gOverlay = this.layer("pl-overlay");
+
+      if (this.mode === "live" && this.onPick) {
+        this.svg.classList.add("picking");
+        this.svg.addEventListener("click", (e) => {
+          if (!this.room) return;
+          const [x, y] = this.point(e);
+          const r = this.room;
+          if (x < -0.05 || y < -0.05 || x > r.width + 0.05 || y > r.height + 0.05) return;
+          this.onPick([r3(G.clamp(x, 0, r.width)), r3(G.clamp(y, 0, r.height))]);
+        });
+      }
 
       if (this.mode === "edit") {
         this.svg.classList.add("editing");
@@ -252,6 +269,7 @@ const Plan = (() => {
       html += `</g>`;
       for (const item of r.furniture) html += this.furnitureSvg(item);
       r.zones.forEach((zone) => { html += this.zoneSvg(zone, uid); });
+      if (this.mode !== "thumb") html += this.spotsSvg();
       html += `<rect class="pl-wall" x="0" y="0" width="${r.width}" height="${r.height}" rx="0.03" pointer-events="none"/>`;
       if (this.mode !== "thumb") {
         for (let x = 0; x <= r.width + 1e-6; x += 1) html += `<text class="pl-ruler" x="${x}" y="-0.18" text-anchor="middle">${x}</text>`;
@@ -262,6 +280,40 @@ const Plan = (() => {
       this.gStatic.innerHTML = html;
       this.renderOverlay();
       this.renderLive();
+    }
+
+    // Learned reflectors: stored in sensor coordinates, drawn where the
+    // current placement puts them. Only the sensor they were learned
+    // with has them.
+    activeSpots() {
+      const r = this.room;
+      const cal = r.calibration;
+      if (!cal || !r.sensor.device_id || cal.interference_device_id !== r.sensor.device_id) return [];
+      return cal.interference || [];
+    }
+
+    spotsSvg(spots = this.activeSpots(), placement = this.room.sensor, cls = "") {
+      return spots.map((spot) => {
+        const c = G.toRoom(spot.x, spot.y, placement);
+        return `<g class="pl-spot ${cls}" pointer-events="none">
+            <circle cx="${fmt(c.x)}" cy="${fmt(c.y)}" r="${fmt(spot.r)}"/>
+            <path d="M${fmt(c.x - 0.07)} ${fmt(c.y - 0.07)} L${fmt(c.x + 0.07)} ${fmt(c.y + 0.07)} M${fmt(c.x + 0.07)} ${fmt(c.y - 0.07)} L${fmt(c.x - 0.07)} ${fmt(c.y + 0.07)}"/>
+          </g>`;
+      }).join("");
+    }
+
+    // Anything the owner wants drawn in room metres, under the targets.
+    setExtra(svg) {
+      this.gExtra.innerHTML = svg || "";
+    }
+
+    sensorGhostSvg(placement) {
+      const size = 0.17;
+      return `<g class="pl-sensor ghost" pointer-events="none"
+                transform="translate(${fmt(placement.x)} ${fmt(placement.y)}) rotate(${placement.angle || 0})">
+          <circle class="pl-sensor-body" r="${size}"/>
+          <path class="pl-sensor-nose" d="M${-size * 0.45} ${-size * 0.1} L${size * 0.45} ${-size * 0.1} L0 ${size * 0.62} Z"/>
+        </g>`;
     }
 
     fovPath() {
@@ -365,15 +417,17 @@ const Plan = (() => {
       }
       ghostLayer.innerHTML = ghosts;
 
-      // Keep each dot's element across frames by matching to the nearest
-      // previous position, so a dot glides instead of jumping between
-      // people when the module reorders its list.
+      // Keep each dot's element across frames — by the target's id where
+      // the server follows targets, else by the nearest previous position
+      // — so a dot glides instead of jumping between people when the
+      // module reorders its list.
       const previous = this.targetEls.slice();
       const next = [];
       for (const t of targets) {
-        let best = -1, bestDist = 1.2;
-        previous.forEach((el, i) => {
-          if (!el) return;
+        let best = t.id !== undefined ? previous.findIndex((el) => el && el._id === t.id) : -1;
+        let bestDist = 1.2;
+        if (best < 0) previous.forEach((el, i) => {
+          if (!el || (t.id !== undefined && el._id !== undefined)) return;
           const d = Math.hypot(el._x - t.x, el._y - t.y);
           if (d < bestDist) { bestDist = d; best = i; }
         });
@@ -386,11 +440,15 @@ const Plan = (() => {
           el.style.transform = `translate(${t.x}px, ${t.y}px)`;
           this.gLive.appendChild(el);
         }
-        el._x = t.x; el._y = t.y;
+        el._x = t.x; el._y = t.y; el._id = t.id;
         el.setAttribute("class", `pl-target ${t.status}`);
         el.style.transform = `translate(${t.x}px, ${t.y}px)`;
-        const title = t.status === "outside" ? "außerhalb des Raums — zählt nicht"
-          : t.status === "excluded" ? "in einer Ausschlusszone — zählt nicht" : "erkanntes Ziel";
+        const title = {
+          outside: "außerhalb des Raums — zählt nicht",
+          excluded: "in einer Ausschlusszone — zählt nicht",
+          pending: "noch nicht bestätigt — zählt, wenn es bleibt",
+          interference: "an einer bekannten Störquelle — zählt nicht",
+        }[t.status] || "erkanntes Ziel";
         el.setAttribute("aria-label", title);
         next.push(el);
       }

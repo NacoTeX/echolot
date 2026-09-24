@@ -141,3 +141,32 @@ def test_deleting_a_room_deletes_its_image():
     assert rooms.delete_room(room.id)
     assert list(rooms.image_dir().iterdir()) == []
     assert rooms.get_room(room.id) is None
+
+
+def test_a_room_saved_by_1_0_loads_with_the_filter_defaults_and_its_ids(store):
+    import json
+
+    stored = {"version": 1, "rooms": [{
+        "id": "r1a2b3c4", "name": "Wohnzimmer", "icon": "living", "width": 5, "height": 4,
+        "sensor": {"device_id": "dev-1", "x": 2.5, "y": 0, "angle": 0, "mirror": False},
+        "zones": [ZONE], "furniture": [], "hold_s": 10, "edge_margin_m": 0.3,
+        "image": None, "revision": 7, "created_at": 1.0, "updated_at": 2.0,
+    }]}
+    (store / "rooms.json").write_text(json.dumps(stored))
+    (room,) = rooms.list_rooms()
+    assert room.id == "r1a2b3c4" and room.zones[0].id == "zsofa" and room.revision == 7
+    assert room.calibration.confirm_s == 1.0 and room.calibration.smoothing == "normal"
+    assert rooms.active_interference(room) == []
+
+
+def test_a_calibration_update_keeps_the_rest_of_the_room(store):
+    base = create(device_id="dev")
+    room = rooms.save_room(base.id, payload(base, zones=[ZONE]))
+    updated = rooms.update_calibration(room.id, sensor={"x": 1.0, "angle": 12.5},
+                                       calibration={"confirm_s": 2.0})
+    assert updated.revision == room.revision + 1
+    assert (updated.sensor.x, updated.sensor.angle, updated.sensor.device_id) == (1.0, 12.5, "dev")
+    assert updated.zones[0].id == "zsofa" and updated.calibration.confirm_s == 2.0
+    with pytest.raises(ValueError):
+        rooms.update_calibration(room.id, sensor={"device_id": "other"})
+    assert rooms.update_calibration("nope", calibration={"confirm_s": 1}) is None

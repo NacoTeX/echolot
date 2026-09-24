@@ -7,8 +7,10 @@ zones, and publishes rooms and zones to Home Assistant over MQTT.
 
 import asyncio
 import logging
+import math
 import os
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,8 +19,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from app import builder, devices, mqtt_bridge, reachability, rooms
+from app import alignment, builder, devices, mqtt_bridge, reachability, rooms
 from app.board_registry import BOARDS
+from app.calibration import Captures
 from app.radar_link import links
 from app.room_engine import RoomEngine
 
@@ -29,6 +32,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 engine = RoomEngine(links)
 links.add_listener(engine.wake)
+captures = Captures(links)
+links.add_listener(captures.on_frame)
 
 
 def mqtt_wanted() -> bool:
@@ -459,6 +464,7 @@ async def api_save_room(room_id: str, payload: dict) -> dict:
 async def api_delete_room(room_id: str) -> None:
     if not rooms.delete_room(room_id):
         raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    captures.forget_room(room_id)
     await refresh()
 
 
@@ -499,6 +505,141 @@ def api_room_image(room_id: str) -> Response:
         media_type=room.image.get("content_type"),
         headers={"Cache-Control": "private, max-age=31536000"},
     )
+
+
+# --- calibration -----------------------------------------------------------
+
+
+# The recording routes are async on purpose: they then run on the event
+# loop, where the radar link hands frames to the recording, rather than in
+# a worker thread next to it.
+
+
+@app.post("/api/rooms/{room_id}/capture", status_code=201)
+async def api_start_capture(room_id: str, payload: dict) -> dict:
+    """Start listening: `kind` "empty" (learn reflections) or "point"."""
+    room = _room_or_404(room_id)
+    if room.sensor.device_id and devices.get_device(room.sensor.device_id) is None:
+        raise HTTPException(status_code=422, detail="Der zugeordnete Sensor existiert nicht mehr")
+    try:
+        capture = captures.start(
+            room, str(payload.get("kind")),
+            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"),
+        )
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    return captures.view(capture)
+
+
+@app.get("/api/rooms/{room_id}/capture", response_model=None)
+async def api_get_capture(room_id: str) -> dict | Response:
+    """The running or finished recording; 204 when there is none."""
+    _room_or_404(room_id)
+    capture = captures.get(room_id)
+    if capture is None:
+        return Response(status_code=204)
+    return captures.view(capture)
+
+
+@app.delete("/api/rooms/{room_id}/capture", status_code=204)
+async def api_cancel_capture(room_id: str) -> None:
+    if not captures.cancel(room_id):
+        raise HTTPException(status_code=404, detail="Für diesen Raum läuft keine Aufnahme")
+
+
+def _pairs(payload: dict) -> list:
+    points = payload.get("points")
+    if not isinstance(points, list) or not 1 <= len(points) <= 12:
+        raise ValueError("1 bis 12 Standpunkte")
+    pairs = []
+    for point in points:
+        try:
+            raw = [float(v) for v in point["raw"]]
+            ref = [float(v) for v in point["ref"]]
+        except (KeyError, TypeError, ValueError) as err:
+            raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]") from err
+        if len(raw) != 2 or len(ref) != 2 or not all(map(math.isfinite, raw + ref)):
+            raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]")
+        pairs.append((tuple(raw), tuple(ref)))
+    return pairs
+
+
+@app.post("/api/rooms/{room_id}/alignment")
+def api_solve_alignment(room_id: str, payload: dict) -> dict:
+    """What the standpoints say about the sensor's placement. Saves nothing."""
+    room = _room_or_404(room_id)
+    try:
+        pairs = _pairs(payload)
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    return alignment.solve(pairs, room.sensor.model_dump(), room.width, room.height)
+
+
+@app.put("/api/rooms/{room_id}/calibration")
+async def api_apply_calibration(room_id: str, payload: dict) -> dict:
+    """Keep a calibration result.
+
+    Any of: `filter` {confirm_s, smoothing}; `alignment` {x, y, angle,
+    mirror, rms_m, points}; `interference` {spots, device_id}, or null to
+    forget the learned spots.
+    """
+    room = _room_or_404(room_id)
+    sensor: dict = {}
+    calibration: dict = {}
+    for key in ("filter", "alignment", "interference"):
+        if key in payload and payload[key] is not None and not isinstance(payload[key], dict):
+            raise HTTPException(status_code=422, detail=f"„{key}“ muss ein Objekt sein")
+    if "filter" in payload:
+        wanted = payload["filter"] or {}
+        calibration.update({k: wanted[k] for k in ("confirm_s", "smoothing") if k in wanted})
+    if "alignment" in payload:
+        found = payload["alignment"] or {}
+        try:
+            sensor = {k: found[k] for k in ("x", "y", "angle", "mirror")}
+        except KeyError as err:
+            raise HTTPException(status_code=422, detail="Die Ausrichtung braucht x, y, angle und mirror") from err
+        calibration.update({
+            "aligned_at": time.time(),
+            "alignment_rms_m": found.get("rms_m"),
+            "alignment_points": found.get("points"),
+        })
+    if "interference" in payload:
+        learned = payload["interference"]
+        if learned is None:
+            calibration.update({"interference": [], "interference_device_id": None, "interference_learned_at": None})
+        else:
+            if learned.get("device_id") != room.sensor.device_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Die Störquellen wurden mit einem anderen Sensor aufgenommen als dem, der jetzt im Raum steht",
+                )
+            spots = learned.get("spots") or []
+            stored = room.calibration
+            # Taking single spots away is an edit of what was learned, not
+            # a new learning run: it keeps the date.
+            edit = (
+                stored.interference_device_id == room.sensor.device_id
+                and isinstance(spots, list)
+                and all(isinstance(s, dict) for s in spots)
+                and all(s in [o.model_dump() for o in stored.interference] for s in spots)
+            )
+            calibration.update({
+                "interference": spots,
+                "interference_device_id": room.sensor.device_id,
+                "interference_learned_at": stored.interference_learned_at if edit else time.time(),
+            })
+    if not sensor and not calibration:
+        raise HTTPException(status_code=422, detail="Nichts zu übernehmen")
+    try:
+        updated = rooms.update_calibration(room_id, sensor=sensor or None, calibration=calibration or None)
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    await refresh()
+    return _room_view(updated)
 
 
 # --- live ------------------------------------------------------------------

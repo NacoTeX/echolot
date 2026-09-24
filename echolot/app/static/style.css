@@ -251,6 +251,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .lg-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--target); }
 .lg-ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--faint); }
 .lg-fov { width: 18px; border-top: 2px dashed var(--faint); }
+.lg-pending { width: 10px; height: 10px; border-radius: 50%; border: 2px dashed var(--target); }
+.lg-spot { width: 12px; height: 12px; border-radius: 50%; border: 2px dashed var(--present);
+  background: color-mix(in srgb, var(--present) 12%, transparent); }
 .lg-zone { width: 14px; height: 10px; border-radius: 3px; background: color-mix(in srgb, var(--z0) 25%, transparent);
   border: 1.5px solid var(--z0); }
 
@@ -286,6 +289,25 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pl-target .pulse { fill: none; stroke: var(--target); stroke-width: .02; opacity: 0;
   animation: pulse 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes pulse { 0% { opacity: .5; transform: scale(.6); } 100% { opacity: 0; transform: scale(2.1); } }
+.pl-target.pending .dot { fill: var(--surface); stroke: var(--target); stroke-width: .035; stroke-dasharray: .05 .035; }
+.pl-target.interference .dot { fill: var(--surface); stroke: var(--present); stroke-width: .03; }
+.pl-target.pending .halo, .pl-target.pending .pulse,
+.pl-target.interference .halo, .pl-target.interference .pulse { display: none; }
+.pl-spot circle { fill: var(--present); fill-opacity: .08; stroke: var(--present); stroke-opacity: .7;
+  stroke-width: .025; stroke-dasharray: .07 .05; }
+.pl-spot path { stroke: var(--present); stroke-opacity: .7; stroke-width: .025; stroke-linecap: round; }
+.pl-spot.proposal circle { fill-opacity: .18; stroke-opacity: 1; stroke-width: .035; }
+.pl-sensor.ghost { opacity: .9; }
+.pl-sensor.ghost .pl-sensor-body { fill: var(--accent-soft); stroke-dasharray: .05 .04; }
+.picking { cursor: crosshair; }
+.cal-sample { fill: var(--muted); opacity: .45; }
+.cal-error { stroke: var(--danger); stroke-width: .025; stroke-dasharray: .05 .04; }
+.cal-seen { fill: var(--danger); opacity: .8; }
+.cal-seen.after { fill: var(--accent); }
+.cal-mark circle { fill: var(--surface); stroke: var(--text); stroke-width: .03; }
+.cal-mark text { font-size: .15px; font-weight: 700; fill: var(--text); }
+.cal-mark.pending circle { stroke: var(--accent); stroke-width: .04; stroke-dasharray: .06 .04; }
+.cal-mark.pending text { fill: var(--accent); }
 .pl-ghost { fill: var(--target); }
 .pl-stale { opacity: .35; }
 .editing .pl-furn, .editing .pl-zone, .editing .pl-sensor { cursor: move; }
@@ -415,3 +437,27 @@ h3 .icon { color: var(--muted); margin-right: 4px; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .spacer { flex: 1; }
+
+/* ---------- calibration ---------- */
+
+.cal-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+.cal-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0;
+  padding-left: 6px; padding-right: 6px; font-size: 13.5px; white-space: nowrap; overflow: hidden; }
+.cal-tabs .icon { width: 14px; height: 14px; flex: none; }
+@media (max-width: 380px) { .cal-tabs .icon { display: none; } }
+.side .card > .actions, .side .card > .notice, .side .card > .zone-list, .side .card > .row2 { margin-top: 12px; }
+.cal-count, .cal-result { display: flex; align-items: center; gap: 16px; margin: 6px 0 14px; }
+.cal-count .big-number, .cal-result .big-number { min-width: 64px; text-align: center; }
+.cal-progress { margin: 6px 0 12px; }
+.cal-progress .bar { height: 10px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.cal-progress .bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit;
+  transition: width .35s linear; }
+.cal-progress .meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px;
+  font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.warn-text { color: var(--warn); }
+.swatch.spot { background: transparent; border: 2px dashed var(--present); }
+.spot-num { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  border: 2px solid var(--text); font-size: 13px; font-weight: 700; }
+.cal-proposal { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cal-proposal p { margin: 0 0 4px; }
+.cal-proposal .notice, .cal-proposal .actions { margin-top: 12px; }

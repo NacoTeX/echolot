@@ -62,11 +62,14 @@ Zahl je Raum; auf dem Handy wird sie zur Leiste unten.
 
 **Raum.** Die Karte in Metern, Raster 0,5 m. Darauf:
 
-- **Punkte** — erkannte Ziele, jede Meldung, mit einer kurzen Spur der
-  letzten Meldungen. Das Modul vergibt keine Personen-IDs; die Spur ist
-  deshalb eine Folge von Positionen, keine Verfolgung einer Person.
-- **Hohle Punkte** — Ziele, die nicht zählen: hinter der Wand oder in einer
-  Ausschlusszone.
+- **Punkte** — gezählte Ziele, mit einer kurzen Spur der letzten Meldungen.
+  Das Modul vergibt keine Personen-IDs; Echolot folgt jedem Ziel von
+  Meldung zu Meldung selbst (siehe „Wie gezählt wird“).
+- **Gestrichelte Punkte** — neue Ziele, noch nicht bestätigt. Sie zählen,
+  sobald das Radar sie die Bestätigungszeit lang gemeldet hat.
+- **Hohle Punkte** — Ziele, die nicht zählen: hinter der Wand, in einer
+  Ausschlusszone oder (orange umrandet) an einer gelernten Störquelle.
+- **Orange Kreise mit Kreuz** — gelernte Störquellen.
 - **Zonen** — leuchten auf, sobald jemand darin ist, mit der Zahl in der
   Ecke. Rechts stehen sie mit Zustand und Abwesenheits-Countdown.
 - **Sensor und Sichtbereich** — der gestrichelte Fächer ist eine
@@ -103,17 +106,100 @@ nicht so verkleinern, dass Zonen oder Möbel außerhalb lägen.
 Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die
 Gegenrichtung, beim Sensor „Links und rechts tauschen“ einschalten.
 
+## Kalibrieren
+
+*Raum → Kalibrieren*, drei Reiter. Alles geschieht am lebenden Raum; nichts
+wird gespeichert, bevor du *Übernehmen* tippst.
+
+**Störquellen lernen.** Das Radar meldet an manchen Stellen Ziele, wo
+niemand ist: Heizkörper, Spiegel, Metallgestelle, ein Ventilator. Wähle,
+wie lange du zum Hinausgehen brauchst und wie lange Echolot zuhören soll,
+tippe *Aufnahme starten* und verlass den Raum. Währenddessen erscheint
+jede Meldung als grauer Punkt auf der Karte. Danach zeigt Echolot die
+Stellen, an denen das Radar immer wieder etwas gemeldet hat (in mindestens
+3 % der Meldungen), mit Anteil und Radius. *Übernehmen* ersetzt die
+bisherigen. Was sich während der Aufnahme bewegt hat — jemand kam doch
+herein —, wird nicht gelernt, und der Hinweis sagt es.
+
+Was eine Störquelle bewirkt: Ein Ziel, das dort *entsteht*, wird nie
+bestätigt. Wer aus dem Raum hineingeht, zählt weiter; wer herausgeht,
+nimmt sein Ziel mit, statt es beim Heizkörper zurückzulassen. Bleibt ein
+bestätigtes Ziel länger als **20 s** auf einer Störquelle, zählt es nicht
+mehr. Liegt eine Stelle dort, wo jemand länger sitzt — ein Sofa mit
+Metallgestell —, nimm sie einzeln heraus.
+
+Die Stellen stehen in Koordinaten des Sensors, nicht des Raums. Sie
+bleiben also richtig, wenn der Sensor auf dem Plan verschoben oder gedreht
+wird, gelten aber nur für genau diesen Sensor. Hängt er physisch woanders,
+noch einmal lernen.
+
+Die Aufnahme sagt nebenbei, ob das Modul im leeren Raum **leere Berichte**
+schickt oder **verstummt**. Verstummt es, schlägt sie vor, beim Sensor
+„Stille = leerer Raum“ einzuschalten.
+
+**Sensor ausrichten.** Tippe auf dem Plan eine Stelle an, die du im Raum
+genau wiederfindest — eine Tischecke, den Türrahmen —, stell dich dorthin
+und tippe *Messen*. Nach 3 s hört Echolot 5 s zu und nimmt den Median der
+gemeldeten Positionen; leicht hin und her wiegen hilft, ganz Stillstehende
+verliert das Modul manchmal. Auf der Karte erscheint rot, wo das Radar dich
+mit der jetzigen Platzierung sieht, gestrichelt verbunden mit dem Punkt.
+
+- **Ein Standpunkt** korrigiert nur die Blickrichtung. Passt der Abstand
+  zum Sensor nicht, sagt Echolot es.
+- **Zwei oder mehr** korrigieren Position und Richtung zusammen
+  (Ausgleichsrechnung, die alle Punkte zugleich am besten trifft).
+- **Links und rechts** entscheidet bei drei Punkten, die nicht auf einer
+  Linie liegen, die Passung selbst. Bei zwei Punkten passen beide
+  Varianten gleich gut; dann gewinnt die, die den Sensor näher an seinem
+  eingezeichneten Platz lässt, und ist auch das nicht eindeutig, bleibt die
+  Einstellung und der Vorschlag sagt es.
+
+Der Vorschlag nennt, was sich ändert (verschieben, drehen, tauschen) und
+die Abweichung vorher und nachher, und zeigt den Sensor an seinem neuen
+Platz. Eine Lösung mehr als 50 cm außerhalb des Raums wird nicht
+übernommen — dann passen Raummaße oder Punkte nicht —, knapp hinter der
+Wand wird der Sensor auf die Wand gesetzt. Gut sind zwei bis drei Punkte,
+weit auseinander, nicht hintereinander vom Sensor aus, mit nur einer
+Person im Raum.
+
+**Filter.**
+
+- **Bestätigungszeit** (0–5 s, Standard 1 s): Ein neues Ziel zählt erst,
+  wenn das Radar es so lange meldet, und zwar in mindestens der Hälfte der
+  Meldungen. 0 s zählt jede Meldung sofort.
+- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel die
+  Hälfte (normal) oder ein Viertel (stark) des Wegs zur neuen Position.
+  Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden
+  Person etwas später.
+
 ## Wie gezählt wird
 
-Für jedes Ziel einer aktuellen Meldung, in dieser Reihenfolge:
+Messdefinition 2 (seit 1.1). Jede neue Meldung des Sensors geht zuerst
+durch die **Zielverfolgung**: Jede gemeldete Position wird dem nächsten
+bekannten Ziel zugeordnet (bis 0,9 m), sonst entsteht ein neues. Ein Ziel,
+das eine Meldung lang fehlt, bleibt 1,5 s gemerkt, zählt in der Zeit aber
+nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
+**Bestätigungszeit** lang gemeldet hat, außerhalb gelernter Störquellen.
+
+Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
 
 1. Umrechnung vom Sensor in den Raum — Position, Blickrichtung, Spiegelung.
 2. Liegt es weiter als die **Randtoleranz** (Standard 30 cm) außerhalb der
    Wände, zählt es nicht. Radar sieht durch Trockenbau.
 3. Liegt es in einer **Ausschlusszone**, zählt es nicht — für Ventilator,
    Vorhang im Luftzug, Aquarium.
-4. Sonst zählt es für den Raum und für jede **Erkennungszone**, in der es
+4. Ist es noch nicht bestätigt, zählt es nicht.
+5. Sonst zählt es für den Raum und für jede **Erkennungszone**, in der es
    liegt. Zonen dürfen sich überlappen.
+
+Die Ziele stehen in Koordinaten des Sensors. Verschieben oder Drehen auf
+dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
+Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
+jeder Ausfall.
+
+Definition 1 (Echolot 1.0) waren die Schritte 1–3 und 5 auf jede Meldung
+einzeln. Mit Bestätigungszeit 0 s, Glättung aus und ohne Störquellen
+rechnet Definition 2 genauso.
 
 Raum und Zone gelten als belegt, solange ein Ziel darin ist, und danach
 noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar).
@@ -146,7 +232,10 @@ vorgeschlagenem Bereich) mit
 - `sensor` *Personen*
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
-Ausschlusszonen werden keine Entitäten. Alle hängen an zwei
+Ausschlusszonen werden keine Entitäten. Jede Entität trägt als Attribute
+die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 2),
+`confirm_s`, `smoothing` und `interference_spots`. So lässt sich ein
+Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
 Verfügbarkeiten: dem Add-on und dem Raum. Gelöschte Zonen und Räume
 verschwinden aus Home Assistant; die Löschung steht in einer Warteschlange
 auf der Platte, bis der Broker sie bestätigt hat, und übersteht auch einen
@@ -208,6 +297,10 @@ Annahmen:
   Planungswerte (6 m, 120°), keine gemessenen.
 - Raumkarte, Zonen und MQTT-Export sind mit simulierten Sensoren getestet,
   **noch nicht mit einem echten Modul im Raum**.
+- Die Kenngrößen der Zielverfolgung — Zuordnung bis 0,9 m, 1,5 s Gedächtnis,
+  50 % Trefferquote, 20 s Vertrauen in Störquellen, Störquellen ab 3 % der
+  Meldungen — sind an simulierten Meldungen gewählt. Wie gut sie zu einem
+  echten LD2460 passen, zeigt erst der Raum.
 
 ## Geräte aus früheren Versionen
 

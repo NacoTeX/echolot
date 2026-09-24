@@ -21,6 +21,10 @@ measurement instead of calling it empty.
 Detection zones count people and keep an absence delay; exclusion zones hide
 fans and curtains.
 
+**Calibration.** On the live room: learn reflectors in the empty room,
+align the sensor from standpoints marked on the plan, and set how long a new
+target has to be reported before it counts.
+
 **Home Assistant.** One device per room with *Anwesenheit* (occupancy) and
 *Personen* (count), and another pair per detection zone, over MQTT
 discovery.

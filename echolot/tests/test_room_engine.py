@@ -51,6 +51,10 @@ def room(**extra):
             {"id": "fan", "name": "Ventilator", "kind": "exclude", "points": [[5, 0], [6, 0], [6, 1], [5, 1]]},
         ],
         "hold_s": 10,
+        # The zone and availability rules, on raw reports: definition 1's
+        # behaviour, which definition 2 keeps with its filters off.
+        # tests/test_tracking.py covers the filters.
+        "calibration": {"confirm_s": 0, "smoothing": "off"},
     }
     data.update(extra)
     return Room.model_validate(data)

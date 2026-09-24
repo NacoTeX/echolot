@@ -159,7 +159,8 @@
             <div class="plan-stage" id="stage"><div class="plan-overlay" id="overlay" hidden></div></div>
             <div class="plan-legend">
               <span><i class="lg-dot"></i>erkanntes Ziel</span>
-              <span><i class="lg-ring"></i>zählt nicht (außerhalb / ausgeschlossen)</span>
+              <span><i class="lg-pending"></i>noch nicht bestätigt</span>
+              <span><i class="lg-ring"></i>zählt nicht (außerhalb / ausgeschlossen / Störquelle)</span>
               <span><i class="lg-zone"></i>Zone</span>
               <span><i class="lg-fov"></i>geplanter Sichtbereich</span>
               <span>Raster 0,5 m</span>
@@ -182,6 +183,7 @@
       this.el.querySelector("#room-head").innerHTML = `
         <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1></div>
         <div class="head-actions">
+          <a class="btn" href="#/room/${encodeURIComponent(room.id)}/calibrate">${icon("target")}Kalibrieren</a>
           <a class="btn primary" href="#/room/${encodeURIComponent(room.id)}/edit">${icon("edit")}Raum einrichten</a>
         </div>`;
       this.el.querySelector("#room-dims").textContent =
@@ -201,7 +203,7 @@
       this.el.querySelector("#room-state").innerHTML = live && live.available && live.occupied && !live.count
         ? `<span class="chip present">hält noch ${E.formatSeconds(live.hold_remaining)}</span>` : "";
       const reason = this.el.querySelector("#room-reason");
-      reason.textContent = live && !live.available ? live.reason_text : live && live.available ? "Erkannte Ziele — das Modul vergibt keine festen Personen-IDs." : "";
+      reason.textContent = live && !live.available ? live.reason_text : live && live.available ? "Gezählt werden bestätigte Ziele. Echolot folgt ihnen von Meldung zu Meldung — wer wer ist, weiß das Radar nicht." : "";
 
       const overlay = this.el.querySelector("#overlay");
       if (live && !live.available && (live.reason === "no_sensor" || live.reason === "offline" || live.reason === "device_missing" || live.reason === "no_frame_entity")) {
@@ -420,6 +422,7 @@
           <span>Links und rechts tauschen<small>Welche Seite das Modul positiv zählt, steht nicht im Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die Gegenrichtung, hier umschalten.</small></span></label>
         <div class="row2">${field("Reichweite · m", num("range_m", s.range_m, { min: 1, max: 12, step: 0.5 }))}${field("Öffnungswinkel · °", num("fov_deg", s.fov_deg, { min: 30, max: 180, step: 5 }))}</div>
         <p class="hint">Reichweite und Winkel zeichnen nur den gestrichelten Planungsbereich. Wie weit das Modul wirklich sieht, zeigen die Live-Punkte.</p>
+        <p class="hint">Genauer als von Hand: <a href="#/room/${encodeURIComponent(this.id)}/calibrate">Kalibrieren</a> richtet den Sensor an Standpunkten aus.</p>
         <div class="actions" style="margin-top:14px"><button class="btn" data-done>Fertig</button></div></div>`;
     },
 

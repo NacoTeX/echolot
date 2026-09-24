@@ -241,7 +241,10 @@ const Echolot = (() => {
     const hash = location.hash.replace(/^#\/?/, "");
     const parts = hash.split("/").filter(Boolean).map(decodeURIComponent);
     if (!parts.length) return { view: "home", params: {} };
-    if (parts[0] === "room" && parts[1]) return { view: parts[2] === "edit" ? "editor" : "room", params: { id: parts[1] } };
+    if (parts[0] === "room" && parts[1]) {
+      const sub = { edit: "editor", calibrate: "calibrate" }[parts[2]] || "room";
+      return { view: sub, params: { id: parts[1] } };
+    }
     if (parts[0] === "new-room") return { view: "newRoom", params: {} };
     if (parts[0] === "devices") return { view: "devices", params: { action: parts[1] } };
     if (parts[0] === "device" && parts[1]) return { view: "devices", params: { open: parts[1] } };
@@ -251,7 +254,7 @@ const Echolot = (() => {
 
   function navKey() {
     const route = parseRoute();
-    if (route.view === "room" || route.view === "editor") return `room:${route.params.id}`;
+    if (route.view === "room" || route.view === "editor" || route.view === "calibrate") return `room:${route.params.id}`;
     if (route.view === "newRoom") return "new-room";
     return route.view;
   }

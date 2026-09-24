@@ -128,7 +128,38 @@ def test_a_reconnect_republishes_everything(env):
     bridge._sent.clear()  # what on_connect does
     before = len(client.messages)
     publisher.publish([make_room()], [result()])
-    assert len(client.messages) - before == 9
+    # Four entities: discovery, attributes and state each, then the room's
+    # availability.
+    assert len(client.messages) - before == 13
+
+
+def test_every_entity_carries_the_rules_behind_its_value(env):
+    bridge, client, _ = env
+    mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result()])
+    config = json.loads(payload_of(client, "homeassistant/sensor/echolot/room_r1_zone_zsofa_count/config"))
+    assert config["json_attributes_topic"] == "echolot/room_r1_zone_zsofa_count/attributes"
+    attributes = json.loads(payload_of(client, "echolot/room_r1_zone_zsofa_count/attributes"))
+    assert attributes == {"definition_version": 2, "confirm_s": 1.0, "smoothing": "normal",
+                          "interference_spots": 0}
+
+
+def test_the_rules_are_published_even_while_the_room_is_unavailable(env):
+    bridge, client, _ = env
+    mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result(available=False)])
+    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 2
+
+
+def test_an_entity_from_1_0_learns_its_attributes_topic_and_takes_it_along(env):
+    bridge, client, tmp_path = env
+    # 1.0 announced the entity without an attributes topic.
+    old = {"room_r1_count": ["homeassistant/sensor/echolot/room_r1_count/config", "echolot/room_r1_count/state"]}
+    (tmp_path / "mqtt_entities.json").write_text(json.dumps({"announced": old, "tombstones": {}}))
+    publisher = mqtt_bridge.RoomPublisher(bridge)
+    publisher.publish([make_room()], [result()])
+    assert "echolot/room_r1_count/attributes" in publisher.announced["room_r1_count"]
+    publisher.publish([], [])
+    cleared = {m[0] for m in client.messages if m[1] == "" and m[3] == 1}
+    assert "echolot/room_r1_count/attributes" in cleared
 
 
 def test_a_removed_zone_is_deleted_and_stays_queued_until_acked(env):

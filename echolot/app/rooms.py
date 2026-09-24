@@ -48,6 +48,8 @@ FURNITURE_KINDS = (
     "plant", "door", "window", "kitchen", "bath", "other",
 )
 ZONE_KINDS = ("detect", "exclude")
+SMOOTHING = ("off", "normal", "strong")
+MAX_INTERFERENCE_SPOTS = 12
 
 _ID_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
 _lock = threading.Lock()
@@ -109,6 +111,47 @@ class Zone(BaseModel):
         return v
 
 
+class InterferenceSpot(BaseModel):
+    """A place where the radar reported a target while the room was empty.
+
+    In the sensor's own coordinates (metres, before `mirror`), not the
+    room's: the reflection belongs to the module and what stands around
+    it, so it stays put when the sensor is moved or turned on the plan.
+    """
+
+    x: float = Field(ge=-20, le=20)
+    y: float = Field(ge=-20, le=20)
+    r: float = Field(ge=0.1, le=1.5)
+    #: Share of the learning run's reports that had a target here.
+    share: float = Field(default=0.0, ge=0, le=1)
+
+
+class Calibration(BaseModel):
+    """How a room's reports are filtered before they count.
+
+    Written by the calibration routes only, like the floor plan by its
+    upload route: an editor holding an older copy must not undo a
+    calibration that finished in the meantime.
+    """
+
+    #: A new target counts only once it has been reported for this long.
+    #: Reflections that flash up for a report or two never get there.
+    #: 0 counts every reported position at once, as 1.0 did.
+    confirm_s: float = Field(default=1.0, ge=0, le=5)
+    #: How strongly a target's position is averaged over its reports.
+    smoothing: Literal[SMOOTHING] = "normal"  # type: ignore[valid-type]
+    interference: list[InterferenceSpot] = Field(default_factory=list, max_length=MAX_INTERFERENCE_SPOTS)
+    #: The sensor the spots were learned with. They describe that module
+    #: where it hung then; another sensor in this room ignores them.
+    interference_device_id: str | None = None
+    interference_learned_at: float | None = None
+    aligned_at: float | None = None
+    #: What was left of the error after the last alignment, in metres,
+    #: and over how many standpoints.
+    alignment_rms_m: float | None = None
+    alignment_points: int | None = None
+
+
 class Room(BaseModel):
     id: str
     name: str = Field(min_length=1, max_length=40)
@@ -126,6 +169,7 @@ class Room(BaseModel):
     edge_margin_m: float = Field(default=0.3, ge=0, le=1.5)
     #: {"file": ..., "content_type": ..., "opacity": 0..1} or None.
     image: dict | None = None
+    calibration: Calibration = Field(default_factory=Calibration)
     revision: int = 0
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -162,6 +206,14 @@ class Room(BaseModel):
             if not isinstance(opacity, (int, float)) or not 0 <= opacity <= 1:
                 raise ValueError("Deckkraft des Grundrisses muss zwischen 0 und 1 liegen")
         return self
+
+
+def active_interference(room: Room) -> list[InterferenceSpot]:
+    """The learned spots that apply to the sensor standing in the room now."""
+    cal = room.calibration
+    if not room.sensor.device_id or cal.interference_device_id != room.sensor.device_id:
+        return []
+    return list(cal.interference)
 
 
 class RoomCreate(BaseModel):
@@ -250,7 +302,8 @@ def save_room(room_id: str, payload: dict) -> Room | None:
 
     The image is not taken from the payload: it is uploaded on its own
     route, and an editor holding an older copy must not undo an upload.
-    Only its opacity is. Returns None when the room does not exist.
+    Only its opacity is. The calibration likewise has its own route.
+    Returns None when the room does not exist.
     """
     with _lock:
         rooms = _read()
@@ -264,6 +317,7 @@ def save_room(room_id: str, payload: dict) -> Room | None:
             **payload,
             "id": room_id,
             "image": stored.image,
+            "calibration": stored.calibration.model_dump(),
             "created_at": stored.created_at,
         }
         opacity = (payload.get("image") or {}).get("opacity")
@@ -271,6 +325,37 @@ def save_room(room_id: str, payload: dict) -> Room | None:
             merged["image"] = {**stored.image, "opacity": opacity}
         room = Room.model_validate(merged)
         _check_device_free(rooms, room_id, room.sensor.device_id)
+        room.revision = stored.revision + 1
+        room.updated_at = time.time()
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+def update_calibration(room_id: str, *, sensor: dict | None = None, calibration: dict | None = None) -> Room | None:
+    """Merge a calibration result into the stored room.
+
+    `sensor` may set x, y, angle and mirror — what an alignment finds —
+    and nothing else: which device stands there is the editor's business.
+    `calibration` replaces the fields it names. The revision goes up, so
+    an editor open elsewhere reloads instead of saving over the result.
+    Returns None when the room does not exist.
+    """
+    with _lock:
+        rooms = _read()
+        index = next((i for i, r in enumerate(rooms) if r["id"] == room_id), None)
+        if index is None:
+            return None
+        stored = Room.model_validate(rooms[index])
+        data = stored.model_dump()
+        if sensor:
+            unknown = set(sensor) - {"x", "y", "angle", "mirror"}
+            if unknown:
+                raise ValueError(f"Nicht einstellbar: {', '.join(sorted(unknown))}")
+            data["sensor"].update(sensor)
+        if calibration:
+            data["calibration"].update(calibration)
+        room = Room.model_validate(data)
         room.revision = stored.revision + 1
         room.updated_at = time.time()
         rooms[index] = room.model_dump()
