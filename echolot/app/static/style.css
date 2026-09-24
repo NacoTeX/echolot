@@ -2,6 +2,8 @@
    Light, soft surfaces and pastel zones; the floor plan is the page. */
 
 :root {
+  /* index.html checks for this to tell a page without its stylesheet. */
+  --echolot-css: 1;
   --bg: #f2f3f5;
   --surface: #ffffff;
   --surface-2: #f7f8fa;
