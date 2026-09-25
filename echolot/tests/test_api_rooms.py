@@ -298,7 +298,7 @@ def test_live_names_the_measurement_definition(client):
     c, _ = client
     _, room = room_with_sensor(c)
     live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
-    assert live["filter"]["definition_version"] == 2
+    assert live["filter"]["definition_version"] == 3
 
 
 def test_taking_single_spots_away_keeps_the_learning_date(client):
@@ -331,3 +331,60 @@ def test_walls_are_saved_through_the_editor_route(client):
     crossed["outline"] = [[0, 0], [2, 2], [2, 0], [0, 2]]
     r = c.put(f"/api/rooms/{room['id']}", json=crossed)
     assert r.status_code == 422 and "kreuzen" in r.text
+
+
+def test_the_sensor_model_is_fitted_applied_and_reset_through_the_routes(client):
+    import math
+
+    c, _ = client
+    _, room = room_with_sensor(c)
+    rid = room["id"]
+    # A module that reads distances 12 % long, seen from (3, 0) looking down.
+    spots = [(1.0, 1.5), (5.0, 1.5), (3.0, 1.2), (0.8, 3.6), (5.2, 3.6), (3.0, 3.7)]
+    points = []
+    for qx, qy in spots:
+        dx, dy = qx - 3.0, qy
+        r, phi = math.hypot(dx, dy) * 1.12, math.atan2(dx, dy)
+        points.append({"raw": [r * math.sin(phi), r * math.cos(phi)], "ref": [qx, qy]})
+    proposal = c.post(f"/api/rooms/{rid}/alignment", json={"points": points, "mount_height_m": 2.0})
+    assert proposal.status_code == 200, proposal.text
+    body = proposal.json()
+    assert body["range_scale"] == pytest.approx(1.12, abs=0.02) and body["model_changed"]
+    assert body["check_m"] is not None
+    applied = c.put(f"/api/rooms/{rid}/calibration", json={"alignment": {
+        **{k: body[k] for k in ("x", "y", "angle", "mirror", "slant", "range_scale", "range_offset_m", "azimuth_scale")},
+        "mount_height_m": 2.0, "rms_m": body["rms_m"], "check_m": body["check_m"], "model": body["model"],
+        "points": body["points"]}})
+    assert applied.status_code == 200, applied.text
+    saved = applied.json()
+    assert saved["sensor"]["range_scale"] == pytest.approx(1.12, abs=0.02)
+    assert saved["sensor"]["mount_height_m"] == 2.0
+    assert saved["calibration"]["alignment_model"] == body["model"]
+    live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == rid)
+    assert live["filter"]["range_scale"] == saved["sensor"]["range_scale"]
+    reset = c.put(f"/api/rooms/{rid}/calibration", json={"reset_model": True}).json()
+    assert reset["sensor"]["range_scale"] == 1.0 and reset["sensor"]["x"] == saved["sensor"]["x"]
+    assert reset["calibration"]["alignment_model"] is None
+
+
+def test_heights_are_saved_on_their_own_and_checked(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    rid = room["id"]
+    saved = c.put(f"/api/rooms/{rid}/calibration", json={"mounting": {"mount_height_m": 2.1, "target_height_m": 0.9}})
+    assert saved.status_code == 200 and saved.json()["sensor"]["mount_height_m"] == 2.1
+    assert c.put(f"/api/rooms/{rid}/calibration", json={"mounting": {"mount_height_m": 9}}).status_code == 422
+    bad = c.post(f"/api/rooms/{rid}/alignment", json={"points": [{"raw": [0, 2], "ref": [3, 2]}], "mount_height_m": -1})
+    assert bad.status_code == 422
+    # A slant without a height is refused.
+    assert c.put(f"/api/rooms/{rid}/calibration", json={"reset_model": True, "mounting": {"mount_height_m": None}}).status_code == 200
+    nope = c.put(f"/api/rooms/{rid}/calibration", json={"alignment": {"x": 3, "y": 0, "angle": 0, "mirror": False, "slant": True}})
+    assert nope.status_code == 422
+
+
+def test_standpoints_are_suggested(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    r = c.get(f"/api/rooms/{room['id']}/alignment/suggest?count=5")
+    assert r.status_code == 200
+    assert len(r.json()["points"]) == 5

@@ -20,14 +20,58 @@ dragged to the right turns it.
 import math
 
 
+#: The sensor model's neutral values: with these, what the module reports
+#: is taken as it is (measurement definition 2 and earlier).
+MODEL_DEFAULTS = {"range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
+
+
+def is_neutral(placement: dict) -> bool:
+    return all(placement.get(k, v) == v for k, v in MODEL_DEFAULTS.items())
+
+
+def correct(x_m: float, y_m: float, placement: dict) -> tuple[float, float]:
+    """What the module reported -> where the target is, still seen from
+    the sensor.
+
+    The module's positions are not the room's. Their errors are the ones
+    that grow with distance, which moving and turning the sensor on the
+    plan cannot take out, so the calibration fits a model of them:
+
+      range_scale, range_offset_m  it reports a distance of
+                                   range_scale × true + range_offset_m;
+      azimuth_scale                it reports an angle off its axis of
+                                   azimuth_scale × the true one;
+      slant                        the distance is the slant line from
+                                   the module, mounted at mount_height_m,
+                                   to a body at target_height_m, not the
+                                   distance along the floor.
+
+    Neutral values (MODEL_DEFAULTS) change nothing, to the last bit.
+    """
+    if is_neutral(placement):
+        return x_m, y_m
+    r = math.hypot(x_m, y_m)
+    phi = math.atan2(x_m, y_m)
+    k = float(placement.get("range_scale", 1.0))
+    b = float(placement.get("range_offset_m", 0.0))
+    d = max(0.0, (r - b) / k)
+    if placement.get("slant") and placement.get("mount_height_m") is not None:
+        dh = float(placement["mount_height_m"]) - float(placement.get("target_height_m", 1.0))
+        d = math.sqrt(max(d * d - dh * dh, 0.0))
+    phi /= float(placement.get("azimuth_scale", 1.0))
+    return d * math.sin(phi), d * math.cos(phi)
+
+
 def to_room(x_m: float, y_m: float, placement: dict) -> tuple[float, float]:
     """Sensor coordinates -> room coordinates.
 
     `placement` is the sensor entry of a room: x, y (metres), angle
-    (degrees), mirror (bool). `mirror` flips the sensor's x axis. It
-    exists because the manual does not say which side is positive, and
-    the answer is found by walking past the module once, not by guessing.
+    (degrees), mirror (bool), and the sensor model (see `correct`).
+    `mirror` flips the sensor's x axis. It exists because the manual does
+    not say which side is positive, and the answer is found by walking
+    past the module once, not by guessing.
     """
+    x_m, y_m = correct(x_m, y_m, placement)
     if placement.get("mirror"):
         x_m = -x_m
     angle = math.radians(float(placement.get("angle", 0.0)))

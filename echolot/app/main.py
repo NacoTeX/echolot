@@ -579,9 +579,24 @@ def api_solve_alignment(room_id: str, payload: dict) -> dict:
     room = _room_or_404(room_id)
     try:
         pairs = _pairs(payload)
+        # The heights as the page has them, saved or not yet: they decide
+        # whether the slant line can be tried at all.
+        sensor = rooms.SensorPlacement.model_validate({
+            **room.sensor.model_dump(),
+            **{k: payload[k] for k in ("mount_height_m", "target_height_m") if k in payload},
+        })
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
-    return alignment.solve(pairs, room.sensor.model_dump(), room.width, room.height)
+    return alignment.solve(pairs, sensor.model_dump(), room.width, room.height)
+
+
+@app.get("/api/rooms/{room_id}/alignment/suggest")
+def api_suggest_standpoints(room_id: str, count: int = 5) -> dict:
+    """Where to stand: spread over distance and angle, in view, off the furniture."""
+    room = _room_or_404(room_id)
+    return {"points": alignment.suggest_points(room, max(2, min(count, 8)))}
 
 
 @app.put("/api/rooms/{room_id}/calibration")
@@ -589,13 +604,16 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
     """Keep a calibration result.
 
     Any of: `filter` {confirm_s, smoothing}; `alignment` {x, y, angle,
-    mirror, rms_m, points}; `interference` {spots, device_id}, or null to
+    mirror, and the sensor model: slant, range_scale, range_offset_m,
+    azimuth_scale, mount_height_m, target_height_m; rms_m, check_m,
+    model, points}; `mounting` {mount_height_m, target_height_m};
+    `reset_model` true; `interference` {spots, device_id}, or null to
     forget the learned spots.
     """
     room = _room_or_404(room_id)
     sensor: dict = {}
     calibration: dict = {}
-    for key in ("filter", "alignment", "interference"):
+    for key in ("filter", "alignment", "interference", "mounting"):
         if key in payload and payload[key] is not None and not isinstance(payload[key], dict):
             raise HTTPException(status_code=422, detail=f"„{key}“ muss ein Objekt sein")
     if "filter" in payload:
@@ -607,11 +625,23 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
             sensor = {k: found[k] for k in ("x", "y", "angle", "mirror")}
         except KeyError as err:
             raise HTTPException(status_code=422, detail="Die Ausrichtung braucht x, y, angle und mirror") from err
+        # The sensor model comes with the placement it was fitted with.
+        sensor.update({k: found[k] for k in rooms.SENSOR_CALIBRATED - set(sensor) if k in found})
         calibration.update({
             "aligned_at": time.time(),
             "alignment_rms_m": found.get("rms_m"),
             "alignment_points": found.get("points"),
+            "alignment_model": found.get("model"),
+            "alignment_check_m": found.get("check_m"),
         })
+    if "mounting" in payload:
+        # Heights alone, before any standpoint is measured.
+        wanted = payload["mounting"] or {}
+        sensor.update({k: wanted[k] for k in ("mount_height_m", "target_height_m") if k in wanted})
+    if payload.get("reset_model"):
+        # Back to the module's positions as they are; placement stays.
+        sensor.update({"slant": False, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0})
+        calibration.update({"alignment_model": None, "alignment_check_m": None})
     if "interference" in payload:
         learned = payload["interference"]
         if learned is None:

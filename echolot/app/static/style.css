@@ -316,6 +316,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .cal-mark circle { fill: var(--surface); stroke: var(--text); stroke-width: .03; }
 .cal-mark text { font-size: .15px; font-weight: 700; fill: var(--text); }
 .cal-mark.pending circle { stroke: var(--accent); stroke-width: .04; stroke-dasharray: .06 .04; }
+.cal-mark.suggested circle { fill: var(--surface); fill-opacity: .7; stroke: var(--muted); stroke-width: .025; stroke-dasharray: .05 .04; }
+.cal-mark.suggested text { fill: var(--muted); }
 .cal-mark.pending text { fill: var(--accent); }
 .pl-ghost { fill: var(--target); }
 .pl-stale { opacity: .35; }
@@ -470,3 +472,11 @@ h3 .icon { color: var(--muted); margin-right: 4px; }
 .cal-proposal { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cal-proposal p { margin: 0 0 4px; }
 .cal-proposal .notice, .cal-proposal .actions { margin-top: 12px; }
+.cal-block { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cal-block h3 { margin-bottom: 10px; }
+.cal-block .zone-list + .actions, .cal-block .zone-list + .notice { margin-top: 12px; }
+.cal-grade { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-weight: 600; }
+.cal-grade small { font-weight: 400; color: var(--muted); }
+.cal-point { padding: 8px 8px 8px 10px; gap: 8px; }
+.cal-point .name { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cal-point .btn.icon-only { width: 32px; min-height: 32px; }
