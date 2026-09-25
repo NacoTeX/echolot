@@ -235,7 +235,7 @@ def test_an_alignment_is_proposed_then_applied(client):
     assert c.get(f"/api/rooms/{room['id']}").json()["sensor"]["angle"] == 0  # nothing saved yet
     applied = c.put(f"/api/rooms/{room['id']}/calibration", json={"alignment": {
         "x": body["x"], "y": body["y"], "angle": body["angle"], "mirror": body["mirror"],
-        "rms_m": body["rms_m"], "points": body["points"]}})
+        "report": body}})
     assert applied.status_code == 200, applied.text
     saved = applied.json()
     assert saved["sensor"]["angle"] == body["angle"]
@@ -350,11 +350,10 @@ def test_the_sensor_model_is_fitted_applied_and_reset_through_the_routes(client)
     assert proposal.status_code == 200, proposal.text
     body = proposal.json()
     assert body["range_scale"] == pytest.approx(1.12, abs=0.02) and body["model_changed"]
-    assert body["check_m"] is not None
+    assert body["cv_rms_m"] is not None and body["validation_status"] == "unvalidated"
     applied = c.put(f"/api/rooms/{rid}/calibration", json={"alignment": {
         **{k: body[k] for k in ("x", "y", "angle", "mirror", "slant", "range_scale", "range_offset_m", "azimuth_scale")},
-        "mount_height_m": 2.0, "rms_m": body["rms_m"], "check_m": body["check_m"], "model": body["model"],
-        "points": body["points"]}})
+        "mount_height_m": 2.0, "report": body}})
     assert applied.status_code == 200, applied.text
     saved = applied.json()
     assert saved["sensor"]["range_scale"] == pytest.approx(1.12, abs=0.02)
@@ -388,3 +387,46 @@ def test_standpoints_are_suggested(client):
     r = c.get(f"/api/rooms/{room['id']}/alignment/suggest?count=5")
     assert r.status_code == 200
     assert len(r.json()["points"]) == 5
+
+
+def test_control_spots_go_through_the_route_and_the_report_is_kept_with_its_basis(client):
+    import math
+
+    c, _ = client
+    _, room = room_with_sensor(c)
+    rid = room["id"]
+
+    def spot(qx, qy, role="fit"):
+        dx, dy = qx - 3.0, qy
+        return {"raw": [dx, dy], "ref": [qx, qy], "role": role}
+
+    points = [spot(*q) for q in ((1.0, 1.5), (5.0, 1.5), (3.0, 1.2), (0.8, 3.6), (5.2, 3.6))]
+    points += [spot(1.6, 2.2, "check"), spot(4.6, 3.1, "check")]
+    body = c.post(f"/api/rooms/{rid}/alignment", json={"points": points}).json()
+    assert body["points"] == 5 and body["validation_points"] == 2
+    assert body["validation_status"] == "validated" and body["quality"] == "good"
+    assert c.post(f"/api/rooms/{rid}/alignment", json={"points": [spot(1, 1, "other")]}).status_code == 422
+    assert c.post(f"/api/rooms/{rid}/alignment", json={"points": [spot(1, 1, "check")]}).status_code == 422
+    saved = c.put(f"/api/rooms/{rid}/calibration", json={"alignment": {
+        **{k: body[k] for k in ("x", "y", "angle", "mirror")}, "report": body}}).json()
+    report = saved["calibration"]["alignment_report"]
+    assert report["validation_status"] == "validated" and report["cv_rms_m"] == body["cv_rms_m"]
+    assert saved["alignment_state"] == {"state": "current", "changed": []}
+    # A new mounting height: the report no longer describes the room.
+    moved = c.put(f"/api/rooms/{rid}/calibration", json={"mounting": {"mount_height_m": 2.3}}).json()
+    assert moved["alignment_state"]["state"] == "stale"
+    assert "Montagehöhe geändert" in moved["alignment_state"]["changed"]
+    assert math.isclose(moved["calibration"]["alignment_report"]["cv_rms_m"], body["cv_rms_m"])
+
+
+def test_an_alignment_from_1_3_is_not_called_current(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    from app import rooms as store
+
+    store.update_calibration(room["id"], calibration={"aligned_at": 1.0, "alignment_check_m": 0.03})
+    # update_calibration stamps a basis; a stored 1.3 record has none.
+    data = store._read()
+    data[0]["calibration"]["alignment_basis"] = None
+    store._write(data)
+    assert c.get(f"/api/rooms/{room['id']}").json()["alignment_state"]["state"] == "unknown"

@@ -414,6 +414,7 @@ def _room_or_404(room_id: str) -> rooms.Room:
 
 def _room_view(room: rooms.Room) -> dict:
     data = room.model_dump()
+    data["alignment_state"] = rooms.alignment_state(room)
     if room.image:
         data["image"] = {
             "url": f"api/rooms/{room.id}/image?v={room.image.get('version', 0)}",
@@ -556,12 +557,16 @@ async def api_cancel_capture(room_id: str) -> None:
         raise HTTPException(status_code=404, detail="Für diesen Raum läuft keine Aufnahme")
 
 
-def _pairs(payload: dict) -> list:
+def _pairs(payload: dict) -> tuple[list, list]:
+    """(spots to fit, control spots). A control spot has `role` "check"
+    and takes no part in the fit."""
     points = payload.get("points")
-    if not isinstance(points, list) or not 1 <= len(points) <= 12:
-        raise ValueError("1 bis 12 Standpunkte")
-    pairs = []
+    if not isinstance(points, list) or not points:
+        raise ValueError("Mindestens ein Standpunkt ist nötig")
+    pairs, checks = [], []
     for point in points:
+        if not isinstance(point, dict):
+            raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]")
         try:
             raw = [float(v) for v in point["raw"]]
             ref = [float(v) for v in point["ref"]]
@@ -569,8 +574,13 @@ def _pairs(payload: dict) -> list:
             raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]") from err
         if len(raw) != 2 or len(ref) != 2 or not all(map(math.isfinite, raw + ref)):
             raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]")
-        pairs.append((tuple(raw), tuple(ref)))
-    return pairs
+        role = point.get("role", "fit")
+        if role not in ("fit", "check"):
+            raise ValueError("Ein Standpunkt ist zum Anpassen (fit) oder zur Kontrolle (check)")
+        (checks if role == "check" else pairs).append((tuple(raw), tuple(ref)))
+    if not 1 <= len(pairs) <= 12 or len(checks) > 6:
+        raise ValueError("1 bis 12 Standpunkte zum Anpassen und höchstens 6 Kontrollpunkte")
+    return pairs, checks
 
 
 @app.post("/api/rooms/{room_id}/alignment")
@@ -578,7 +588,7 @@ def api_solve_alignment(room_id: str, payload: dict) -> dict:
     """What the standpoints say about the sensor's placement. Saves nothing."""
     room = _room_or_404(room_id)
     try:
-        pairs = _pairs(payload)
+        pairs, checks = _pairs(payload)
         # The heights as the page has them, saved or not yet: they decide
         # whether the slant line can be tried at all.
         sensor = rooms.SensorPlacement.model_validate({
@@ -589,7 +599,7 @@ def api_solve_alignment(room_id: str, payload: dict) -> dict:
         raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
-    return alignment.solve(pairs, sensor.model_dump(), room.width, room.height)
+    return alignment.solve(pairs, sensor.model_dump(), room.width, room.height, checks=checks)
 
 
 @app.get("/api/rooms/{room_id}/alignment/suggest")
@@ -627,12 +637,16 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
             raise HTTPException(status_code=422, detail="Die Ausrichtung braucht x, y, angle und mirror") from err
         # The sensor model comes with the placement it was fitted with.
         sensor.update({k: found[k] for k in rooms.SENSOR_CALIBRATED - set(sensor) if k in found})
+        report = found.get("report") if isinstance(found.get("report"), dict) else {}
         calibration.update({
             "aligned_at": time.time(),
-            "alignment_rms_m": found.get("rms_m"),
-            "alignment_points": found.get("points"),
-            "alignment_model": found.get("model"),
-            "alignment_check_m": found.get("check_m"),
+            "alignment_rms_m": report.get("fit_rms_m"),
+            "alignment_points": report.get("points"),
+            "alignment_model": report.get("model"),
+            # The conditional leave-one-out of 1.3 is no longer written;
+            # the report says which check stands behind a number.
+            "alignment_check_m": None,
+            "alignment_report": {k: report.get(k) for k in rooms.REPORT_KEYS},
         })
     if "mounting" in payload:
         # Heights alone, before any standpoint is measured.

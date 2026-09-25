@@ -180,7 +180,14 @@ class Calibration(BaseModel):
     #: Which sensor model the last alignment settled on (alignment.MODELS),
     #: and its accuracy checked on spots left out, in metres.
     alignment_model: str | None = None
+    #: 1.3 only: a leave-one-out with the model chosen from all spots —
+    #: not an independent check. Kept readable, no longer written.
     alignment_check_m: float | None = None
+    #: What the last alignment reported (REPORT_KEYS), and what it was
+    #: computed for (alignment_basis): when any of that changes, the
+    #: report no longer describes the room (alignment_state).
+    alignment_report: dict | None = None
+    alignment_basis: dict | None = None
 
 
 class Room(BaseModel):
@@ -404,6 +411,61 @@ SENSOR_CALIBRATED = {
 }
 
 
+#: What an alignment report keeps: the three accuracy numbers apart, and
+#: what they rest on.
+REPORT_KEYS = (
+    "model", "points", "fit_rms_m", "cv_rms_m", "validation_rms_m", "validation_points",
+    "validation_status", "quality", "layout_ok", "rms_before_m",
+)
+
+
+def alignment_basis(room: "Room") -> dict:
+    """What an alignment was computed for."""
+    s = room.sensor
+    return {
+        "device_id": s.device_id,
+        "x": s.x, "y": s.y, "angle": s.angle, "mirror": s.mirror,
+        "mount_height_m": s.mount_height_m, "target_height_m": s.target_height_m,
+        "slant": s.slant, "range_scale": s.range_scale, "range_offset_m": s.range_offset_m,
+        "azimuth_scale": s.azimuth_scale,
+        "width": room.width, "height": room.height,
+    }
+
+
+BASIS_LABELS = {
+    "device_id": "anderer Sensor",
+    "x": "Sensor verschoben", "y": "Sensor verschoben", "angle": "Sensor gedreht",
+    "mirror": "Links/Rechts geändert",
+    "mount_height_m": "Montagehöhe geändert", "target_height_m": "Messhaltung geändert",
+    "slant": "Sensormodell geändert", "range_scale": "Sensormodell geändert",
+    "range_offset_m": "Sensormodell geändert", "azimuth_scale": "Sensormodell geändert",
+    "width": "Raummaße geändert", "height": "Raummaße geändert",
+}
+
+
+def alignment_state(room: "Room") -> dict:
+    """Whether the last alignment's report still describes this room.
+
+    "none"     never aligned;
+    "unknown"  aligned by 1.3, which kept no record of what for;
+    "current"  nothing it rests on has changed;
+    "stale"    something has — `changed` says what.
+    """
+    cal = room.calibration
+    if not cal.aligned_at:
+        return {"state": "none", "changed": []}
+    if not cal.alignment_basis:
+        return {"state": "unknown", "changed": []}
+    now = alignment_basis(room)
+    changed = []
+    for key, value in now.items():
+        before = cal.alignment_basis.get(key)
+        same = before == value if not isinstance(value, float) or before is None else abs(before - value) < 1e-6
+        if not same and BASIS_LABELS[key] not in changed:
+            changed.append(BASIS_LABELS[key])
+    return {"state": "stale" if changed else "current", "changed": changed}
+
+
 def update_calibration(room_id: str, *, sensor: dict | None = None, calibration: dict | None = None) -> Room | None:
     """Merge a calibration result into the stored room.
 
@@ -428,6 +490,9 @@ def update_calibration(room_id: str, *, sensor: dict | None = None, calibration:
         if calibration:
             data["calibration"].update(calibration)
         room = Room.model_validate(data)
+        if calibration and "aligned_at" in calibration:
+            # What this alignment is for: the room as it stands with it.
+            room.calibration.alignment_basis = alignment_basis(room)
         room.revision = stored.revision + 1
         room.updated_at = time.time()
         rooms[index] = room.model_dump()
