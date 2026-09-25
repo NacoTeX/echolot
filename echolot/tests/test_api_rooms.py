@@ -298,7 +298,7 @@ def test_live_names_the_measurement_definition(client):
     c, _ = client
     _, room = room_with_sensor(c)
     live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
-    assert live["filter"]["definition_version"] == 3
+    assert live["filter"]["definition_version"] == 4
 
 
 def test_taking_single_spots_away_keeps_the_learning_date(client):

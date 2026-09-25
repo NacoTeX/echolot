@@ -126,9 +126,10 @@ def rig():
     caps = Captures(links, clock=clock)
 
     def report(text, device_id="dev"):
-        links.snaps[device_id] = LinkSnapshot(device_id=device_id, connected=True,
-                                              frame=parse_frame(text), frame_at=clock.now)
-        caps.on_frame(device_id)
+        # As the live link does: record, and tell listeners of new ones only.
+        snap = links.snaps.setdefault(device_id, LinkSnapshot(device_id=device_id, connected=True))
+        if snap.record(parse_frame(text), clock.now):
+            caps.on_frame(device_id)
 
     return caps, clock, report
 

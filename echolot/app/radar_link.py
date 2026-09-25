@@ -15,6 +15,7 @@ listeners (the room engine) on every frame.
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from app.radar_frame import RadarFrame, parse_frame
@@ -30,6 +31,12 @@ BACKOFF = (2, 5, 10, 20, 30)
 #: (FRAME_HEARTBEAT_MS). Three without one and the frame on hand is no
 #: longer a description of the room.
 FRAME_STALE_S = 3.0
+
+#: New reports kept for the room engine between two evaluations. The
+#: engine runs at most ten times a second; a module reporting faster
+#: would otherwise have reports overwritten before anybody read them.
+QUEUE_LENGTH = 64
+_SEQ_MOD = 2**32
 
 #: Entity name in the firmware template -> role here. Names, not
 #: object_ids: ESPHome is phasing object_id out of the API, and the names
@@ -54,8 +61,29 @@ class LinkSnapshot:
     #: radar image from before the frame line existed.
     no_frame_entity: bool = False
     frame: RadarFrame | None = None
-    #: time.monotonic() of the last frame; None before the first.
+    #: time.monotonic() when the last frame line arrived, repeats
+    #: included: the link and the module are alive. None before the first.
     frame_at: float | None = None
+    #: time.monotonic() when the last *new* measurement arrived. Both are
+    #: receive times: frame format 1 carries no time of its own, and the
+    #: delay between the module's report and its arrival here is unknown.
+    measured_at: float | None = None
+    #: Which connection the frames belong to. A new one — reconnect, or
+    #: the device rebooted — starts the sequence afresh.
+    session: int = 0
+    #: New measurements not yet taken by the room engine:
+    #: (index, received_at, frame), oldest first.
+    queue: deque = field(default_factory=lambda: deque(maxlen=QUEUE_LENGTH))
+    index: int = 0
+    #: Counters, per connection: repeats of the last line (the firmware
+    #: republishes it as a heartbeat), lines older than the last one,
+    #: reports the module made that never arrived here (skipped by the
+    #: firmware's rate limit or lost — the two cannot be told apart), and
+    #: new measurements pushed out of the queue unread.
+    duplicates: int = 0
+    out_of_order: int = 0
+    reports_skipped: int = 0
+    dropped: int = 0
     status: str | None = None
     firmware: str | None = None
     wifi_signal: float | None = None
@@ -63,6 +91,57 @@ class LinkSnapshot:
     connected_since: float | None = None
     frames_received: int = 0
     attempts: int = 0
+
+    def record(self, frame: RadarFrame, now: float) -> bool:
+        """Take one frame line; True when it is a new measurement.
+
+        Sequence rules, within one connection (see `new_session`):
+
+          same number, same content   a repeat: proves the link is alive,
+                                      is no new measurement
+          same number, other content  the module's state changed without
+                                      a new report (receiving -> quiet):
+                                      new, for the state
+          ahead by less than 2**31    new; the numbers in between are
+                                      reports that never arrived
+          otherwise                   older than the last: ignored
+
+        Comparison is modulo 2**32, so the wrap of the device's counter
+        after four billion reports is just the next number.
+        """
+        self.frame_at = now
+        last = self.frame
+        if last is not None:
+            ahead = (frame.seq - last.seq) % _SEQ_MOD
+            if ahead == 0 and frame == last:
+                self.duplicates += 1
+                return False
+            if ahead >= _SEQ_MOD // 2:
+                self.out_of_order += 1
+                return False
+            if ahead > 1:
+                self.reports_skipped += ahead - 1
+        self.frame = frame
+        self.measured_at = now
+        self.frames_received += 1
+        self.index += 1
+        if len(self.queue) == self.queue.maxlen:
+            self.dropped += 1
+        self.queue.append((self.index, now, frame))
+        return True
+
+    def new_session(self) -> None:
+        """A new connection: the sequence starts over, nothing old is current."""
+        self.session += 1
+        self.frame = None
+        self.frame_at = None
+        self.measured_at = None
+        self.queue.clear()
+        self.duplicates = self.out_of_order = self.reports_skipped = self.dropped = 0
+
+    def pending(self, after_index: int) -> list:
+        """New measurements after `after_index`, oldest first."""
+        return [entry for entry in self.queue if entry[0] > after_index]
 
     def fresh(self, now: float | None = None) -> bool:
         if not self.connected or self.frame is None or self.frame_at is None:
@@ -86,6 +165,11 @@ class LinkSnapshot:
             "wifi_signal": self.wifi_signal,
             "ip": self.ip,
             "frames_received": self.frames_received,
+            "measurement_age_s": round(now - self.measured_at, 2) if self.measured_at is not None else None,
+            "duplicates": self.duplicates,
+            "out_of_order": self.out_of_order,
+            "reports_skipped": self.reports_skipped,
+            "dropped": self.dropped,
         }
 
 
@@ -193,6 +277,7 @@ class RadarLink:
                 if role:
                     self._roles[info.key] = role
             self.snapshot.no_frame_entity = "frame" not in self._roles.values()
+            self.snapshot.new_session()
             self.snapshot.connected = True
             self.snapshot.connected_since = time.time()
             self.snapshot.error = (
@@ -224,10 +309,7 @@ class RadarLink:
             except ValueError as err:
                 logger.debug("Radar %s: Zeile verworfen: %s", self.name, err)
                 return
-            snap.frame = frame
-            snap.frame_at = time.monotonic()
-            snap.frames_received += 1
-            if self._on_frame is not None:
+            if snap.record(frame, time.monotonic()) and self._on_frame is not None:
                 self._on_frame(self.device_id)
         elif role == "wifi_signal":
             snap.wifi_signal = float(value) if value == value else None  # NaN -> None

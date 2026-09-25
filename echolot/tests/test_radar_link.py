@@ -213,3 +213,77 @@ def test_a_stale_frame_is_not_fresh():
     assert not snap.fresh(now=103.1)
     snap.connected = False
     assert not snap.fresh(now=100.5)
+
+
+# --- the sequence rules (LinkSnapshot.record) ------------------------------
+
+from app.radar_frame import parse_frame  # noqa: E402
+
+
+def recorded(*lines, start=100.0, step=0.2):
+    snap = radar_link.LinkSnapshot(device_id="d", connected=True)
+    results = [snap.record(parse_frame(line), start + i * step) for i, line in enumerate(lines)]
+    return snap, results
+
+
+def test_a_repeated_line_keeps_the_link_alive_but_is_no_new_measurement():
+    """The firmware republishes the last line every second as a heartbeat."""
+    snap, results = recorded("1|R|7|15,23", "1|R|7|15,23", "1|R|7|15,23")
+    assert results == [True, False, False]
+    assert snap.duplicates == 2 and snap.frames_received == 1
+    assert snap.frame_at == pytest.approx(100.4) and snap.measured_at == pytest.approx(100.0)
+    assert [i for i, _, _ in snap.queue] == [1]
+
+
+def test_a_state_change_under_the_same_number_is_taken():
+    snap, results = recorded("1|R|7|15,23", "1|Q|7|")
+    assert results == [True, True] and snap.frame.state == "quiet"
+
+
+def test_numbers_that_skip_ahead_count_the_reports_in_between():
+    snap, results = recorded("1|R|7|", "1|R|10|")
+    assert results == [True, True] and snap.reports_skipped == 2
+
+
+def test_an_older_line_is_ignored_and_counted():
+    snap, results = recorded("1|R|10|15,23", "1|R|9|0,5")
+    assert results == [True, False]
+    assert snap.out_of_order == 1 and snap.frame.seq == 10
+
+
+def test_the_counter_wrapping_after_four_billion_reports_is_just_the_next_one():
+    snap, results = recorded(f"1|R|{2**32 - 1}|", "1|R|0|", "1|R|1|")
+    assert results == [True, True, True]
+    assert snap.out_of_order == 0 and snap.reports_skipped == 0
+
+
+def test_a_new_connection_starts_the_sequence_over():
+    """A rebooted device counts from zero again; it also drops the link."""
+    snap, _ = recorded("1|R|5000|15,23")
+    snap.new_session()
+    assert snap.frame is None and not snap.fresh(now=100.1) and not snap.queue
+    assert snap.record(parse_frame("1|R|1|"), 101.0) is True
+    assert snap.session == 1
+
+
+def test_the_queue_is_bounded_and_says_what_it_dropped():
+    lines = [f"1|R|{i}|" for i in range(1, radar_link.QUEUE_LENGTH + 11)]
+    snap, _ = recorded(*lines, step=0.01)
+    assert len(snap.queue) == radar_link.QUEUE_LENGTH and snap.dropped == 10
+    assert [i for i, _, _ in snap.pending(snap.index - 2)] == [snap.index - 1, snap.index]
+
+
+def test_listeners_hear_of_new_measurements_only():
+    async def run():
+        seen = []
+        links = radar_link.RadarLinks(client_factory=FakeClient)
+        links.add_listener(seen.append)
+        await links.sync([device()])
+        await settle()
+        client = FakeClient.instances[0]
+        for line in ("1|R|7|15,23", "1|R|7|15,23", "1|R|6|0,5", "1|R|8|15,24"):
+            client.on_state(State(1, line))
+        assert seen == ["dev", "dev"]
+        assert links.snapshot("dev").duplicates == 1
+        await links.stop_all()
+    asyncio.run(run())
