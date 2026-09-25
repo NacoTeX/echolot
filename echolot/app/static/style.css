@@ -321,6 +321,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .cal-mark.check rect { fill: var(--surface); stroke: var(--present); stroke-width: .03; }
 .cal-mark.check text { font-size: .12px; fill: var(--present); }
 .cal-mark.pending text { fill: var(--accent); }
+.cal-preview { opacity: .8; }
+.cal-preview .pl-sensor .pl-sensor-body { fill: var(--surface-3); }
+.cal-ref { fill: none; stroke: var(--muted); stroke-width: .025; stroke-dasharray: .05 .04; }
 .pl-ghost { fill: var(--target); }
 .pl-stale { opacity: .35; }
 .editing .pl-furn, .editing .pl-zone, .editing .pl-sensor { cursor: move; }
@@ -486,3 +489,7 @@ h3 .icon { color: var(--muted); margin-right: 4px; }
 .cal-sub { margin: 14px 0 8px; font-size: 14px; }
 .cal-metrics .stat-line span:first-child small { display: block; font-size: 11.5px; color: var(--faint); }
 .cal-metrics .stat-line span:last-child { white-space: nowrap; }
+.cal-history.current { box-shadow: inset 3px 0 0 var(--accent); }
+.cal-history .chip { margin-left: 8px; vertical-align: 1px; }
+.cal-history .actions { margin-top: 8px; }
+.cal-history .btn.active { background: var(--surface-3); }

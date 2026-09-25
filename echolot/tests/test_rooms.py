@@ -96,6 +96,24 @@ def test_a_deleted_device_leaves_its_room():
     after = rooms.get_room(room.id)
     assert after.sensor.device_id is None
     assert after.revision == room.revision + 1
+    assert after.calibration.invalidated_reason == "Sensor gelöscht"
+
+
+def test_a_room_stored_by_1_3_loads_with_nothing_to_restore():
+    import json
+
+    create()
+    data = json.loads((rooms.DATA_DIR / "rooms.json").read_text())
+    cal = data["rooms"][0]["calibration"]
+    for key in ("alignment_id", "alignment_history", "alignment_draft", "mounting_epoch",
+                "invalidated_at", "invalidated_reason", "alignment_report", "alignment_basis"):
+        cal.pop(key)
+    cal.update({"aligned_at": 1.0, "alignment_rms_m": 0.05, "alignment_check_m": 0.08})
+    (rooms.DATA_DIR / "rooms.json").write_text(json.dumps(data))
+    room = rooms.list_rooms()[0]
+    assert room.calibration.alignment_history == [] and room.calibration.mounting_epoch == 0
+    assert rooms.alignment_state(room)["state"] == "unknown"
+    assert rooms.draft_points(room) == []
 
 
 def test_an_editor_cannot_undo_an_upload_it_did_not_see():
@@ -230,3 +248,66 @@ def test_a_furniture_zone_needs_its_furniture_and_only_one_per_item(store):
     with pytest.raises(ValueError, match="schon eine Zone"):
         rooms.save_room(base.id, payload(base, furniture=[SOFA],
                                          zones=[sofa_zone(), sofa_zone(id="z2", name="Sofa 2")]))
+
+
+# --- alignments: bound, kept, taken back ---------------------------------------
+
+
+def with_standpoints(width=6):
+    room = create(device_id="dev-1", width=width, height=4)
+    for ref, raw in (((1.0, 1.5), (-2.0, 1.5)), ((5.0, 1.5), (2.0, 1.5)), ((3.0, 3.0), (0.0, 3.0))):
+        rooms.add_standpoint(room.id, rooms.Standpoint(ref=ref, raw=raw), device_id="dev-1", epoch=0)
+    return rooms.get_room(room.id)
+
+
+def basis(room):
+    return {"revision": room.revision, "device_id": room.sensor.device_id,
+            "epoch": room.calibration.mounting_epoch, "algorithm": 2,
+            "standpoints": rooms.standpoints_key(rooms.draft_points(room))}
+
+
+def align(room_id, x, angle=0.0):
+    room = rooms.get_room(room_id)
+    return rooms.apply_alignment(room_id, basis=basis(room), algorithm=2,
+                                 sensor={"x": x, "y": 0.0, "angle": angle, "mirror": False},
+                                 report={"points": 3, "fit_rms_m": 0.05}, standpoints=rooms.draft_points(room))
+
+
+def test_applying_checks_the_binding_under_the_lock():
+    room = with_standpoints()
+    bound = basis(room)
+    # Between computing and saving, somebody changes the room.
+    rooms.update_calibration(room.id, calibration={"confirm_s": 2.0})
+    with pytest.raises(rooms.CalibrationConflict) as conflict:
+        rooms.apply_alignment(room.id, basis=bound, algorithm=2, sensor={"x": 2.5, "y": 0.0, "angle": 0, "mirror": False},
+                              report={}, standpoints=rooms.draft_points(room))
+    assert conflict.value.changed == ["Raum geändert"]
+    assert rooms.get_room(room.id).sensor.x == 3.0
+
+
+def test_trimming_the_history_never_drops_the_current_record():
+    room = with_standpoints()
+    for i in range(rooms.MAX_ALIGNMENT_HISTORY):
+        align(room.id, 2.0 + 0.1 * i)
+    room = rooms.get_room(room.id)
+    assert len(room.calibration.alignment_history) == rooms.MAX_ALIGNMENT_HISTORY
+    # The drawing corrected, then the oldest record restored: the state
+    # left is kept, one record has to go — not the one now in force.
+    moved = rooms.save_room(room.id, payload(room, sensor={**room.sensor.model_dump(), "x": 4.0}))
+    oldest = moved.calibration.alignment_history[-1]
+    room = rooms.restore_alignment(room.id, oldest.id, revision=moved.revision)
+    ids = [r.id for r in room.calibration.alignment_history]
+    assert len(ids) == rooms.MAX_ALIGNMENT_HISTORY
+    assert room.calibration.alignment_id == oldest.id and oldest.id in ids
+    assert room.calibration.alignment_history[0].origin == "before"  # the corrected drawing
+
+
+def test_a_restored_record_is_judged_against_the_room_as_it_is():
+    room = with_standpoints()
+    first = align(room.id, 2.5)
+    align(room.id, 2.8)
+    room = rooms.get_room(room.id)
+    wider = rooms.save_room(room.id, payload(room, width=7))
+    back = rooms.restore_alignment(room.id, first.calibration.alignment_id, revision=wider.revision)
+    assert back.sensor.x == 2.5
+    assert rooms.alignment_state(back) == {"state": "stale", "changed": ["Raummaße geändert"]}

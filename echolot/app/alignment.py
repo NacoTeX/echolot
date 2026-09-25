@@ -50,6 +50,12 @@ MIN_SPREAD_M = 1.0
 #: are not evidence for a richer model.
 NOISE_M = 0.06
 
+#: The alignment procedure. A proposal computed by one version is not
+#: applied by another: 1 was 1.3 (the model chosen once, a conditional
+#: leave-one-out as its accuracy), 2 redoes the choice per fold and takes
+#: control spots.
+VERSION = 2
+
 #: Candidate sensor models, simplest first: the terms each one fits on
 #: top of the placement.
 MODELS = (
