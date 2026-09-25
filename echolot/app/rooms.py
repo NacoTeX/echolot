@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.geometry import polygon_area, self_intersects
+from app.geometry import clip_to_plan, furniture_outline, polygon_area, self_intersects
 
 DATA_DIR = Path(os.environ.get("ECHOLOT_DATA_DIR", "/data"))
 
@@ -101,6 +101,14 @@ class Zone(BaseModel):
     #: hallway want very different ones.
     hold_s: float = Field(default=10.0, ge=0, le=600)
     color: int = Field(default=0, ge=0, le=7)
+    #: A zone that stands for a furniture item — the sofa, the bed — and
+    #: follows it: its corners are the item's, grown by `margin_m` and cut
+    #: to the plan, worked out anew on every save (see Room._inside).
+    #: None for a zone drawn by hand.
+    furniture_id: str | None = None
+    #: Room around the item that still counts: the radar places a person
+    #: sitting on a sofa somewhere about it, not exactly on the cushions.
+    margin_m: float = Field(default=0.2, ge=0, le=1)
 
     @field_validator("points")
     @classmethod
@@ -210,6 +218,25 @@ class Room(BaseModel):
             seen.add(item.id)
         for item in self.furniture:
             on_plan(item.x + item.w / 2, item.y + item.h / 2, f"„{item.name or item.kind}“")
+        furniture = {item.id: item for item in self.furniture}
+        linked: set[str] = set()
+        for zone in self.zones:
+            if zone.furniture_id is None:
+                continue
+            item = furniture.get(zone.furniture_id)
+            if item is None:
+                raise ValueError(f"Die Zone „{zone.name}“ gehört zu einem Möbelstück, das es nicht mehr gibt")
+            if zone.furniture_id in linked:
+                raise ValueError(f"„{item.name or item.kind}“ hat schon eine Zone")
+            linked.add(zone.furniture_id)
+            # The server's corners, not the editor's: what Home Assistant
+            # counts must follow the item, whatever a client sent.
+            zone.points = clip_to_plan(
+                furniture_outline(item.x, item.y, item.w, item.h, item.angle, zone.margin_m),
+                self.width, self.height,
+            )
+            if len(zone.points) < 3 or polygon_area(zone.points) < 0.04:
+                raise ValueError(f"Die Zone „{zone.name}“ liegt fast ganz außerhalb des Plans")
         for zone in self.zones:
             for x, y in zone.points:
                 on_plan(x, y, f"Ein Eckpunkt der Zone „{zone.name}“")

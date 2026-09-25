@@ -217,3 +217,25 @@ def test_with_walls_the_cut_out_corner_does_not_count():
     links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
                                      frame=parse_frame("1|R|2|-20,36;-20,32"), frame_at=clock.now)
     assert engine.evaluate()[0]["count"] == 2
+
+
+
+def test_somebody_beside_the_sofa_counts_in_its_zone_within_the_margin():
+    """The radar puts a person on the sofa somewhere about it; the margin
+    is what lets the zone catch that."""
+    clock, links = Clock(), Links()
+    engine = RoomEngine(links, clock=clock)
+    sofa = {"id": "fsofa", "kind": "sofa", "name": "Sofa", "x": 1, "y": 2.5, "w": 2.2, "h": 0.9, "angle": 0}
+    zone = {"id": "zs", "name": "Sofa", "kind": "detect", "furniture_id": "fsofa", "margin_m": 0.3,
+            "points": [[0, 0], [1, 0], [1, 1]], "hold_s": 0}
+    engine.load([room(furniture=[sofa], zones=[zone])], [device()])
+    # Sensor at (3, 0) looking down: (-7 dm, 36 dm) -> (2.3, 3.6), 0.2 m
+    # past the sofa's back edge at 3.4: inside a 0.3 m margin, outside none.
+    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
+                                     frame=parse_frame("1|R|1|-7,36"), frame_at=clock.now)
+    result = engine.evaluate()[0]
+    assert result["zones"][0]["count"] == 1
+    engine.load([room(furniture=[sofa], zones=[{**zone, "margin_m": 0.0}])], [device()])
+    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
+                                     frame=parse_frame("1|R|2|-7,36"), frame_at=clock.now)
+    assert engine.evaluate()[0]["zones"][0]["count"] == 0

@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.0
+
+**Möbel als Zone.** Sofa, Bett, Schreibtisch, Esstisch — jedes Möbelstück
+kann im Editor unter *Als Zone* zur Erkennungs- oder Ausschlusszone werden.
+Die Zone **folgt dem Möbelstück**: verschieben, drehen, in der Größe ändern,
+umbenennen, und die Zone geht mit; wird es gelöscht, verschwindet sie mit,
+auch aus Home Assistant. Ein Tipp auf die Zone wählt das Möbelstück.
+
+- **Rand ums Möbelstück** (Standard 20 cm, bis 1 m): Das Radar verortet
+  jemanden auf dem Sofa irgendwo darum herum, nicht genau auf den Polstern.
+  Steht das Möbel an der Wand, endet die Zone an der Wand.
+- **Abwesenheitsverzögerung** je Zone, für Sitz- und Liegemöbel
+  (Sofa, Sessel, Bett, Stuhl) standardmäßig 30 s statt 10 s: Wer still sitzt
+  oder liegt, geht dem Radar zeitweise verloren.
+- **Ausschluss** für Pflanze, Ventilator, Aquarium: was dort gemeldet wird,
+  zählt nirgends.
+
+In Home Assistant ist eine Möbelzone eine Zone wie jede andere (Anwesenheit
+und Personen, Name des Möbelstücks); ihre Kennung bleibt, wenn das Möbel
+wandert. Die Ecken rechnet der Server bei jedem Speichern aus dem
+Möbelstück neu, nicht aus dem, was ein Editor schickt — gezählt wird also
+immer dort, wo das Möbel steht. Die Messdefinition ändert sich nicht: Eine
+Möbelzone ist ein Polygon wie eine gezeichnete.
+
+**Getestet:** 288 Tests, darunter Umriss und Zuschnitt in Python und im
+Browser gegen dieselben Fälle, und ein Ziel 20 cm hinter der Sofalehne, das
+mit Rand zählt und ohne nicht. Jede neue Regel einmal ausgebaut, um zu
+sehen, dass ihr Test dann scheitert (7 von 7). Im Headless-Browser: Sofa
+hinzufügen, zur Zone machen, über die Zone greifen und verschieben,
+umbenennen, Rand ändern, eine Pflanze als Ausschluss, speichern, das Sofa
+löschen — die Zone geht mit. Keine JS-Fehler.
+
 ## 1.1.2
 
 **Behoben: Über HTTPS lud die Oberfläche das Stylesheet und die Skripte von

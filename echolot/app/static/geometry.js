@@ -96,9 +96,53 @@
     return [x / points.length, y / points.length];
   }
 
+  function furnitureOutline(x, y, w, h, angle, margin) {
+    margin = margin || 0;
+    const cx = x + w / 2, cy = y + h / 2;
+    const hw = w / 2 + margin, hh = h / 2 + margin;
+    const a = ((angle || 0) * Math.PI) / 180;
+    const c = Math.cos(a), s = Math.sin(a);
+    return [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => [cx + dx * c - dy * s, cy + dx * s + dy * c]);
+  }
+
+  function clipToPlan(points, width, height) {
+    const clip = (pts, inside, cut) => {
+      const out = [];
+      pts.forEach((cur, i) => {
+        const prev = pts[(i - 1 + pts.length) % pts.length];
+        if (inside(cur)) {
+          if (!inside(prev)) out.push(cut(prev, cur));
+          out.push(cur);
+        } else if (inside(prev)) out.push(cut(prev, cur));
+      });
+      return out;
+    };
+    const atX = (xv) => (p, q) => [xv, p[1] + ((q[1] - p[1]) * (xv - p[0])) / (q[0] - p[0])];
+    const atY = (yv) => (p, q) => [p[0] + ((q[0] - p[0]) * (yv - p[1])) / (q[1] - p[1]), yv];
+    let pts = points.map((p) => [p[0], p[1]]);
+    for (const [inside, cut] of [
+      [(p) => p[0] >= 0, atX(0)], [(p) => p[0] <= width, atX(width)],
+      [(p) => p[1] >= 0, atY(0)], [(p) => p[1] <= height, atY(height)],
+    ]) {
+      if (!pts.length) break;
+      pts = clip(pts, inside, cut);
+    }
+    // Millimetres, like the server. It recomputes on save anyway; this is
+    // only what the editor draws in between.
+    const r3 = (v) => Math.round(v * 1000) / 1000 + 0;
+    const out = [];
+    for (const [px, py] of pts) {
+      const q = [r3(px), r3(py)];
+      const last = out[out.length - 1];
+      if (!last || last[0] !== q[0] || last[1] !== q[1]) out.push(q);
+    }
+    if (out.length > 1 && out[0][0] === out[out.length - 1][0] && out[0][1] === out[out.length - 1][1]) out.pop();
+    return out;
+  }
+
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  const api = { toRoom, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp };
+  const api = { toRoom, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, clipToPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EcholotGeometry = api;
 })(typeof window !== "undefined" ? window : globalThis);

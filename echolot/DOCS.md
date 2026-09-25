@@ -87,10 +87,22 @@ Raum zu zeigen.
 | Auswahl | V | Antippen wählt, Ziehen verschiebt. Bei Zonen: Eckpunkte ziehen verformt, die kleinen Punkte zwischen den Ecken ziehen fügt eine Ecke hinzu, Doppelklick auf eine Ecke entfernt sie. Möbel: Griff oben dreht, Ecke unten rechts ändert die Größe. Sensor: der Griff vor ihm dreht ihn. |
 | Rechteck | R | Zone aufziehen. |
 | Freiform | P | Ecken antippen; auf die erste tippen oder Enter schließt, Esc bricht ab. |
-| Möbel | | Sofa, Bett, Tisch, Schrank, Tür, Fenster … als Orientierung. Gezählt wird nur in Zonen. |
+| Möbel | | Sofa, Bett, Tisch, Schrank, Tür, Fenster … als Orientierung. Unter *Als Zone* wird ein Möbelstück zur Erkennungs- oder Ausschlusszone, die ihm folgt (siehe unten). |
 | Wände | | Der Umriss des Raums, für Nischen, L-Formen, Vorsprünge. Ecken ziehen, über die Punkte dazwischen neue einfügen, Doppelklick entfernt eine. *Neu nachzeichnen* zieht die Wände Ecke für Ecke, etwa über dem Grundrissbild. |
 | Einrasten | | 5-cm-Raster, Drehungen in 15°-Schritten (Sensor 5°). |
 | Rückgängig / Wiederholen | ⌘Z / ⇧⌘Z | |
+
+**Möbel als Zone.** Wähle ein Möbelstück und stell *Als Zone* auf
+*Erkennung* — für Sofa, Bett, Schreibtisch, Esstisch — oder auf
+*Ausschluss* — für Pflanze, Ventilator, Aquarium. Die Zone trägt den Namen
+des Möbelstücks und folgt ihm, wenn du es verschiebst, drehst, in der Größe
+änderst oder umbenennst; löschst du es, geht die Zone mit, auch aus Home
+Assistant. Der **Rand** (Standard 20 cm) legt fest, wie weit um das Möbel
+herum noch mitgezählt wird: Das Radar verortet jemanden, der sitzt oder
+liegt, nicht genau auf den Polstern. An einer Wand endet die Zone an der
+Wand. Sitz- und Liegemöbel bekommen 30 s Abwesenheitsverzögerung statt
+10 s. Ein Tipp auf die Zone wählt das Möbelstück; einzeln verformen lässt
+sich eine Möbelzone nicht — dafür eine Zone von Hand zeichnen.
 
 **Wände.** Ein neuer Raum ist ein Rechteck aus Breite × Tiefe. Folgt der
 Raum nicht einem Rechteck — eine L-förmige Wohnküche, ein Erker, eine
