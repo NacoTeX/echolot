@@ -152,6 +152,7 @@ const Plan = (() => {
 
     setRoom(room, { resetHistory = true } = {}) {
       this.room = JSON.parse(JSON.stringify(room));
+      this.syncLinkedZones();
       if (resetHistory) {
         this.history = [JSON.stringify(this.snapshotable())];
         this.historyIndex = 0;
@@ -210,6 +211,9 @@ const Plan = (() => {
     }
 
     select(sel) {
+      // A zone that stands for a furniture item is edited through it.
+      const zone = sel && sel.kind === "zone" ? this.room.zones.find((z) => z.id === sel.id) : null;
+      if (zone && zone.furniture_id) sel = { kind: "furniture", id: zone.furniture_id };
       this.selection = sel;
       this.render();
       this.onSelect(sel);
@@ -255,6 +259,7 @@ const Plan = (() => {
 
     render() {
       if (!this.room) return;
+      this.syncLinkedZones();
       const r = this.room;
       const pad = this.mode === "thumb" ? 0.15 : PAD;
       this.svg.setAttribute("viewBox", `${-pad} ${-pad} ${r.width + 2 * pad} ${r.height + 2 * pad}`);
@@ -593,7 +598,13 @@ const Plan = (() => {
         return;
       }
 
-      const target = e.target.closest("[data-kind]");
+      let target = e.target.closest("[data-kind]");
+      if (target && target.dataset.kind === "zone") {
+        const zone = this.room.zones.find((z) => z.id === target.dataset.id);
+        if (zone && zone.furniture_id) {
+          target = this.gStatic.querySelector(`[data-kind="furniture"][data-id="${CSS.escape(zone.furniture_id)}"]`) || target;
+        }
+      }
       const kind = target ? target.dataset.kind : "floor";
       if (kind === "floor") {
         this.select(null);
@@ -794,6 +805,58 @@ const Plan = (() => {
       this.onSelect(this.selection);
     }
 
+    // Zones that stand for a furniture item follow it: corners from the
+    // item, grown by the zone's margin and cut to the plan (the server
+    // works them out the same way on save), name from the item's.
+    syncLinkedZones() {
+      const r = this.room;
+      if (!r || !r.zones) return;
+      const items = new Map(r.furniture.map((f) => [f.id, f]));
+      r.zones = r.zones.filter((z) => !z.furniture_id || items.has(z.furniture_id));
+      for (const zone of r.zones) {
+        if (!zone.furniture_id) continue;
+        const f = items.get(zone.furniture_id);
+        zone.points = G.clipToPlan(G.furnitureOutline(f.x, f.y, f.w, f.h, f.angle || 0, zone.margin_m ?? 0.2), r.width, r.height);
+        zone.name = this.uniqueZoneName(f.name || (FURNITURE[f.kind] || FURNITURE.other).label, zone.id);
+      }
+    }
+
+    uniqueZoneName(base, ownId) {
+      const taken = new Set(this.room.zones.filter((z) => z.id !== ownId).map((z) => z.name.trim().toLowerCase()));
+      base = (base || "Zone").trim().slice(0, 36);
+      let name = base, n = 2;
+      while (taken.has(name.toLowerCase())) name = `${base} ${n++}`;
+      return name;
+    }
+
+    furnitureZone(furnitureId) {
+      return this.room.zones.find((z) => z.furniture_id === furnitureId) || null;
+    }
+
+    // kind: "detect", "exclude" or null to take the zone away.
+    setFurnitureZone(furnitureId, kind) {
+      const r = this.room;
+      const existing = this.furnitureZone(furnitureId);
+      if (!kind) {
+        if (!existing) return;
+        r.zones = r.zones.filter((z) => z !== existing);
+      } else if (existing) {
+        existing.kind = kind;
+      } else {
+        if (r.zones.length >= 16) { this.onHint("Höchstens 16 Zonen je Raum."); return; }
+        const f = r.furniture.find((x) => x.id === furnitureId);
+        if (!f) return;
+        const used = new Set(r.zones.map((z) => z.color));
+        let color = 0;
+        while (used.has(color) && color < 7) color++;
+        // Seats and beds hold longer: the radar loses people who sit still.
+        const hold = ["sofa", "armchair", "bed", "chair"].includes(f.kind) ? 30 : 10;
+        r.zones.push({ id: newId("z"), name: "", kind, points: [], hold_s: hold, color, furniture_id: f.id, margin_m: 0.2 });
+      }
+      this.render();
+      this.commit();
+    }
+
     addZone(points) {
       const used = new Set(this.room.zones.map((z) => z.color));
       let color = 0;
@@ -824,7 +887,10 @@ const Plan = (() => {
       const sel = this.selection;
       if (!sel || sel.kind === "sensor" || sel.kind === "outline") return;
       if (sel.kind === "zone") this.room.zones = this.room.zones.filter((z) => z.id !== sel.id);
-      else this.room.furniture = this.room.furniture.filter((f) => f.id !== sel.id);
+      else {
+        this.room.furniture = this.room.furniture.filter((f) => f.id !== sel.id);
+        this.room.zones = this.room.zones.filter((z) => z.furniture_id !== sel.id);
+      }
       this.select(null);
       this.commit();
     }

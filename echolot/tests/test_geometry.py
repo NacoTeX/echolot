@@ -104,6 +104,27 @@ def test_crossed_walls_are_recognised():
     assert geometry.self_intersects([[0, 0], [4, 0], [4, 4], [2, 0], [0, 4]])
 
 
+def test_a_furniture_outline_turns_about_the_centre_and_grows_by_the_margin():
+    def flat(points):
+        return [v for point in points for v in point]
+
+    assert flat(geometry.furniture_outline(1, 1, 2, 1, 0, 0.2)) == pytest.approx(
+        flat([(0.8, 0.8), (3.2, 0.8), (3.2, 2.2), (0.8, 2.2)]))
+    turned = geometry.furniture_outline(1, 1, 2, 1, 90, 0)
+    assert flat(turned) == pytest.approx(flat([(2.5, 0.5), (2.5, 2.5), (1.5, 2.5), (1.5, 0.5)]))
+
+
+def test_clipping_keeps_the_part_on_the_plan():
+    # A sofa against the top-left corner, grown past both walls.
+    assert geometry.clip_to_plan(geometry.furniture_outline(0.1, 0.1, 2, 0.9, 0, 0.2), 6, 4) == [
+        (0.0, 0.0), (2.3, 0.0), (2.3, 1.2), (0.0, 1.2)]
+    # Turned 45° over the corner: the cut adds corners where it crosses.
+    clipped = geometry.clip_to_plan(geometry.furniture_outline(-0.5, -0.5, 2, 1, 45, 0), 6, 4)
+    assert all(0 <= x <= 6 and 0 <= y <= 4 for x, y in clipped)
+    assert len(clipped) >= 3 and geometry.polygon_area(clipped) > 0
+    assert geometry.clip_to_plan([(10, 10), (12, 10), (12, 12)], 6, 4) == []
+
+
 def test_area():
     assert geometry.polygon_area(SQUARE) == pytest.approx(4)
     assert geometry.polygon_area(L_SHAPE) == pytest.approx(7)
@@ -116,6 +137,8 @@ def test_the_browser_computes_the_same_answers():
         "inside": [[pt, poly] for pt in PROBES for poly in (SQUARE, L_SHAPE)],
         "walls": [[pt, outline] for pt in WALL_PROBES for outline in (None, NOTCHED)],
         "crossed": [SQUARE, L_SHAPE, NOTCHED, BOWTIE, [[0, 0], [4, 0], [4, 4], [2, 0], [0, 4]]],
+        "furniture": [[0.1, 0.1, 2, 0.9, 0, 0.2], [2, 2, 2, 1, 45, 0.2], [-0.5, -0.5, 2, 1, 45, 0],
+                      [4.8, 3.2, 1.6, 2.0, 30, 0.35], [2.5, 1.5, 0.5, 0.5, -15, 0.0]],
     }
     script = f"""
       const g = require({json.dumps(str(JS))});
@@ -127,6 +150,7 @@ def test_the_browser_computes_the_same_answers():
         walls: cases.walls.map(([[x, y], outline]) => g.withinWalls(x, y, 6, 4, outline, 0.3)),
         distance: cases.walls.map(([[x, y]]) => g.distanceToPolygon(x, y, {json.dumps(NOTCHED)})),
         crossed: cases.crossed.map((poly) => g.selfIntersects(poly)),
+        furniture: cases.furniture.map(([x, y, w, h, a, m]) => g.clipToPlan(g.furnitureOutline(x, y, w, h, a, m), 6, 4)),
       }};
       console.log(JSON.stringify(out));
     """
@@ -141,3 +165,8 @@ def test_the_browser_computes_the_same_answers():
     for (point, _), js in zip(cases["walls"], result["distance"]):
         assert js == pytest.approx(geometry.distance_to_polygon(*point, NOTCHED))
     assert result["crossed"] == [geometry.self_intersects(p) for p in cases["crossed"]]
+    for args, js in zip(cases["furniture"], result["furniture"]):
+        py = geometry.clip_to_plan(geometry.furniture_outline(*args), 6, 4)
+        assert len(js) == len(py), args
+        for a, b in zip(js, py):
+            assert a == pytest.approx(list(b), abs=0.0011)

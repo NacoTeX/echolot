@@ -413,7 +413,7 @@
           ${r.zones.length ? `<div class="zone-list">${r.zones.map((z) => `
             <button class="zone-row" data-pick="${escapeHtml(z.id)}" style="cursor:pointer;text-align:left">
               <span class="swatch" style="background:${z.kind === "exclude" ? "var(--danger)" : Plan.zoneColor(z.color)}"></span>
-              <span class="grow"><span class="name">${escapeHtml(z.name)}</span><br><span class="meta">${z.kind === "exclude" ? "Ausschluss" : "Erkennung"} · ${z.points.length} Ecken</span></span>
+              <span class="grow"><span class="name">${escapeHtml(z.name)}</span><br><span class="meta">${z.kind === "exclude" ? "Ausschluss" : "Erkennung"} · ${z.furniture_id ? "folgt dem Möbelstück" : `${z.points.length} Ecken`}</span></span>
             </button>`).join("")}</div>`
             : `<p class="hint">Mit „Rechteck“ oder „Freiform“ in der Werkzeugleiste zeichnest du eine Zone direkt auf den Plan.</p>`}
         </div>
@@ -491,13 +491,71 @@
         ${field("Drehung · Grad", num("angle", f.angle, { min: -360, max: 360, step: 15 }))}
         <div class="actions" style="margin-top:6px">
           <button class="btn" data-done>Fertig</button>
-          <button class="btn danger" data-remove>${icon("trash")}Entfernen</button></div></div>`;
+          <button class="btn danger" data-remove>${icon("trash")}Entfernen</button></div></div>
+        ${this.furnitureZoneCard(f)}`;
+    },
+
+    // A zone that stands for the item and follows it when it moves.
+    furnitureZoneCard(f) {
+      const z = this.plan.furnitureZone(f.id);
+      const kind = z ? z.kind : "none";
+      const live = state.live[this.id];
+      const zs = z && z.kind === "detect" && live && live.available ? live.zones.find((x) => x.id === z.id) : null;
+      const hints = {
+        none: "Mach das Möbelstück zur Zone, und Home Assistant bekommt dafür einen Belegt-Sensor und eine Personenzahl — Sofa, Bett, Schreibtisch, Esstisch.",
+        detect: `Zählt, wer auf oder an „${escapeHtml(z ? z.name : "")}“ ist. Die Zone folgt dem Möbelstück, wenn du es verschiebst, drehst oder in der Größe änderst.`,
+        exclude: "Was hier gemeldet wird, zählt nirgends — für Ventilator, Pflanze im Luftzug, Aquarium. Die Zone folgt dem Möbelstück.",
+      };
+      return `<div class="card"><h2>Als Zone</h2>
+        <div class="field"><div class="segmented fill">
+          <button type="button" data-fzone="none" class="${kind === "none" ? "active" : ""}">Keine</button>
+          <button type="button" data-fzone="detect" class="${kind === "detect" ? "active" : ""}">Erkennung</button>
+          <button type="button" data-fzone="exclude" class="${kind === "exclude" ? "active" : ""}">Ausschluss</button></div>
+          <p class="hint">${hints[kind]}</p></div>
+        ${z ? `
+          ${field(`Rand ums Möbelstück · <b data-out="zmargin">${Math.round((z.margin_m ?? 0.2) * 100)} cm</b>`,
+            `<input type="range" data-zf="margin_m" min="0" max="1" step="0.05" value="${z.margin_m ?? 0.2}">`,
+            z.kind === "detect"
+              ? "Das Radar verortet jemanden, der darauf sitzt oder liegt, irgendwo darum herum — der Rand fängt das auf."
+              : "Wie weit um das Möbelstück herum Meldungen verworfen werden.")}
+          ${z.kind === "detect" ? `
+            ${field(`Abwesenheitsverzögerung · <b data-out="zfhold">${E.formatSeconds(z.hold_s)}</b>`,
+              `<input type="range" data-zf="hold_s" min="0" max="300" step="5" value="${z.hold_s}">`,
+              "Wer still sitzt oder liegt, geht dem Radar zeitweise verloren; so lange gilt die Zone danach noch als belegt.")}
+            <div class="field"><span>Farbe</span><div class="swatches">${[0, 1, 2, 3, 4, 5, 6, 7].map((i) =>
+              `<button type="button" data-zcolor="${i}" class="${z.color === i ? "active" : ""}" style="background:${Plan.zoneColor(i)}" aria-label="Farbe ${i + 1}"></button>`).join("")}</div></div>
+            ${zs ? `<p class="hint">Jetzt: ${zs.count ? E.people(zs.count) : "frei"}${zs.occupied && !zs.count ? ` (hält noch ${E.formatSeconds(zs.hold_remaining)})` : ""}</p>` : ""}` : ""}` : ""}
+      </div>`;
     },
 
     bindInspector(host, sel, item) {
       const plan = this.plan;
       const r = plan.room;
       host.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => plan.addFurniture(b.dataset.add)));
+      if (sel && sel.kind === "furniture" && item) {
+        host.querySelectorAll("[data-fzone]").forEach((b) => b.addEventListener("click", () => {
+          plan.setFurnitureZone(item.id, b.dataset.fzone === "none" ? null : b.dataset.fzone);
+          this.inspect();
+        }));
+        const zone = plan.furnitureZone(item.id);
+        host.querySelectorAll("[data-zf]").forEach((input) => {
+          const apply = (commit) => {
+            const value = Number(input.value);
+            if (!zone || !Number.isFinite(value)) return;
+            zone[input.dataset.zf] = value;
+            const out = host.querySelector(input.dataset.zf === "hold_s" ? '[data-out="zfhold"]' : '[data-out="zmargin"]');
+            if (out) out.textContent = input.dataset.zf === "hold_s" ? E.formatSeconds(value) : `${Math.round(value * 100)} cm`;
+            plan.render();
+            if (commit) plan.commit();
+          };
+          input.addEventListener("input", () => apply(false));
+          input.addEventListener("change", () => apply(true));
+        });
+        host.querySelectorAll("[data-zcolor]").forEach((b) => b.addEventListener("click", () => {
+          plan.mutate(() => { zone.color = Number(b.dataset.zcolor); });
+          this.inspect();
+        }));
+      }
       host.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => plan.select({ kind: "zone", id: b.dataset.pick })));
       host.querySelectorAll("[data-done]").forEach((b) => b.addEventListener("click", () => plan.select(null)));
       host.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => plan.removeSelected()));

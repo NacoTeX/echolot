@@ -194,3 +194,39 @@ def test_bad_walls_are_refused(store, outline, message):
     base = create(width=6, height=4)
     with pytest.raises(ValueError, match=message):
         rooms.save_room(base.id, payload(base, outline=outline))
+
+
+SOFA = {"id": "fsofa", "kind": "sofa", "name": "Sofa", "x": 1, "y": 2.5, "w": 2.2, "h": 0.9, "angle": 0}
+
+
+def sofa_zone(**extra):
+    return {"id": "zsofa", "name": "Sofa", "kind": "detect", "furniture_id": "fsofa", "margin_m": 0.2,
+            "points": [[0, 0], [1, 0], [1, 1]], **extra}
+
+
+def test_a_furniture_zone_takes_its_corners_from_the_item_not_the_payload(store):
+    base = create(width=6, height=4)
+    saved = rooms.save_room(base.id, payload(base, furniture=[SOFA], zones=[sofa_zone()]))
+    assert saved.zones[0].points == [(0.8, 2.3), (3.4, 2.3), (3.4, 3.6), (0.8, 3.6)]
+    # The sofa moves and turns; the zone follows, keeping its id.
+    moved = rooms.save_room(base.id, payload(saved, furniture=[{**SOFA, "x": 3, "angle": 90}], zones=[sofa_zone()]))
+    zone = moved.zones[0]
+    assert zone.id == "zsofa" and zone.points != saved.zones[0].points
+    assert min(x for x, _ in zone.points) > 3
+
+
+def test_a_furniture_zone_against_the_wall_is_cut_to_the_plan(store):
+    base = create(width=6, height=4)
+    saved = rooms.save_room(base.id, payload(base, furniture=[{**SOFA, "x": 0, "y": 3.1}], zones=[sofa_zone()]))
+    xs = [x for x, _ in saved.zones[0].points]
+    ys = [y for _, y in saved.zones[0].points]
+    assert min(xs) == 0 and max(ys) == 4
+
+
+def test_a_furniture_zone_needs_its_furniture_and_only_one_per_item(store):
+    base = create(width=6, height=4)
+    with pytest.raises(ValueError, match="nicht mehr gibt"):
+        rooms.save_room(base.id, payload(base, zones=[sofa_zone()]))
+    with pytest.raises(ValueError, match="schon eine Zone"):
+        rooms.save_room(base.id, payload(base, furniture=[SOFA],
+                                         zones=[sofa_zone(), sofa_zone(id="z2", name="Sofa 2")]))

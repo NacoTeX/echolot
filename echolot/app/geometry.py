@@ -133,3 +133,62 @@ def polygon_area(points: list) -> float:
         x2, y2 = points[(i + 1) % n]
         total += x1 * y2 - x2 * y1
     return abs(total) / 2.0
+
+
+def furniture_outline(x: float, y: float, w: float, h: float, angle: float, margin: float = 0.0) -> list:
+    """The corners of a furniture item, turned about its centre and grown
+    by `margin` on every side — the zone a sofa or a bed stands for.
+
+    `x`, `y` is the top-left corner before turning, as the plan stores it.
+    """
+    cx, cy = x + w / 2, y + h / 2
+    hw, hh = w / 2 + margin, h / 2 + margin
+    a = math.radians(angle)
+    c, s = math.cos(a), math.sin(a)
+    return [
+        (cx + dx * c - dy * s, cy + dx * s + dy * c)
+        for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+    ]
+
+
+def clip_to_plan(points: list, width: float, height: float) -> list:
+    """The part of a polygon on the width × depth plan (Sutherland–Hodgman),
+    rounded to the millimetre. A sofa against the wall keeps its zone up to
+    the wall instead of refusing to save."""
+
+    def clip(pts, inside, cut):
+        out = []
+        for i, cur in enumerate(pts):
+            prev = pts[i - 1]
+            if inside(cur):
+                if not inside(prev):
+                    out.append(cut(prev, cur))
+                out.append(cur)
+            elif inside(prev):
+                out.append(cut(prev, cur))
+        return out
+
+    def at_x(xv):
+        return lambda p, q: (xv, p[1] + (q[1] - p[1]) * (xv - p[0]) / (q[0] - p[0]))
+
+    def at_y(yv):
+        return lambda p, q: (p[0] + (q[0] - p[0]) * (yv - p[1]) / (q[1] - p[1]), yv)
+
+    pts = [tuple(p) for p in points]
+    for inside, cut in (
+        (lambda p: p[0] >= 0, at_x(0.0)),
+        (lambda p: p[0] <= width, at_x(float(width))),
+        (lambda p: p[1] >= 0, at_y(0.0)),
+        (lambda p: p[1] <= height, at_y(float(height))),
+    ):
+        if not pts:
+            break
+        pts = clip(pts, inside, cut)
+    out: list = []
+    for px, py in pts:
+        q = (round(px, 3) + 0.0, round(py, 3) + 0.0)
+        if not out or out[-1] != q:
+            out.append(q)
+    if len(out) > 1 and out[0] == out[-1]:
+        out.pop()
+    return out
