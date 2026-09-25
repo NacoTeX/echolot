@@ -125,6 +125,51 @@ def test_clipping_keeps_the_part_on_the_plan():
     assert geometry.clip_to_plan([(10, 10), (12, 10), (12, 12)], 6, 4) == []
 
 
+MODELS = [
+    {"x": 3.0, "y": 0.0, "angle": 10, "mirror": False, "range_scale": 1.08},
+    {"x": 3.0, "y": 0.0, "angle": -5, "mirror": True, "azimuth_scale": 0.85, "range_offset_m": 0.12},
+    {"x": 2.0, "y": 0.0, "angle": 0, "mirror": False, "slant": True, "mount_height_m": 2.1, "target_height_m": 1.0},
+    {"x": 1.0, "y": 0.2, "angle": 25, "mirror": False, "slant": True, "mount_height_m": 2.4,
+     "target_height_m": 0.8, "range_scale": 0.94, "range_offset_m": -0.05, "azimuth_scale": 1.12},
+]
+
+
+def test_the_neutral_sensor_model_changes_nothing_to_the_bit():
+    for placement in PLACEMENTS:
+        neutral = {**placement, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0,
+                   "slant": False, "mount_height_m": 2.0, "target_height_m": 1.0}
+        for x, y in POINTS:
+            assert geometry.to_room(x, y, neutral) == geometry.to_room(x, y, placement)
+
+
+def report(d, phi_deg, model):
+    """What a module with this model reports for a target `d` metres away
+    along the floor, `phi_deg` off its axis: the forward direction of
+    geometry.correct."""
+    phi = math.radians(phi_deg) * model.get("azimuth_scale", 1.0)
+    r = d
+    if model.get("slant"):
+        r = math.hypot(d, model["mount_height_m"] - model.get("target_height_m", 1.0))
+    r = r * model.get("range_scale", 1.0) + model.get("range_offset_m", 0.0)
+    return r * math.sin(phi), r * math.cos(phi)
+
+
+def test_the_correction_undoes_what_the_module_does():
+    for model in MODELS:
+        for d, phi in ((1.5, 0), (3.0, 30), (4.2, -45), (2.2, 55)):
+            x, y = geometry.correct(*report(d, phi, model), model)
+            assert math.hypot(x, y) == pytest.approx(d, abs=1e-9)
+            assert math.degrees(math.atan2(x, y)) == pytest.approx(phi, abs=1e-9)
+
+
+def test_the_slant_matters_most_close_to_the_sensor():
+    model = {"slant": True, "mount_height_m": 2.0, "target_height_m": 1.0}
+    assert geometry.correct(0.0, math.hypot(1.0, 1.0), model)[1] == pytest.approx(1.0)
+    assert geometry.correct(0.0, math.hypot(5.0, 1.0), model)[1] == pytest.approx(5.0)
+    # Read as floor distance, the slant line puts them 41 cm and 10 cm too far.
+    assert math.hypot(1.0, 1.0) - 1.0 > 0.4 and math.hypot(5.0, 1.0) - 5.0 < 0.11
+
+
 def test_area():
     assert geometry.polygon_area(SQUARE) == pytest.approx(4)
     assert geometry.polygon_area(L_SHAPE) == pytest.approx(7)
@@ -139,6 +184,7 @@ def test_the_browser_computes_the_same_answers():
         "crossed": [SQUARE, L_SHAPE, NOTCHED, BOWTIE, [[0, 0], [4, 0], [4, 4], [2, 0], [0, 4]]],
         "furniture": [[0.1, 0.1, 2, 0.9, 0, 0.2], [2, 2, 2, 1, 45, 0.2], [-0.5, -0.5, 2, 1, 45, 0],
                       [4.8, 3.2, 1.6, 2.0, 30, 0.35], [2.5, 1.5, 0.5, 0.5, -15, 0.0]],
+        "model": [[p, m] for p in POINTS for m in MODELS],
     }
     script = f"""
       const g = require({json.dumps(str(JS))});
@@ -151,6 +197,7 @@ def test_the_browser_computes_the_same_answers():
         distance: cases.walls.map(([[x, y]]) => g.distanceToPolygon(x, y, {json.dumps(NOTCHED)})),
         crossed: cases.crossed.map((poly) => g.selfIntersects(poly)),
         furniture: cases.furniture.map(([x, y, w, h, a, m]) => g.clipToPlan(g.furnitureOutline(x, y, w, h, a, m), 6, 4)),
+        model: cases.model.map(([[x, y], m]) => {{ const r = g.toRoom(x, y, m); return [r.x, r.y]; }}),
       }};
       console.log(JSON.stringify(out));
     """
@@ -165,6 +212,8 @@ def test_the_browser_computes_the_same_answers():
     for (point, _), js in zip(cases["walls"], result["distance"]):
         assert js == pytest.approx(geometry.distance_to_polygon(*point, NOTCHED))
     assert result["crossed"] == [geometry.self_intersects(p) for p in cases["crossed"]]
+    for (point, model), js in zip(cases["model"], result["model"]):
+        assert js == pytest.approx(list(geometry.to_room(*point, model)), abs=1e-12)
     for args, js in zip(cases["furniture"], result["furniture"]):
         py = geometry.clip_to_plan(geometry.furniture_outline(*args), 6, 4)
         assert len(js) == len(py), args

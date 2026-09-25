@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.3.0
+
+**Die Kalibrierung rechnet jetzt mit einem Modell des Sensors.** Gemeldet:
+„Je weiter ich weg bin, desto mehr zeigt er mich woanders an.“ Die
+Ausrichtung bis 1.2 konnte den Sensor nur verschieben und drehen. Fehler,
+die mit der Entfernung wachsen, kommen aber aus dem Modul: Es misst
+Entfernungen einige Prozent zu lang oder zu kurz, staucht Winkel, oder misst
+von oben die schräge Linie statt des Abstands am Boden. Verschieben und
+Drehen kann das nicht ausgleichen.
+
+- **Sensormodell** (`geometry.correct`, Python und Browser gleich):
+  Entfernungsmaßstab und -versatz, Winkelmaßstab, Schrägstrecke aus
+  Montagehöhe und Höhe des Oberkörpers. Angewandt vor Position und Drehung,
+  auf der Karte wie in Home Assistant.
+- **Montagehöhe** und Haltung (stehend, sitzend) sind jetzt einstellbar. Ob
+  das Modul schräg misst, steht in keinem Handbuch — die Kalibrierung prüft
+  beides und nimmt, was die Messung zeigt.
+- **Ausgleichsrechnung mit Modellwahl:** Ab drei Standpunkten rechnet
+  Echolot mehrere Modelle (Levenberg–Marquardt, reines Python) und nimmt
+  das einfachste, das die Messung trägt — Bayes'sches
+  Informationskriterium mit 6 cm Rauschgrenze, damit keine Korrektur
+  bloßes Rauschen nachzeichnet.
+- **Genauigkeit per Kreuzprobe:** Jeder Standpunkt wird einmal weggelassen
+  und aus den anderen vorhergesagt. Der Bericht nennt ±cm und eine Stufe
+  (gut bis 15 cm, brauchbar bis 30 cm), das gewählte Modell mit seinen
+  Korrekturen, jeden Punkt vorher/nachher, und Punkte, die nicht zu den
+  anderen passen.
+- **Geführte Standpunkte:** fünf Vorschläge im Sichtbereich, nah und fern,
+  links und rechts, nicht auf Möbeln; nach jeder Messung ist der nächste
+  dran. Jeder Punkt lässt sich neu messen.
+- **Zurücksetzen** der Modulkorrekturen; die Standpunkte bleiben nach dem
+  Übernehmen stehen und zeigen, wie gut die neue Einstellung passt.
+
+**Messdefinition 3.** Das Sensormodell ändert, wo ein Ziel liegt, und damit,
+was in einer Zone zählt; Version und Modell stehen in jeder Auswertung und
+als Attribute jeder Home-Assistant-Entität. Ohne Korrekturen — so startet
+jeder Raum nach dem Update — rechnet Definition 3 bis aufs Bit wie
+Definition 2; geprüft.
+
+**Getestet:** 304 Tests. Das Modell in Python und im Browser gegen dieselben
+Fälle; jede Korrektur gegen ihre Vorwärtsrechnung. Die Ausrichtung findet an
+simulierten Modulen einen Entfernungsmaßstab, einen Winkelmaßstab und die
+Schrägstrecke wieder, erfindet bei reinem Rauschen keine Korrektur (fünf
+Durchläufe), schätzt die Genauigkeit ehrlich und nennt falsch markierte
+Punkte — auch die, die eine der beiden Prüfungen allein übersieht. Jede
+neue Regel einmal ausgebaut: 10 von 10 Tests scheitern dann. Im
+Headless-Browser gegen ein simuliertes Modul, 30 cm und 7° anders montiert
+als gezeichnet, 2,2 m hoch, schräg messend, Entfernungen 8 % zu lang:
+Höhe eingetragen, fünf vorgeschlagene Punkte gemessen, übernommen — eine
+Person bei (3,0 | 4,0) erschien vorher 99 cm daneben, danach 6 cm.
+
+**Grenzen.** Die Kenngrößen (6 cm Rauschgrenze, Stufen 15/30 cm) sind an
+simulierten Daten gewählt. Ein falsch markierter Punkt drängt die Rechnung
+zu einem reicheren Modell; der Bericht nennt ihn, entfernt ihn aber nicht
+selbst. Die Neigung des Sensors wird nicht eigens modelliert: Ihre Wirkung
+steckt in Schräge und Maßstäben. Wie gut das Modell zum echten LD2460
+passt, zeigt erst die Kalibrierung im Raum.
+
 ## 1.2.0
 
 **Möbel als Zone.** Sofa, Bett, Schreibtisch, Esstisch — jedes Möbelstück

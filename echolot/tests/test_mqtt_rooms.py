@@ -139,14 +139,14 @@ def test_every_entity_carries_the_rules_behind_its_value(env):
     config = json.loads(payload_of(client, "homeassistant/sensor/echolot/room_r1_zone_zsofa_count/config"))
     assert config["json_attributes_topic"] == "echolot/room_r1_zone_zsofa_count/attributes"
     attributes = json.loads(payload_of(client, "echolot/room_r1_zone_zsofa_count/attributes"))
-    assert attributes == {"definition_version": 2, "confirm_s": 1.0, "smoothing": "normal",
-                          "interference_spots": 0}
+    assert attributes == {"definition_version": 3, "confirm_s": 1.0, "smoothing": "normal",
+                          "interference_spots": 0, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
 
 
 def test_the_rules_are_published_even_while_the_room_is_unavailable(env):
     bridge, client, _ = env
     mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result(available=False)])
-    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 2
+    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 3
 
 
 def test_an_entity_from_1_0_learns_its_attributes_topic_and_takes_it_along(env):

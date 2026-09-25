@@ -159,30 +159,49 @@ Die Aufnahme sagt nebenbei, ob das Modul im leeren Raum **leere Berichte**
 schickt oder **verstummt**. Verstummt es, schlägt sie vor, beim Sensor
 „Stille = leerer Raum“ einzuschalten.
 
-**Sensor ausrichten.** Tippe auf dem Plan eine Stelle an, die du im Raum
-genau wiederfindest — eine Tischecke, den Türrahmen —, stell dich dorthin
-und tippe *Messen*. Nach 3 s hört Echolot 5 s zu und nimmt den Median der
-gemeldeten Positionen; leicht hin und her wiegen hilft, ganz Stillstehende
-verliert das Modul manchmal. Auf der Karte erscheint rot, wo das Radar dich
-mit der jetzigen Platzierung sieht, gestrichelt verbunden mit dem Punkt.
+**Sensor ausrichten.** Hier lernt Echolot, wo der Sensor wirklich hängt
+und wie sein Modul misst. Das Radar sieht dich nie genau dort, wo du
+stehst: Die Platzierung auf dem Plan ist nach Augenmaß gezeichnet, und das
+Modul selbst verzerrt — Fehler, die mit der Entfernung wachsen. Beides
+rechnet die Ausrichtung aus Standpunkten heraus.
 
-- **Ein Standpunkt** korrigiert nur die Blickrichtung. Passt der Abstand
-  zum Sensor nicht, sagt Echolot es.
-- **Zwei oder mehr** korrigieren Position und Richtung zusammen
-  (Ausgleichsrechnung, die alle Punkte zugleich am besten trifft).
-- **Links und rechts** entscheidet bei drei Punkten, die nicht auf einer
-  Linie liegen, die Passung selbst. Bei zwei Punkten passen beide
-  Varianten gleich gut; dann gewinnt die, die den Sensor näher an seinem
-  eingezeichneten Platz lässt, und ist auch das nicht eindeutig, bleibt die
-  Einstellung und der Vorschlag sagt es.
+1. **Montage:** die Höhe des Sensors über dem Boden eintragen, und in
+   welcher Haltung gemessen wird (stehend, sitzend). Hängt das Radar höher
+   als der Oberkörper, misst es womöglich die schräge Linie zu dir statt
+   des Abstands am Boden — nah am Sensor ist das bis zu einem halben Meter.
+   Ob es das tut, steht in keinem Handbuch; mit der Höhe prüft die
+   Kalibrierung beide Varianten.
+2. **Standpunkte:** *Standpunkte vorschlagen* legt fünf Punkte in den
+   Sichtbereich — nah und fern, links und rechts, nicht auf Möbeln. Stell
+   dich auf den markierten Punkt, tippe *Messen*; nach 3 s hört Echolot 5 s
+   zu und nimmt den Median der gemeldeten Positionen. Danach ist der
+   nächste Punkt dran. Eigene Punkte gehen mit einem Tipp auf den Plan —
+   gut sind Stellen, die du genau wiederfindest. Jeder Punkt lässt sich neu
+   messen oder entfernen.
+3. **Bericht:** Echolot rechnet mehrere Modelle durch — nur Position und
+   Richtung; dazu ein Entfernungsmaßstab; dazu ein Entfernungsversatz oder
+   ein Winkelmaßstab; alles zusammen; jeweils mit und ohne Schräge — und
+   nimmt das einfachste, das die Messung trägt. Mehr Korrekturen passen auf
+   ein paar Punkte immer besser, auch wenn sie nur das Rauschen nachzeichnen;
+   deshalb kostet jede zusätzliche Korrektur etwas (Bayes'sches
+   Informationskriterium mit einer Rauschgrenze von 6 cm). Die
+   **Genauigkeit** ist ehrlich geprüft: Jeder Punkt wird einmal
+   weggelassen und aus den anderen vorhergesagt (Kreuzprobe). *Gut* heißt
+   bis 15 cm, *brauchbar* bis 30 cm.
 
-Der Vorschlag nennt, was sich ändert (verschieben, drehen, tauschen) und
-die Abweichung vorher und nachher, und zeigt den Sensor an seinem neuen
-Platz. Eine Lösung mehr als 50 cm außerhalb des Raums wird nicht
-übernommen — dann passen Raummaße oder Punkte nicht —, knapp hinter der
-Wand wird der Sensor auf die Wand gesetzt. Gut sind zwei bis drei Punkte,
-weit auseinander, nicht hintereinander vom Sensor aus, mit nur einer
-Person im Raum.
+Links und rechts entscheidet ab drei Punkten die Passung selbst; ist sie
+nicht eindeutig, der eingezeichnete Platz; sonst bleibt die Einstellung,
+und der Bericht sagt es. Passt ein Punkt nicht zu den anderen — falsch
+markiert, bewegt —, nennt ihn der Bericht: neu messen oder entfernen, er
+verzerrt sonst das Ergebnis. Eine Lösung mehr als 50 cm außerhalb des
+Raums wird nicht übernommen, knapp hinter der Wand wird der Sensor auf die
+Wand gesetzt. Mit einem Punkt wird nur die Richtung korrigiert, mit zwei
+Position und Richtung; die Korrekturen des Moduls brauchen mindestens drei,
+belastbar fünf.
+
+Übernehmen speichert Platzierung und Sensormodell; die Standpunkte bleiben
+stehen und zeigen, wie gut die neue Einstellung zu ihnen passt.
+*Zurücksetzen* nimmt die Korrekturen des Moduls wieder weg.
 
 **Filter.**
 
@@ -196,7 +215,7 @@ Person im Raum.
 
 ## Wie gezählt wird
 
-Messdefinition 2 (seit 1.1). Jede neue Meldung des Sensors geht zuerst
+Messdefinition 3 (seit 1.3). Jede neue Meldung des Sensors geht zuerst
 durch die **Zielverfolgung**: Jede gemeldete Position wird dem nächsten
 bekannten Ziel zugeordnet (bis 0,9 m), sonst entsteht ein neues. Ein Ziel,
 das eine Meldung lang fehlt, bleibt 1,5 s gemerkt, zählt in der Zeit aber
@@ -205,7 +224,9 @@ nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
 
 Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
 
-1. Umrechnung vom Sensor in den Raum — Position, Blickrichtung, Spiegelung.
+1. Umrechnung vom Sensor in den Raum: erst das Sensormodell aus der
+   Ausrichtung — Entfernungsmaßstab und -versatz, Winkelmaßstab,
+   Schrägstrecke —, dann Position, Blickrichtung, Spiegelung.
 2. Liegt es weiter als die **Randtoleranz** (Standard 30 cm) außerhalb der
    Wände, zählt es nicht. Radar sieht durch Trockenbau. Die Wände sind der
    Umriss des Raums, wenn er einen hat, sonst sein Rechteck; bei einem
@@ -222,9 +243,9 @@ Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
 Definition 1 (Echolot 1.0) waren die Schritte 1–3 und 5 auf jede Meldung
-einzeln, mit dem Rechteck als Wänden. Für einen Raum ohne Umriss, mit
-Bestätigungszeit 0 s, Glättung aus und ohne Störquellen rechnet
-Definition 2 genauso.
+einzeln, mit dem Rechteck als Wänden. Definition 2 (1.1–1.2) war
+Definition 3 ohne Sensormodell; ohne Korrekturen rechnet Definition 3 bis
+aufs Bit wie sie.
 
 Raum und Zone gelten als belegt, solange ein Ziel darin ist, und danach
 noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar).
@@ -258,8 +279,9 @@ vorgeschlagenem Bereich) mit
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen werden keine Entitäten. Jede Entität trägt als Attribute
-die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 2),
-`confirm_s`, `smoothing` und `interference_spots`. So lässt sich ein
+die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 3),
+`confirm_s`, `smoothing`, `interference_spots` und das Sensormodell
+(`range_scale`, `range_offset_m`, `azimuth_scale`, `slant`). So lässt sich ein
 Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
 Verfügbarkeiten: dem Add-on und dem Raum. Gelöschte Zonen und Räume
 verschwinden aus Home Assistant; die Löschung steht in einer Warteschlange

@@ -3,7 +3,29 @@
 // is what Home Assistant counts inside it.
 
 (function (root) {
+  const MODEL_DEFAULTS = { range_scale: 1, range_offset_m: 0, azimuth_scale: 1, slant: false };
+
+  function isNeutral(placement) {
+    return Object.entries(MODEL_DEFAULTS).every(([k, v]) => (placement[k] ?? v) === v);
+  }
+
+  // See correct() in app/geometry.py.
+  function correct(xM, yM, placement) {
+    if (isNeutral(placement)) return [xM, yM];
+    const r = Math.hypot(xM, yM);
+    let phi = Math.atan2(xM, yM);
+    const k = placement.range_scale ?? 1, b = placement.range_offset_m ?? 0;
+    let d = Math.max(0, (r - b) / k);
+    if (placement.slant && placement.mount_height_m !== null && placement.mount_height_m !== undefined) {
+      const dh = placement.mount_height_m - (placement.target_height_m ?? 1);
+      d = Math.sqrt(Math.max(d * d - dh * dh, 0));
+    }
+    phi /= placement.azimuth_scale ?? 1;
+    return [d * Math.sin(phi), d * Math.cos(phi)];
+  }
+
   function toRoom(xM, yM, placement) {
+    [xM, yM] = correct(xM, yM, placement);
     if (placement.mirror) xM = -xM;
     const a = ((placement.angle || 0) * Math.PI) / 180;
     const c = Math.cos(a), s = Math.sin(a);
@@ -142,7 +164,7 @@
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  const api = { toRoom, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, clipToPlan };
+  const api = { toRoom, correct, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, clipToPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EcholotGeometry = api;
 })(typeof window !== "undefined" ? window : globalThis);

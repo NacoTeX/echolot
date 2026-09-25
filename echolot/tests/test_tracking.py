@@ -221,7 +221,7 @@ def test_every_result_names_its_rules():
     rig = Rig()
     result = rig.report("")
     assert result["filter"] == {"definition_version": MEASUREMENT_VERSION, "confirm_s": 1.0,
-                                "smoothing": "off", "interference_spots": 0}
+                                "smoothing": "off", "interference_spots": 0, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
     assert rig.tick(5)["filter"]["definition_version"] == MEASUREMENT_VERSION
 
 

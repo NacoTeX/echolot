@@ -5,14 +5,15 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 2 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 3 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py):
      positions are followed from report to report and smoothed, and a
      new target is confirmed only once it has been reported for the
      room's confirmation time outside the learned interference spots.
-  2. Each target of the latest report is turned into room coordinates
-     (geometry.to_room).
+  2. Each target of the latest report is corrected by the sensor model
+     the calibration fitted — distance and angle scale, slant line — and
+     turned into room coordinates (geometry.to_room).
   3. Outside the walls by more than the room's edge margin: shown on the
      map, counted nowhere. Radar sees through drywall. The walls are the
      room's outline when it has one (niches, L-shapes), else its
@@ -22,6 +23,8 @@ The rules, in order — measurement definition 2 (`MEASUREMENT_VERSION`):
   6. Otherwise it counts for the room and for every detection zone that
      contains it. Zones may overlap; a target in two counts in both.
 
+Definition 2 (1.1–1.2) was the same without the sensor model; with the
+model's neutral values, definition 3 gives its answers to the bit.
 Definition 1 (Echolot 1.0) was rules 2–4 and 6 on the raw report, with
 the rectangle as the walls. For a room without an outline, with a
 confirmation time of 0 s, smoothing off and no interference spots,
@@ -49,7 +52,7 @@ logger = logging.getLogger("echolot.engine")
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 2
+MEASUREMENT_VERSION = 3
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -99,6 +102,11 @@ def filter_settings(room) -> dict:
         "confirm_s": cal.confirm_s,
         "smoothing": cal.smoothing,
         "interference_spots": len(active_interference(room)),
+        # The sensor model positions are corrected with (geometry.correct).
+        "range_scale": room.sensor.range_scale,
+        "range_offset_m": room.sensor.range_offset_m,
+        "azimuth_scale": room.sensor.azimuth_scale,
+        "slant": room.sensor.slant,
     }
 
 

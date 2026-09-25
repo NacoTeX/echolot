@@ -73,6 +73,24 @@ class SensorPlacement(BaseModel):
     #: measurement: nothing reports the module's actual reach.
     range_m: float = Field(default=6.0, ge=1, le=12)
     fov_deg: float = Field(default=120.0, ge=30, le=180)
+    #: How high the module hangs, and where on a person it sees them —
+    #: needed only if it measures the slant line rather than along the
+    #: floor. Given by the user; whether the slant applies is for the
+    #: calibration to show.
+    mount_height_m: float | None = Field(default=None, ge=0.2, le=4.0)
+    target_height_m: float = Field(default=1.0, ge=0.2, le=2.0)
+    #: The sensor model the calibration fitted (geometry.correct). The
+    #: defaults take the module's positions as they are.
+    slant: bool = False
+    range_scale: float = Field(default=1.0, ge=0.7, le=1.4)
+    range_offset_m: float = Field(default=0.0, ge=-0.6, le=0.6)
+    azimuth_scale: float = Field(default=1.0, ge=0.6, le=1.5)
+
+    @model_validator(mode="after")
+    def _slant_needs_height(self) -> "SensorPlacement":
+        if self.slant and self.mount_height_m is None:
+            raise ValueError("Die Schrägkorrektur braucht die Montagehöhe des Sensors")
+        return self
 
 
 class Furniture(BaseModel):
@@ -159,6 +177,10 @@ class Calibration(BaseModel):
     #: and over how many standpoints.
     alignment_rms_m: float | None = None
     alignment_points: int | None = None
+    #: Which sensor model the last alignment settled on (alignment.MODELS),
+    #: and its accuracy checked on spots left out, in metres.
+    alignment_model: str | None = None
+    alignment_check_m: float | None = None
 
 
 class Room(BaseModel):
@@ -374,11 +396,19 @@ def save_room(room_id: str, payload: dict) -> Room | None:
         return room
 
 
+#: What a calibration may set on the sensor: where it is, and its model.
+#: Which device stands there is the editor's business.
+SENSOR_CALIBRATED = {
+    "x", "y", "angle", "mirror", "mount_height_m", "target_height_m",
+    "slant", "range_scale", "range_offset_m", "azimuth_scale",
+}
+
+
 def update_calibration(room_id: str, *, sensor: dict | None = None, calibration: dict | None = None) -> Room | None:
     """Merge a calibration result into the stored room.
 
-    `sensor` may set x, y, angle and mirror — what an alignment finds —
-    and nothing else: which device stands there is the editor's business.
+    `sensor` may set what an alignment finds (SENSOR_CALIBRATED) and
+    nothing else: which device stands there is the editor's business.
     `calibration` replaces the fields it names. The revision goes up, so
     an editor open elsewhere reloads instead of saving over the result.
     Returns None when the room does not exist.
@@ -391,7 +421,7 @@ def update_calibration(room_id: str, *, sensor: dict | None = None, calibration:
         stored = Room.model_validate(rooms[index])
         data = stored.model_dump()
         if sensor:
-            unknown = set(sensor) - {"x", "y", "angle", "mirror"}
+            unknown = set(sensor) - SENSOR_CALIBRATED
             if unknown:
                 raise ValueError(f"Nicht einstellbar: {', '.join(sorted(unknown))}")
             data["sensor"].update(sensor)
