@@ -28,16 +28,33 @@ ESPHome-Baustein.
   rechts, vom Radar aus gesehen; die Doku beschreibt die zwei Gänge, mit
   denen sich das am eigenen Modul prüfen lässt.
 
+**Sicherheit: nur noch über Home Assistant erreichbar.** Das Add-on hörte
+im internen Netz auf jede Adresse. Jedes andere Add-on dort hätte ohne
+Anmeldung Geräteschlüssel (WLAN, API, OTA) abrufen und Firmware aufspielen
+können. Jetzt antwortet es nur dem Ingress-Gateway `172.30.32.2`, wie Home
+Assistant es für Ingress-Add-ons vorschreibt, und dem Container selbst.
+Ein gefälschter `X-Forwarded-For`-Kopf ändert daran nichts, geprüft an
+einem laufenden Server. Der tote `webui`-Eintrag, der auf einen nie
+freigegebenen Port zeigte, ist entfernt.
+
+**Die Personenzahl flackert nicht mehr (Messdefinition 5).** Gezählt
+wurden nur die Ziele der letzten Meldung. Verlor das Modul eine still
+stehende Person für eine Meldung, sprang „Personen“ auf 0 und zurück,
+während „Anwesenheit“ an blieb, und jeder Sprung landete als eigener
+Zustand in Home Assistant. Jetzt zählt ein bestätigtes Ziel weiter, dort,
+wo es zuletzt war, solange die Zielverfolgung es kennt (1,5 s). Auf der
+Karte ist es blass gezeichnet. Mit 0 s Bestätigungszeit bleibt es beim
+ungefilterten Zählen wie in 1.0.
+
 **Behoben:** Die Höhenfelder bauten die Seite beim Verlassen neu auf; ein
 Tipp auf den Knopf daneben konnte dabei verloren gehen.
 
 **Umstellung:** Die neuen Entitäten gibt es erst nach einem neuen Build und
 Flash. Bis dahin bleibt es beim Höhenfeld von 1.4, und die Seite sagt,
-warum. Kennungen ändern sich nicht; die Messdefinition bleibt 4 —
-Echolots Rechnung ist gleich, das Modul liefert nur, wofür es eingestellt
-ist.
+warum. Kennungen ändern sich nicht. Die Messdefinition steigt auf 5 (siehe
+oben) und steht so an jeder Home-Assistant-Entität.
 
-**Getestet:** 367 Tests.
+**Getestet:** 381 Tests.
 - Die Befehle, Grenzen und Quittungen gegen den Protokollkern, mit dem
   Host-Compiler übersetzt.
 - Der Baustein, von ESPHome für die `host`-Plattform gebaut, gegen ein
@@ -46,7 +63,8 @@ ist.
   - Kein Wert vor der Antwort des Moduls.
   - Höhe und Neigung nacheinander.
   - Zurücklesen nach der Quittung.
-- Gegenproben: 18 von 18 scheitern, wenn die jeweilige Regel ausgebaut ist.
+- Gegenproben: 18 von 18 für die Montage, 9 von 9 für Zugriffssperre und
+  Zählung.
 - Im Headless-Browser gegen ein simuliertes Modul:
   - von 2,20 m/30° auf 2,60 m/25° geschrieben, zurückgelesen, verworfen;
   - ein Modul, das nicht übernimmt, lässt alles, wie es war, und die Seite
