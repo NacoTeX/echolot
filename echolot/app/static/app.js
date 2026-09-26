@@ -249,7 +249,7 @@ const Echolot = (() => {
     const parts = hash.split("/").filter(Boolean).map(decodeURIComponent);
     if (!parts.length) return { view: "home", params: {} };
     if (parts[0] === "room" && parts[1]) {
-      const sub = { edit: "editor", calibrate: "calibrate" }[parts[2]] || "room";
+      const sub = { edit: "editor", calibrate: "calibrate", record: "record" }[parts[2]] || "room";
       return { view: sub, params: { id: parts[1] } };
     }
     if (parts[0] === "new-room") return { view: "newRoom", params: {} };
@@ -261,7 +261,7 @@ const Echolot = (() => {
 
   function navKey() {
     const route = parseRoute();
-    if (route.view === "room" || route.view === "editor" || route.view === "calibrate") return `room:${route.params.id}`;
+    if (["room", "editor", "calibrate", "record"].includes(route.view)) return `room:${route.params.id}`;
     if (route.view === "newRoom") return "new-room";
     return route.view;
   }

@@ -185,6 +185,7 @@
       this.el.querySelector("#room-head").innerHTML = `
         <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1></div>
         <div class="head-actions">
+          <a class="btn" href="#/room/${encodeURIComponent(room.id)}/record">${icon("record")}Aufzeichnen</a>
           <a class="btn" href="#/room/${encodeURIComponent(room.id)}/calibrate">${icon("target")}Kalibrieren</a>
           <a class="btn primary" href="#/room/${encodeURIComponent(room.id)}/edit">${icon("edit")}Raum einrichten</a>
         </div>`;
