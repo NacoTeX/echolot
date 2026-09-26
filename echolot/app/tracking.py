@@ -107,6 +107,16 @@ class Tracker:
         """The targets of the latest report, in a stable order."""
         return sorted((t for t in self.tracks if t.seen), key=lambda t: t.id)
 
+    def held(self, now: float) -> list[Track]:
+        """Confirmed targets the latest report did not carry, still within
+        their memory (TRACK_TTL_S): somebody the module lost for a report
+        or two. They keep counting where they were last seen, so a count
+        does not drop to zero and back on every dropped report."""
+        return sorted(
+            (t for t in self.tracks if not t.seen and t.confirmed and now - t.last_seen <= TRACK_TTL_S + _EPSILON),
+            key=lambda t: t.id,
+        )
+
     def update(self, points, now: float, *, confirm_s: float, alpha: float, spots=()) -> None:
         """Take one report: `points` in sensor coordinates (metres), `now`
         the time it arrived."""

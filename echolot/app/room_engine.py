@@ -5,7 +5,7 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 4 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 5 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
@@ -24,7 +24,13 @@ The rules, in order — measurement definition 4 (`MEASUREMENT_VERSION`):
   5. Not confirmed yet: shown, counted nowhere.
   6. Otherwise it counts for the room and for every detection zone that
      contains it. Zones may overlap; a target in two counts in both.
+     A confirmed target the latest report did not carry still counts,
+     where it was last seen, for as long as the tracker remembers it
+     (tracking.TRACK_TTL_S) — status "held". Not with a confirmation
+     time of 0 s, which counts each report as it is.
 
+Definition 4 (1.4) counted only the targets of the latest report: one
+dropped report took a person out of the count and put them back.
 Definition 3 (1.3) counted heartbeat repeats as reports, took only the
 latest report per evaluation, at evaluation time, and could match a
 target to a report after its memory had run out. Definition 2 (1.1–1.2)
@@ -56,7 +62,7 @@ logger = logging.getLogger("echolot.engine")
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 4
+MEASUREMENT_VERSION = 5
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -270,7 +276,11 @@ class RoomEngine:
             }
 
         targets = []
-        for track in self._tracker(room, snap).visible():
+        tracker = self._tracker(room, snap)
+        # With a confirmation time of 0 s the room counts what each report
+        # says and nothing else, as definition 1 did: nothing is held.
+        held = tracker.held(now) if room.calibration.confirm_s > 0 else []
+        for track in sorted(tracker.visible() + held, key=lambda t: t.id):
             x, y = geometry.to_room(track.x, track.y, placement)
             zone_ids: list[str] = []
             if not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):
@@ -280,7 +290,7 @@ class RoomEngine:
             elif not track.confirmed:
                 status = "interference" if track.in_spot else "pending"
             else:
-                status = "counted"
+                status = "counted" if track.seen else "held"
                 zone_ids = [z.id for z in detect if geometry.point_in_polygon(x, y, z.points)]
             targets.append({
                 "id": track.id,
@@ -290,7 +300,7 @@ class RoomEngine:
                 "status": status, "zones": zone_ids,
             })
 
-        count = sum(1 for t in targets if t["status"] == "counted")
+        count = sum(1 for t in targets if t["status"] in ("counted", "held"))
         occupied, left = self._hold(room.id).update(count > 0, now, room.hold_s)
         zone_views = []
         for zone in detect:

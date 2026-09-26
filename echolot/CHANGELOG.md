@@ -1,5 +1,82 @@
 # Changelog
 
+## 1.5.0
+
+**Das Modul erfährt, wie es hängt.** Das LD2460 kennt eine Montageart —
+Wand („side“) oder Decke („top“) — und speichert Montagehöhe und Neigung;
+es rechnet sie selbst in die Positionen ein, die es meldet. Echolot hat sie
+bisher weder gelesen noch gesetzt: Jedes Modul lief mit dem, was zufällig
+in ihm stand. Hinweis darauf aus der Einbauanleitung des UltimateSensor V2
+(SmartHomeShop), die Befehlsformate aus deren MIT-lizenziertem
+ESPHome-Baustein.
+
+- **Firmware:** fragt Montageart, Höhe und Neigung nach dem Start ab und
+  stellt sie als Auswahl und zwei Zahlen bereit („Radar Mount Mode“,
+  „Radar Mount Height“, „Radar Mount Angle“). Ihr Wert ist immer, was das
+  Modul zurückgelesen hat, nie der gewünschte. Änderungen gehen einzeln,
+  200 ms auseinander, hinaus; Höhe und Neigung, direkt nacheinander
+  geändert, kommen beide an. Beim Start schreibt sie nichts.
+- **Kalibrierseite:** „Das Modul meldet: Wand · 2,20 m · 30°“, dazu Wand
+  oder Decke, Höhe und Neigung und *Ins Modul schreiben*. Echolot wartet,
+  bis das Modul die Werte zurückliest, und sagt, ob es sie übernommen hat.
+  Die Höhe für die Schrägprüfung kommt vom Modul.
+- **Eine geänderte Montage im Modul verwirft, was damit gemessen wurde**
+  — Ausrichtung, Sensormodell, Störquellen, Standpunkte —, denn das Modul
+  meldet danach andere Positionen. Auch wenn die Änderung aus Home
+  Assistant kommt. Die erste Meldung eines Moduls wird nur vermerkt.
+- **Links und rechts:** laut Anleitung +Y nach vorn in den Raum, +X nach
+  rechts, vom Radar aus gesehen; die Doku beschreibt die zwei Gänge, mit
+  denen sich das am eigenen Modul prüfen lässt.
+
+**Sicherheit: nur noch über Home Assistant erreichbar.** Das Add-on hörte
+im internen Netz auf jede Adresse. Jedes andere Add-on dort hätte ohne
+Anmeldung Geräteschlüssel (WLAN, API, OTA) abrufen und Firmware aufspielen
+können. Jetzt antwortet es nur dem Ingress-Gateway `172.30.32.2`, wie Home
+Assistant es für Ingress-Add-ons vorschreibt, und dem Container selbst.
+Ein gefälschter `X-Forwarded-For`-Kopf ändert daran nichts, geprüft an
+einem laufenden Server. Der tote `webui`-Eintrag, der auf einen nie
+freigegebenen Port zeigte, ist entfernt.
+
+**Die Personenzahl flackert nicht mehr (Messdefinition 5).** Gezählt
+wurden nur die Ziele der letzten Meldung. Verlor das Modul eine still
+stehende Person für eine Meldung, sprang „Personen“ auf 0 und zurück,
+während „Anwesenheit“ an blieb, und jeder Sprung landete als eigener
+Zustand in Home Assistant. Jetzt zählt ein bestätigtes Ziel weiter, dort,
+wo es zuletzt war, solange die Zielverfolgung es kennt (1,5 s). Auf der
+Karte ist es blass gezeichnet. Mit 0 s Bestätigungszeit bleibt es beim
+ungefilterten Zählen wie in 1.0.
+
+**Behoben:** Die Höhenfelder bauten die Seite beim Verlassen neu auf; ein
+Tipp auf den Knopf daneben konnte dabei verloren gehen.
+
+**Umstellung:** Die neuen Entitäten gibt es erst nach einem neuen Build und
+Flash. Bis dahin bleibt es beim Höhenfeld von 1.4, und die Seite sagt,
+warum. Kennungen ändern sich nicht. Die Messdefinition steigt auf 5 (siehe
+oben) und steht so an jeder Home-Assistant-Entität.
+
+**Getestet:** 381 Tests.
+- Die Befehle, Grenzen und Quittungen gegen den Protokollkern, mit dem
+  Host-Compiler übersetzt.
+- Der Baustein, von ESPHome für die `host`-Plattform gebaut, gegen ein
+  Pseudo-Terminal, auf dem der Test das Modul spielt:
+  - Abfrage nach dem Start.
+  - Kein Wert vor der Antwort des Moduls.
+  - Höhe und Neigung nacheinander.
+  - Zurücklesen nach der Quittung.
+- Gegenproben: 18 von 18 für die Montage, 9 von 9 für Zugriffssperre und
+  Zählung.
+- Im Headless-Browser gegen ein simuliertes Modul:
+  - von 2,20 m/30° auf 2,60 m/25° geschrieben, zurückgelesen, verworfen;
+  - ein Modul, das nicht übernimmt, lässt alles, wie es war, und die Seite
+    sagt es.
+
+**Grenzen.** Kein echtes Modul hat diese Befehle bisher beantwortet; die
+Formate stammen aus fremdem, MIT-lizenziertem Code und einer
+Herstelleranleitung, nicht aus dem Handbuch selbst. Was das Modul mit
+Höhe und Neigung genau rechnet, ist nicht dokumentiert. Ob die
+Schrägkorrektur der Kalibrierung danach noch nötig ist, zeigt erst die
+Messung im Raum.
+
 ## 1.4.0
 
 **Messqualität, die sagt, was sie ist, und Kalibrierungen, die zum Raum

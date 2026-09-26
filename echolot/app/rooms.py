@@ -288,6 +288,11 @@ class Calibration(BaseModel):
     mounting_epoch: int = 0
     invalidated_at: float | None = None
     invalidated_reason: str | None = None
+    #: How the module itself said it is mounted — {mode, height_m,
+    #: angle_deg} as it read them back — the last time Echolot heard. The
+    #: module uses these to compute the positions it reports, so when they
+    #: change, whatever was measured before describes other positions.
+    module_mounting: dict | None = None
 
 
 class Room(BaseModel):
@@ -638,6 +643,8 @@ def invalidate_sensor(room: Room, reason: str) -> None:
     cal.alignment_id = None
     cal.alignment_draft = None
     cal.mounting_epoch += 1
+    # Whatever the next module says is the first word on the new mounting.
+    cal.module_mounting = None
     cal.invalidated_at = time.time()
     cal.invalidated_reason = reason
 
@@ -915,6 +922,52 @@ def remount_sensor(room_id: str, *, revision: int | None) -> Room | None:
         invalidate_sensor(room, "Sensor neu montiert")
         room.revision += 1
         room.updated_at = time.time()
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+def _same_mounting(a: dict, b: dict) -> bool:
+    return (a.get("mode") == b.get("mode")
+            and abs(float(a.get("height_m", 0)) - float(b.get("height_m", 0))) < 0.005
+            and abs(float(a.get("angle_deg", 0)) - float(b.get("angle_deg", 0))) < 0.005)
+
+
+def note_module_mounting(device_id: str, mounting: dict) -> Room | None:
+    """The module standing in a room has said how it is mounted.
+
+    The first time, that is only noted: it is what everything so far was
+    measured with. It changes nothing the editor holds, so the revision
+    stays — a module that answers while the editor is open must not turn
+    the next save into a conflict. The pages take the height from the
+    module directly.
+
+    After that, a different answer means the module now computes other
+    positions: everything measured with the old ones is dropped, as for a
+    remount (invalidate_sensor), the room's mounting height follows a
+    wall-mounted module, and the revision goes up.
+    Returns the room if anything was stored, else None.
+    """
+    with _lock:
+        rooms = _read()
+        index = next((i for i, r in enumerate(rooms) if (r.get("sensor") or {}).get("device_id") == device_id), None)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        known = room.calibration.module_mounting
+        if known is not None and _same_mounting(known, mounting):
+            return None
+        height = round(float(mounting["height_m"]), 2)
+        if known is not None:
+            invalidate_sensor(room, "Montage im Modul geändert")
+            if mounting.get("mode") == "side" and 0.2 <= height <= 4.0:
+                room.sensor.mount_height_m = height
+            room.revision += 1
+            room.updated_at = time.time()
+        room.calibration.module_mounting = {
+            "mode": mounting.get("mode"), "height_m": height, "angle_deg": round(float(mounting["angle_deg"]), 2),
+        }
+        room = Room.model_validate(room.model_dump())
         rooms[index] = room.model_dump()
         _write(rooms)
         return room

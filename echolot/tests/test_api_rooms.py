@@ -339,7 +339,7 @@ def test_live_names_the_measurement_definition(client):
     c, _ = client
     _, room = room_with_sensor(c)
     live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
-    assert live["filter"]["definition_version"] == 4
+    assert live["filter"]["definition_version"] == 5
 
 
 def test_taking_single_spots_away_keeps_the_learning_date(client):
@@ -721,3 +721,94 @@ def test_a_standpoint_recorded_across_a_sensor_swap_names_the_swap(client):
     cap.created -= 10
     view = c.get(f"/api/rooms/{rid}/capture").json()
     assert not view["kept"] and "anderen Sensor" in view["keep_error"]
+
+
+
+# --- the module's own mounting ----------------------------------------------
+
+
+class StubLink:
+    """A connected module that reads a change back, or does not."""
+
+    def __init__(self, reads_back=True):
+        from app.radar_link import LinkSnapshot
+
+        self.snapshot = LinkSnapshot(device_id="stub", connected=True, mounting_entities=True)
+        self.snapshot.mount_mode, self.snapshot.mount_height_m, self.snapshot.mount_angle_deg = "side", 2.2, 30.0
+        self.reads_back = reads_back
+        self.asked = []
+
+    def write_mounting(self, mode, height_m, angle_deg):
+        self.asked.append((mode, height_m, angle_deg))
+        if self.reads_back:
+            snap = self.snapshot
+            snap.mount_mode, snap.mount_height_m, snap.mount_angle_deg = mode, height_m, angle_deg
+
+
+def with_stub(monkeypatch, device_id, stub):
+    from app import main
+
+    monkeypatch.setattr(main.links, "link", lambda d: stub if d == device_id else None)
+    monkeypatch.setattr(main.links, "snapshot", lambda d: stub.snapshot if d == device_id else None)
+
+
+def test_the_module_mounting_is_written_read_back_and_drops_what_was_measured(client, monkeypatch):
+    c, _ = client
+    device, room = aligned_room(c)
+    rid = room["id"]
+    spots = [{"x": 1.0, "y": 1.5, "r": 0.4, "share": 0.6}]
+    c.put(f"/api/rooms/{rid}/calibration", json={"interference": {"spots": spots, "device_id": device["id"]}})
+    assert apply(c, rid, solve(c, rid)).status_code == 200
+    stub = StubLink()
+    with_stub(monkeypatch, device["id"], stub)
+    # The room page shows what the module says, live.
+    assert c.get(f"/api/rooms/{rid}").json()["module"] == {
+        "connected": True, "entities": True, "mounting": {"mode": "side", "height_m": 2.2, "angle_deg": 30.0}}
+    r = c.put(f"/api/devices/{device['id']}/mounting", json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
+    assert r.status_code == 200, r.text
+    assert r.json()["confirmed"] and r.json()["mounting"] == {"mode": "side", "height_m": 2.6, "angle_deg": 25.0}
+    assert stub.asked == [("side", 2.6, 25.0)]
+    after = c.get(f"/api/rooms/{rid}").json()
+    cal = after["calibration"]
+    # Measured with 2.2 m and 30°: none of it describes the room now.
+    assert cal["invalidated_reason"] == "Montage im Modul geändert"
+    assert cal["interference"] == [] and cal["alignment_id"] is None
+    assert cal["module_mounting"] == {"mode": "side", "height_m": 2.6, "angle_deg": 25.0}
+    assert after["sensor"]["mount_height_m"] == 2.6
+
+
+def test_a_mounting_the_module_does_not_confirm_changes_nothing(client, monkeypatch):
+    from app import main
+
+    c, _ = client
+    device, room = aligned_room(c)
+    stub = StubLink(reads_back=False)
+    with_stub(monkeypatch, device["id"], stub)
+    monkeypatch.setattr(main, "MOUNTING_CONFIRM_S", 0.3)
+    r = c.put(f"/api/devices/{device['id']}/mounting", json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
+    assert r.status_code == 200 and r.json()["confirmed"] is False
+    assert r.json()["mounting"] == {"mode": "side", "height_m": 2.2, "angle_deg": 30.0}
+    cal = c.get(f"/api/rooms/{room['id']}").json()["calibration"]
+    assert cal["mounting_epoch"] == 0 and cal["module_mounting"]["height_m"] == 2.2
+
+
+def test_the_mounting_route_checks_what_it_is_given(client, monkeypatch):
+    from app.radar_link import MountingError
+
+    c, _ = client
+    device, _room = room_with_sensor(c)
+    url = f"/api/devices/{device['id']}/mounting"
+    assert c.put(url, json={"mode": "side", "height_m": 2.6, "angle_deg": 25}).status_code == 409  # no link
+    stub = StubLink()
+    with_stub(monkeypatch, device["id"], stub)
+    for bad in ({"mode": "diagonal", "height_m": 2.6, "angle_deg": 25}, {"mode": "side", "height_m": 9, "angle_deg": 25},
+                {"mode": "side", "height_m": 2.6, "angle_deg": 120}, {"mode": "side"}):
+        assert c.put(url, json=bad).status_code == 422, bad
+
+    def old_firmware(*_):
+        raise MountingError("Die Firmware … neu bauen und flashen.")
+
+    stub.write_mounting = old_firmware
+    r = c.put(url, json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
+    assert r.status_code == 409 and "neu bauen" in r.json()["detail"]
+    assert stub.asked == []

@@ -17,6 +17,14 @@
 //     itself based on ciriousjoker/esphome_ld2460), because the part of
 //     the manual that describes them was not available to us. Treated as
 //     unverified until a real module answers.
+//   * Installation mode and parameters (0x07-0x0A), from the same
+//     smarthomeshop/ld2460 code and its LD2460-UPGRADE guide, which cite
+//     Hi-Link's manual: the module is mounted "side" (on a wall) or "top"
+//     (on the ceiling), and keeps a mounting height and tilt angle across
+//     power cycles. The module uses them itself; what exactly it does with
+//     them is not documented to us. Unverified until a real module answers
+//     — which is why the firmware only ever publishes what the module
+//     reads back, never what was asked for.
 //   * The parser itself is the one from the wohnzimmer-radar prototype
 //     (firmware 0.2.1), which received real frames from a module on
 //     2026-09-23; extended here by the second frame family.
@@ -45,6 +53,10 @@ static const size_t MAX_ACK_LENGTH = 11 + MAX_ACK_PAYLOAD;
 
 static const uint8_t FUNCTION_REPORT = 0x04;
 static const uint8_t FUNCTION_REPORTING = 0x06;
+static const uint8_t FUNCTION_SET_MOUNTING = 0x07;
+static const uint8_t FUNCTION_QUERY_MOUNTING = 0x08;
+static const uint8_t FUNCTION_SET_MODE = 0x09;
+static const uint8_t FUNCTION_QUERY_MODE = 0x0A;
 static const uint8_t FUNCTION_VERSION = 0x0B;
 
 // "Open reporting". Reporting is on by default; sending this changes
@@ -55,6 +67,24 @@ static const uint8_t COMMAND_ENABLE_REPORTING[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUN
 // Read-only: asks for the module's firmware version.
 static const uint8_t COMMAND_QUERY_VERSION[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_VERSION, 0x0C, 0x00,
                                                   0x01, 0x04, 0x03, 0x02, 0x01};
+// Read-only: the installation mode the module holds.
+static const uint8_t COMMAND_QUERY_MODE[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_QUERY_MODE, 0x0C, 0x00,
+                                               0x01, 0x04, 0x03, 0x02, 0x01};
+// Read-only: the mounting height and angle the module holds.
+static const uint8_t COMMAND_QUERY_MOUNTING[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_QUERY_MOUNTING, 0x0C, 0x00,
+                                                   0x01, 0x04, 0x03, 0x02, 0x01};
+
+// How the module is mounted, as it numbers it.
+enum class Mode : uint8_t { UNKNOWN = 0, SIDE = 1, TOP = 2 };
+
+// What the firmware will write. Hi-Link recommends 2.2-2.7 m and 25-40°
+// for a wall; the limits are wider so a room that needs something else
+// can have it, and narrow enough that a typo does not reach the module.
+static const uint16_t MIN_HEIGHT_CM = 50;
+static const uint16_t MAX_HEIGHT_CM = 500;
+static const uint16_t MAX_ANGLE_CENTIDEG = 9000;
+static const size_t SET_MODE_LENGTH = 12;
+static const size_t SET_MOUNTING_LENGTH = 15;
 
 struct Target {
   int16_t x_dm;  // decimetres, as reported; sign convention unverified
@@ -162,6 +192,86 @@ class Parser {
   Report report_;
   Ack ack_;
 };
+
+// The command that sets the installation mode; 0 bytes for a mode the
+// module does not have.
+inline size_t encode_set_mode(uint8_t *out, size_t capacity, Mode mode) {
+  if (capacity < SET_MODE_LENGTH || (mode != Mode::SIDE && mode != Mode::TOP))
+    return 0;
+  const uint8_t command[SET_MODE_LENGTH] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_SET_MODE, 0x0C, 0x00,
+                                            uint8_t(mode), 0x04, 0x03, 0x02, 0x01};
+  memcpy(out, command, SET_MODE_LENGTH);
+  return SET_MODE_LENGTH;
+}
+
+// The command that sets height (centimetres) and angle (hundredths of a
+// degree), both little-endian; 0 bytes outside the limits above.
+inline size_t encode_set_mounting(uint8_t *out, size_t capacity, uint16_t height_cm, uint16_t angle_centideg) {
+  if (capacity < SET_MOUNTING_LENGTH || height_cm < MIN_HEIGHT_CM || height_cm > MAX_HEIGHT_CM ||
+      angle_centideg > MAX_ANGLE_CENTIDEG)
+    return 0;
+  const uint8_t command[SET_MOUNTING_LENGTH] = {
+      0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_SET_MOUNTING, 0x0F, 0x00,
+      uint8_t(height_cm & 0xFF), uint8_t(height_cm >> 8), uint8_t(angle_centideg & 0xFF), uint8_t(angle_centideg >> 8),
+      0x04, 0x03, 0x02, 0x01};
+  memcpy(out, command, SET_MOUNTING_LENGTH);
+  return SET_MOUNTING_LENGTH;
+}
+
+// What the module has said about its mounting. Only its answers go in.
+struct Mounting {
+  Mode mode = Mode::UNKNOWN;
+  bool params_known = false;
+  uint16_t height_cm = 0;
+  uint16_t angle_centideg = 0;
+};
+
+enum class MountingEvent : uint8_t { NONE, MODE, PARAMS, SET_OK, SET_FAILED };
+
+// Take one acknowledgement into `mounting`. A set is acknowledged, but
+// what the module holds afterwards is only what it reads back: SET_OK and
+// SET_FAILED change nothing here, and the caller asks again.
+inline MountingEvent read_mounting_ack(Mounting &mounting, const Ack &ack) {
+  const uint8_t *p = ack.payload;
+  switch (ack.function) {
+    case FUNCTION_QUERY_MODE:
+    case FUNCTION_VERSION:
+      // The version answer starts with the mode as well.
+      if (ack.payload_length >= (ack.function == FUNCTION_VERSION ? 5 : 1) && (p[0] == 1 || p[0] == 2)) {
+        mounting.mode = Mode(p[0]);
+        return MountingEvent::MODE;
+      }
+      return MountingEvent::NONE;
+    case FUNCTION_QUERY_MOUNTING:
+      if (ack.payload_length < 4)
+        return MountingEvent::NONE;
+      mounting.params_known = true;
+      mounting.height_cm = uint16_t(p[0] | (p[1] << 8));
+      mounting.angle_centideg = uint16_t(p[2] | (p[3] << 8));
+      return MountingEvent::PARAMS;
+    case FUNCTION_SET_MODE:
+      if (ack.payload_length < 1)
+        return MountingEvent::NONE;
+      return (p[0] & 0x10) ? MountingEvent::SET_OK : MountingEvent::SET_FAILED;
+    case FUNCTION_SET_MOUNTING:
+      if (ack.payload_length < 1)
+        return MountingEvent::NONE;
+      return p[0] == 0x01 ? MountingEvent::SET_OK : MountingEvent::SET_FAILED;
+    default:
+      return MountingEvent::NONE;
+  }
+}
+
+inline const char *mode_name(Mode mode) {
+  switch (mode) {
+    case Mode::SIDE:
+      return "side";
+    case Mode::TOP:
+      return "top";
+    default:
+      return "unknown";
+  }
+}
 
 // What the link to the module is doing right now.
 //

@@ -121,9 +121,42 @@ def test_a_confirmed_person_survives_a_dropped_report_without_starting_over():
         rig.report("-15,30")
     assert rig.report("-15,30")["count"] == 1
     gap = rig.report("")  # the module lost the person for one report
-    assert gap["count"] == 0 and gap["targets"] == []
+    # Definition 5: still counted, where last seen — the count does not
+    # drop to zero and back. Definition 4 counted 0 here.
+    assert statuses(gap) == ["held"] and gap["count"] == 1
+    assert next(z for z in gap["zones"] if z["id"] == "sofa")["count"] == 1
     back = rig.report("-14,31")
     assert statuses(back) == ["counted"] and back["count"] == 1
+
+
+def test_a_held_person_stops_counting_when_the_tracker_forgets_them():
+    rig = Rig()
+    for _ in range(7):
+        rig.report("-15,30")
+    counts = [rig.report("")["count"] for _ in range(9)]  # 0.2 s apart, 1.8 s in all
+    # Remembered for 1.5 s after the last report that carried them.
+    assert counts == [1, 1, 1, 1, 1, 1, 1, 0, 0]
+    # Without new reports the engine's timer must not stretch it either.
+    for _ in range(7):
+        rig.report("-15,30")
+    rig.report("")
+    assert rig.tick(1.0)["count"] == 1
+    assert rig.tick(0.6)["count"] == 0
+
+
+def test_a_target_never_confirmed_is_not_held():
+    rig = Rig()
+    rig.report("-15,30")
+    gap = rig.report("")
+    assert gap["targets"] == [] and gap["count"] == 0
+
+
+def test_a_held_person_outside_the_walls_or_excluded_is_not_counted():
+    rig = Rig()
+    for _ in range(7):
+        rig.report("25,5")  # (5.5, 0.5): in the fan's exclusion zone
+    gap = rig.report("")
+    assert statuses(gap) == ["excluded"] and gap["count"] == 0
 
 
 def test_a_target_seen_in_only_every_third_report_is_not_confirmed():
@@ -282,8 +315,12 @@ def test_somebody_leaving_a_spot_takes_their_target_along():
         by_id = {t["id"]: t for t in result["targets"]}
         assert by_id[person_id]["raw_y"] == pytest.approx(y / 10)
         assert result["count"] == 1
-    for _ in range(10):
-        assert rig.report("10,15")["count"] == 0
+    # The person is gone: held where last seen for the tracker's memory,
+    # then not at all — and the reflector never counts.
+    results = [rig.report("10,15") for _ in range(12)]
+    assert all(t["status"] != "counted" for r in results for t in r["targets"])
+    assert [t["id"] for t in results[0]["targets"] if t["status"] == "held"] == [person_id]
+    assert all(r["count"] == 0 for r in results[8:])
 
 
 def test_a_confirmed_target_that_stays_in_a_spot_stops_counting_after_a_while():

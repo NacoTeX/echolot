@@ -41,10 +41,32 @@ ACK_REPORTING_ON = bytes.fromhex("fdfcfbfa060c001104030201")
 ACK_VERSION = bytes.fromhex("fdfcfbfa0b10000119060102" + "04030201")
 REPORT_ONE = bytes.fromhex("f4f3f2f1040f000f001700f8f7f6f5")  # (1.5 m, 2.3 m)
 REPORT_TWO = bytes.fromhex("f4f3f2f10413000f001700ffff2700f8f7f6f5")  # + (-0.1 m, 3.9 m)
+QUERY_MODE = bytes.fromhex("fdfcfbfa0a0c000104030201")
+QUERY_MOUNTING = bytes.fromhex("fdfcfbfa080c000104030201")
+ACK_MODE_SIDE = bytes.fromhex("fdfcfbfa0a0c000104030201")
+ACK_MOUNTING_260_25 = bytes.fromhex("fdfcfbfa080f000401c40904030201")  # 2.60 m, 25.00 deg
+ACK_MOUNTING_240_30 = bytes.fromhex("fdfcfbfa080f00f000b80b04030201")  # 2.40 m, 30.00 deg
+SET_MOUNTING_240_25 = bytes.fromhex("fdfcfbfa070f00f000c40904030201")
+SET_MOUNTING_240_30 = bytes.fromhex("fdfcfbfa070f00f000b80b04030201")
+ACK_SET_MOUNTING_OK = bytes.fromhex("fdfcfbfa070c000104030201")
 
 YAML = """
 esphome:
   name: ld2460-hosttest
+  on_boot:
+    # Once the module's height is known, somebody asks for 2.40 m and
+    # 30 degrees, one right after the other — as Echolot does.
+    then:
+      - wait_until:
+          condition:
+            lambda: 'return id(height_a).has_state();'
+      - delay: 1s
+      - number.set:
+          id: height_a
+          value: 2.4
+      - number.set:
+          id: angle_a
+          value: 30
 host:
 logger:
   level: DEBUG
@@ -77,6 +99,20 @@ echolot_ld2460:
       name: "Firmware A"
       on_value:
         - logger.log: {{format: "FIRMWARE_A %s", args: [x.c_str()]}}
+    mount_mode:
+      name: "Mode A"
+      on_value:
+        - logger.log: {{format: "MODE_A %s", args: [x.c_str()]}}
+    mount_height:
+      id: height_a
+      name: "Height A"
+      on_value:
+        - logger.log: {{format: "HEIGHT_A %.2f", args: [x]}}
+    mount_angle:
+      id: angle_a
+      name: "Angle A"
+      on_value:
+        - logger.log: {{format: "ANGLE_A %.2f", args: [x]}}
   - id: radar_b
     uart_id: uart_b
     stale_after: 1s
@@ -272,3 +308,39 @@ def test_the_add_on_can_read_every_line_the_component_wrote(firmware):
     assert lines
     for line in lines:
         parse_frame(line)
+
+
+def test_the_mounting_is_read_from_the_module_and_only_its_answer_counts(firmware):
+    """Runs after the conversation above. The mounting was asked for; the
+    entities show nothing until the module answers, and a change shows
+    only once the module reads it back."""
+    fw = firmware
+    assert QUERY_MODE in fw.wire["a"] and QUERY_MOUNTING in fw.wire["a"]
+    # The version answer already named the mode.
+    assert fw.values("MODE_A") == ["side"]
+    assert fw.values("HEIGHT_A") == []
+
+    fw.send("a", ACK_MODE_SIDE + ACK_MOUNTING_260_25)
+    fw.pump(0.5)
+    assert fw.values("HEIGHT_A") == ["2.60"] and fw.values("ANGLE_A") == ["25.00"]
+
+    # Somebody asks for 2.40 m, then 30 degrees (on_boot above). The
+    # first command carries the angle the module holds; the second the
+    # new height as well — not the old one read back before. Nothing is
+    # shown yet.
+    before = len(fw.wire["a"])
+    fw.pump(1.8)
+    sent = fw.wire["a"][before:]
+    assert SET_MOUNTING_240_25 in sent and SET_MOUNTING_240_30 in sent
+    assert sent.index(SET_MOUNTING_240_25) < sent.index(SET_MOUNTING_240_30)
+    assert fw.values("HEIGHT_A") == ["2.60"], "a value was shown before the module confirmed it"
+    assert fw.values("ANGLE_A") == ["25.00"]
+
+    # Accepted: the component reads back, and the new values are what it read.
+    before = len(fw.wire["a"])
+    fw.send("a", ACK_SET_MOUNTING_OK + ACK_SET_MOUNTING_OK)
+    fw.pump(0.8)
+    assert QUERY_MOUNTING in fw.wire["a"][before:]
+    fw.send("a", ACK_MOUNTING_240_30)
+    fw.pump(0.4)
+    assert fw.values("HEIGHT_A")[-1] == "2.40" and fw.values("ANGLE_A")[-1] == "30.00"

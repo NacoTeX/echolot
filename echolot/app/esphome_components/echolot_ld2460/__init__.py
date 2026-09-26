@@ -8,6 +8,12 @@ needs both coordinates of every target from the *same* report — and two
 independently throttled sensors cannot promise that. The `frame` text
 sensor below is that report, whole.
 
+Next to the frame: the module's mounting — "side" or "top", height and
+tilt angle — which the module keeps and uses itself. As a select and two
+numbers whose state is only ever what the module reads back, so Home
+Assistant and Echolot both see what the module holds, not what somebody
+asked for.
+
 It is also the only entity meant for Echolot rather than for Home
 Assistant, and it is rendered `disabled_by_default` so the recorder does
 not write ten rows a second: the add-on reads it straight from the
@@ -19,19 +25,22 @@ about it.
 """
 
 import esphome.codegen as cg
-from esphome.components import sensor, text_sensor, uart
+from esphome.components import number, select, sensor, text_sensor, uart
 import esphome.config_validation as cv
 from esphome.core import CORE
 from esphome.const import (
     CONF_ID,
+    ENTITY_CATEGORY_CONFIG,
     ENTITY_CATEGORY_DIAGNOSTIC,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
+    UNIT_DEGREES,
+    UNIT_METER,
 )
 
 CODEOWNERS = ["@NacoTeX"]
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["sensor", "text_sensor"]
+AUTO_LOAD = ["sensor", "text_sensor", "select", "number"]
 # One module per UART, and nothing against two modules on one board.
 MULTI_CONF = True
 
@@ -48,9 +57,20 @@ CONF_PROBE_INTERVAL = "probe_interval"
 CONF_FRAME_INTERVAL = "frame_interval"
 CONF_DIAGNOSTICS_INTERVAL = "diagnostics_interval"
 CONF_QUIET_MEANS_EMPTY = "quiet_means_empty"
+CONF_MOUNT_MODE = "mount_mode"
+CONF_MOUNT_HEIGHT = "mount_height"
+CONF_MOUNT_ANGLE = "mount_angle"
+
+#: In the module's order: 1 is "side", 2 is "top" (ld2460_protocol.h).
+MOUNT_MODES = ["side", "top"]
+#: What the firmware writes; ld2460_protocol.h refuses anything else.
+HEIGHT_RANGE = (0.5, 5.0, 0.01)
+ANGLE_RANGE = (0.0, 90.0, 0.5)
 
 echolot_ld2460_ns = cg.esphome_ns.namespace("echolot_ld2460")
 EcholotLd2460 = echolot_ld2460_ns.class_("EcholotLd2460", cg.Component, uart.UARTDevice)
+MountModeSelect = echolot_ld2460_ns.class_("MountModeSelect", select.Select, cg.Parented.template(EcholotLd2460))
+MountNumber = echolot_ld2460_ns.class_("MountNumber", number.Number, cg.Parented.template(EcholotLd2460))
 
 
 def _counter(icon):
@@ -103,6 +123,17 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_REPORT_FRAMES): _counter("mdi:counter"),
             cv.Optional(CONF_EMPTY_FRAMES): _counter("mdi:numeric-0-box-outline"),
             cv.Optional(CONF_REJECTED_FRAMES): _counter("mdi:alert-circle-outline"),
+            cv.Optional(CONF_MOUNT_MODE): select.select_schema(
+                MountModeSelect, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:wall"
+            ),
+            cv.Optional(CONF_MOUNT_HEIGHT): number.number_schema(
+                MountNumber, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:arrow-expand-vertical",
+                unit_of_measurement=UNIT_METER,
+            ),
+            cv.Optional(CONF_MOUNT_ANGLE): number.number_schema(
+                MountNumber, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:angle-acute",
+                unit_of_measurement=UNIT_DEGREES,
+            ),
         }
     )
     .extend(uart.UART_DEVICE_SCHEMA)
@@ -158,4 +189,18 @@ async def to_code(config):
     ):
         if key in config:
             entity = await sensor.new_sensor(config[key])
+            cg.add(getattr(var, setter)(entity))
+
+    if CONF_MOUNT_MODE in config:
+        entity = await select.new_select(config[CONF_MOUNT_MODE], options=MOUNT_MODES)
+        await cg.register_parented(entity, var)
+        cg.add(var.set_mount_mode_select(entity))
+    for key, (low, high, step), setter, is_angle in (
+        (CONF_MOUNT_HEIGHT, HEIGHT_RANGE, "set_mount_height_number", False),
+        (CONF_MOUNT_ANGLE, ANGLE_RANGE, "set_mount_angle_number", True),
+    ):
+        if key in config:
+            entity = await number.new_number(config[key], min_value=low, max_value=high, step=step)
+            await cg.register_parented(entity, var)
+            cg.add(entity.set_is_angle(is_angle))
             cg.add(getattr(var, setter)(entity))

@@ -10,6 +10,12 @@
 //   encode <S> <seq> <targets|->
 //   classify <have_report> <last_report> <have_ack> <last_ack> <enabled>
 //            <now> <stale> <ack_valid>
+//   setmode <n>       the command for installation mode n, as hex
+//   setmounting <height_cm> <angle_centideg>
+//   mounting <hex>    bytes into the parser; every acknowledgement goes
+//                     through read_mounting_ack into one Mounting that
+//                     carries over, one line per event
+//   mounting-reset
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -27,8 +33,37 @@ static int hex_value(char c) {
   return -1;
 }
 
+static void print_hex(const uint8_t *bytes, size_t n) {
+  if (n == 0) {
+    std::cout << "<empty>\n";
+    return;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    char b[3];
+    std::snprintf(b, sizeof(b), "%02x", bytes[i]);
+    std::cout << b;
+  }
+  std::cout << "\n";
+}
+
+static const char *event_name(MountingEvent e) {
+  switch (e) {
+    case MountingEvent::MODE:
+      return "mode";
+    case MountingEvent::PARAMS:
+      return "params";
+    case MountingEvent::SET_OK:
+      return "set-ok";
+    case MountingEvent::SET_FAILED:
+      return "set-failed";
+    default:
+      return "none";
+  }
+}
+
 int main() {
   Parser *parser = new Parser();
+  Mounting mounting;
   std::string line;
   while (std::getline(std::cin, line)) {
     std::istringstream in(line);
@@ -89,6 +124,31 @@ int main() {
       char text[FRAME_TEXT_CAPACITY];
       const size_t n = encode_frame(text, sizeof(text), s, uint32_t(seq), report);
       std::cout << (n ? text : "<empty>") << "\n";
+    } else if (command == "setmode") {
+      int mode = 0;
+      in >> mode;
+      uint8_t out[SET_MOUNTING_LENGTH];
+      print_hex(out, encode_set_mode(out, sizeof(out), Mode(uint8_t(mode))));
+    } else if (command == "setmounting") {
+      unsigned long height = 0, angle = 0;
+      in >> height >> angle;
+      uint8_t out[SET_MOUNTING_LENGTH];
+      print_hex(out, encode_set_mounting(out, sizeof(out), uint16_t(height), uint16_t(angle)));
+    } else if (command == "mounting-reset") {
+      mounting = Mounting{};
+      std::cout << "ok\n";
+    } else if (command == "mounting") {
+      std::string hex;
+      in >> hex;
+      for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        const uint8_t byte = uint8_t(hex_value(hex[i]) * 16 + hex_value(hex[i + 1]));
+        if (parser->feed(byte) == Event::ACK) {
+          const MountingEvent e = read_mounting_ack(mounting, parser->ack());
+          std::cout << event_name(e) << " mode=" << mode_name(mounting.mode) << " known=" << mounting.params_known
+                    << " h=" << mounting.height_cm << " a=" << mounting.angle_centideg << "\n";
+        }
+      }
+      std::cout << "end rejected=" << parser->rejected << "\n";
     } else if (command == "classify") {
       LinkClock clock;
       unsigned long have_report, last_report, have_ack, last_ack, enabled, now, stale, ack_valid;

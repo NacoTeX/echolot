@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from app import alignment, builder, devices, mqtt_bridge, reachability, rooms
 from app.board_registry import BOARDS
 from app.calibration import Captures
-from app.radar_link import links
+from app.radar_link import MOUNT_MODES, MountingError, links
 from app.room_engine import RoomEngine
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +35,24 @@ engine = RoomEngine(links)
 links.add_listener(engine.wake)
 captures = Captures(links)
 links.add_listener(captures.on_frame)
+
+
+def _module_mounting(device_id: str) -> bool:
+    """A module's mounting, as read back, into its room. True if the room
+    changed (first report, or a change that drops what was measured)."""
+    snap = links.snapshot(device_id)
+    mounting = snap.mounting() if snap else None
+    if mounting is None:
+        return False
+    return rooms.note_module_mounting(device_id, mounting) is not None
+
+
+def _on_module_mounting(device_id: str) -> None:
+    if _module_mounting(device_id):
+        asyncio.get_running_loop().create_task(refresh())
+
+
+links.add_mounting_listener(_on_module_mounting)
 
 
 def mqtt_wanted() -> bool:
@@ -102,7 +120,59 @@ async def _run_mqtt_export() -> None:
         return
 
 
+#: Home Assistant's ingress gateway. Behind it, Home Assistant has
+#: already authenticated the user; the add-on has no login of its own.
+INGRESS_GATEWAY = "172.30.32.2"
+#: The container itself (the run script, a health check).
+LOCAL_PEERS = frozenset({"127.0.0.1", "::1"})
+
+
+def ingress_only() -> bool:
+    """Whether to answer nobody but the ingress gateway.
+
+    On by default when running as an add-on (the Supervisor hands every
+    add-on a token), and set explicitly by the run script. Off for tests
+    and a development server on a desk.
+    """
+    value = os.environ.get("ECHOLOT_INGRESS_ONLY")
+    if value is not None:
+        return value.lower() not in ("0", "false", "no")
+    return bool(os.environ.get("SUPERVISOR_TOKEN"))
+
+
+class IngressOnly:
+    """Refuse every peer but the ingress gateway.
+
+    The server listens on the add-on's internal network, where every
+    other add-on can reach it — and the API hands out device keys and
+    flashes firmware. Home Assistant's rule for ingress add-ons is to
+    accept connections from 172.30.32.2 only and deny all others.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and ingress_only():
+            client = scope.get("client")
+            host = (client[0] if client else "") or ""
+            if host.startswith("::ffff:"):
+                host = host[len("::ffff:"):]
+            if host != INGRESS_GATEWAY and host not in LOCAL_PEERS:
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                    return
+                body = "Echolot ist nur über Home Assistant erreichbar (Ingress).".encode("utf-8")
+                await send({"type": "http.response.start", "status": 403,
+                            "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                                        (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Echolot", lifespan=lifespan)
+app.add_middleware(IngressOnly)
 #: Where the page loads its stylesheet, scripts and images from. The
 #: version is part of the path, not a query: Home Assistant's service
 #: worker (active only over HTTPS) answers some paths from its own cache
@@ -223,6 +293,56 @@ async def api_create_device(payload: dict) -> dict:
 @app.get("/api/devices/{device_id}")
 def api_get_device(device_id: str) -> dict:
     return _device_view(_device_or_404(device_id))
+
+
+#: How long the mounting route waits for the module to read a change back.
+MOUNTING_CONFIRM_S = 6.0
+
+
+@app.put("/api/devices/{device_id}/mounting")
+async def api_set_module_mounting(device_id: str, payload: dict) -> dict:
+    """Write the module's own mounting — {mode: "side"|"top", height_m,
+    angle_deg} — and wait for it to read the change back.
+
+    `confirmed` says whether it did: the answer carries the mounting the
+    module reports, not the one asked for. A change the module confirms
+    drops what the room measured with the old one (rooms.note_module_mounting).
+    """
+    device = _device_or_404(device_id)
+    try:
+        mode = str(payload.get("mode"))
+        height = float(payload.get("height_m"))
+        angle = float(payload.get("angle_deg"))
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=422, detail="Montage braucht mode, height_m und angle_deg") from err
+    if mode not in MOUNT_MODES:
+        raise HTTPException(status_code=422, detail="Montage ist „side“ (Wand) oder „top“ (Decke)")
+    if not (0.5 <= height <= 5.0 and 0.0 <= angle <= 90.0 and math.isfinite(height) and math.isfinite(angle)):
+        raise HTTPException(status_code=422, detail="Höhe 0,5–5 m und Neigung 0–90°")
+    link = links.link(device.id)
+    if link is None:
+        raise HTTPException(status_code=409, detail="Der Sensor ist gerade nicht verbunden.")
+    wanted = {"mode": mode, "height_m": round(height, 2), "angle_deg": round(angle, 2)}
+    # What the room was measured with, on record before it changes — or
+    # the change would pass for the module's first word and drop nothing.
+    _module_mounting(device.id)
+    try:
+        link.write_mounting(mode, wanted["height_m"], wanted["angle_deg"])
+    except MountingError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    deadline = time.monotonic() + MOUNTING_CONFIRM_S
+    confirmed = False
+    while time.monotonic() < deadline:
+        now = link.snapshot.mounting()
+        if now is not None and rooms._same_mounting(now, wanted):
+            confirmed = True
+            break
+        await asyncio.sleep(0.2)
+    # Not waiting for the listener's settle time: the room is brought in
+    # line with the module before the answer, so the page shows both.
+    if _module_mounting(device.id):
+        await refresh()
+    return {"confirmed": confirmed, "mounting": link.snapshot.mounting(), "wanted": wanted}
 
 
 @app.patch("/api/devices/{device_id}")
@@ -415,6 +535,13 @@ def _room_or_404(room_id: str) -> rooms.Room:
 def _room_view(room: rooms.Room) -> dict:
     data = room.model_dump()
     data["alignment_state"] = rooms.alignment_state(room)
+    snap = links.snapshot(room.sensor.device_id)
+    # How the module says it is mounted, live: what it reads back now.
+    data["module"] = {
+        "connected": bool(snap and snap.connected),
+        "entities": bool(snap and snap.mounting_entities),
+        "mounting": snap.mounting() if snap else None,
+    }
     if room.image:
         data["image"] = {
             "url": f"api/rooms/{room.id}/image?v={room.image.get('version', 0)}",

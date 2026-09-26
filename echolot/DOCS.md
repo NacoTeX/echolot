@@ -26,6 +26,12 @@ bleiben sie für alle weiteren Builds.
 | `log_level` | Ausführlichkeit des Add-on-Logs. |
 | `mqtt_export` | Räume und Zonen per MQTT-Discovery an Home Assistant geben (Standard `true`). Braucht einen Broker, etwa das Mosquitto-Add-on; ohne läuft alles andere normal. |
 
+Echolot ist nur über die Seitenleiste von Home Assistant erreichbar
+(Ingress): Home Assistant meldet dich an, und das Add-on antwortet nur
+dessen Ingress-Gateway (`172.30.32.2`). Andere Add-ons im internen Netz
+bekommen keine Antwort — die Oberfläche kann Geräteschlüssel zeigen und
+Firmware aufspielen.
+
 ## In drei Schritten
 
 1. **Sensor anlegen** — unter *Sensoren*: Name, Board, WLAN. Für den
@@ -124,9 +130,14 @@ gespeichert — ein zweiter Tab, das iPad —, wird das zweite Speichern
 abgelehnt, und du entscheidest, ob neu geladen wird. Ein Raum lässt sich
 nicht so verkleinern, dass Zonen oder Möbel außerhalb lägen.
 
-**Links und rechts.** Welche Seite das Modul positiv zählt, steht nicht im
-Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die
-Gegenrichtung, beim Sensor „Links und rechts tauschen“ einschalten.
+**Links und rechts.** Laut der Einbauanleitung des UltimateSensor V2, die
+sich auf Hi-Links Handbuch beruft, zeigt bei Wandmontage das Antennenende
+nach vorn in den Raum (+Y), und +X liegt rechts, vom Radar aus gesehen.
+Prüfen lässt sich das mit zwei Gängen: geradeaus vom Sensor weg wächst Y,
+von links nach rechts wächst X. Läuft der Punkt quer in die Gegenrichtung,
+beim Sensor „Links und rechts tauschen“ einschalten. Ändert sich X beim
+Seitwärtsgehen kaum, ist das Modul um 90° gedreht eingebaut — dann
+ausschalten und das Modul richtig drehen.
 
 ## Kalibrieren
 
@@ -167,12 +178,20 @@ stehst: Die Platzierung auf dem Plan ist nach Augenmaß gezeichnet, und das
 Modul selbst verzerrt — Fehler, die mit der Entfernung wachsen. Beides
 rechnet die Ausrichtung aus Standpunkten heraus.
 
-1. **Montage:** die Höhe des Sensors über dem Boden eintragen, und in
-   welcher Haltung gemessen wird (stehend, sitzend). Hängt das Radar höher
-   als der Oberkörper, misst es womöglich die schräge Linie zu dir statt
-   des Abstands am Boden — nah am Sensor ist das bis zu einem halben Meter.
-   Ob es das tut, steht in keinem Handbuch; mit der Höhe prüft die
-   Kalibrierung beide Varianten.
+1. **Montage:** Das LD2460 kennt selbst, wie es hängt — an der Wand
+   („side“) oder an der Decke („top“) —, und speichert Höhe über dem Boden
+   und Neigung nach unten. Es rechnet sie in die Positionen ein, die es
+   meldet. Die Kalibrierseite zeigt, was das Modul meldet, und schreibt
+   Änderungen hinein: *Ins Modul schreiben* schickt die Werte, wartet, bis
+   das Modul sie zurückliest, und sagt, ob es sie übernommen hat. Hi-Link
+   empfiehlt an der Wand 2,2–2,7 m Höhe und 25–40° Neigung (Beispiel:
+   2,6 m, 30°). Weil das Modul danach andere Positionen meldet, verwirft
+   eine Änderung Ausrichtung, Sensormodell, Störquellen und Standpunkte —
+   auch wenn sie in Home Assistant geändert wurde (Entitäten „Radar Mount
+   Mode/Height/Angle“). Dazu, in welcher Haltung gemessen wird (stehend,
+   sitzend). Ob die schräge Linie zu dir dann noch eine Rolle spielt, prüft
+   die Kalibrierung mit der Höhe des Moduls und nimmt, was die Messung
+   zeigt. Mit einer Firmware vor 1.5 steht hier nur ein Feld für die Höhe.
 2. **Standpunkte:** *Standpunkte vorschlagen* legt fünf Punkte in den
    Sichtbereich — nah und fern, links und rechts, nicht auf Möbeln — und
    hält zwei weitere als **Kontrollpunkte** zurück. Stell dich auf den
@@ -268,7 +287,7 @@ Zeichnung; die Ausrichtung gilt dann als veraltet.
 
 ## Wie gezählt wird
 
-Messdefinition 4 (seit 1.4). Was eine **neue Meldung** ist, entscheidet
+Messdefinition 5 (seit 1.5). Was eine **neue Meldung** ist, entscheidet
 die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
 Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
 sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
@@ -302,12 +321,22 @@ Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
 5. Sonst zählt es für den Raum und für jede **Erkennungszone**, in der es
    liegt. Zonen dürfen sich überlappen.
 
+Ein bestätigtes Ziel, das die letzte Meldung nicht enthielt — das Modul
+verliert still stehende Menschen immer wieder für eine Meldung —, zählt
+weiter, dort, wo es zuletzt war, solange die Zielverfolgung es noch kennt
+(1,5 s). Auf der Karte ist es blass gezeichnet („kurz nicht gemeldet“). So
+springt die Personenzahl nicht bei jeder ausgefallenen Meldung auf 0 und
+zurück. Mit einer Bestätigungszeit von 0 s wird nichts gehalten: Dann
+zählt genau, was jede Meldung sagt.
+
 Die Ziele stehen in Koordinaten des Sensors. Verschieben oder Drehen auf
 dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
-Definition 3 (1.3) zählte die Lebenszeichen-Wiederholungen als Meldungen
+Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
+ausgefallene Meldung nahm eine Person aus der Zählung und gab sie mit der
+nächsten zurück. Definition 3 (1.3) zählte die Lebenszeichen-Wiederholungen als Meldungen
 — ein Ziel wurde so schneller bestätigt, als das Radar es tatsächlich
 gemeldet hatte —, nahm je Auswertung nur die letzte Meldung, zur Zeit der
 Auswertung, und konnte ein Ziel nach Ablauf seines Gedächtnisses wieder
@@ -347,7 +376,7 @@ vorgeschlagenem Bereich) mit
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen werden keine Entitäten. Jede Entität trägt als Attribute
-die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 4),
+die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 5),
 `confirm_s`, `smoothing`, `interference_spots` und das Sensormodell
 (`range_scale`, `range_offset_m`, `azimuth_scale`, `slant`). So lässt sich ein
 Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
@@ -393,6 +422,16 @@ einschalten“ (Funktion `06`). Das ist der Werkszustand und ändert an einem
 laufenden Modul nichts; die Quittung ist der einzige Weg, ein stilles Modul
 von einem fehlenden zu unterscheiden.
 
+Nach dem Start fragt sie die **Montage** des Moduls ab — Montageart
+(Funktion `0A`), Höhe und Neigung (`08`) —, dreimal im Abstand von 5 s,
+danach einmal pro Minute, solange es nicht geantwortet hat. Sie stehen als
+Auswahl „Radar Mount Mode“ und Zahlen „Radar Mount Height“ (m) und „Radar
+Mount Angle“ (°) bereit. Deren Wert ist immer, was das Modul zurückgelesen
+hat: Eine Änderung geht als Befehl hinaus (`09` für die Montageart, `07`
+für Höhe in cm und Neigung in 1/100° zusammen), das Modul quittiert, die
+Firmware fragt nach, und erst die Antwort erscheint. Werte außerhalb von
+0,5–5 m und 0–90° schreibt sie nicht. Beim Start schreibt sie nichts.
+
 ## Was offen ist
 
 Nur mit echter Hardware zu klären, und deshalb Einstellungen statt
@@ -404,10 +443,15 @@ Annahmen:
   Sensor **„Stille = leerer Raum“** ein. Die Diagnose-Entität „Radar Empty
   Reports“ zählt leere Meldungen — steigt sie im leeren Raum, ist die Frage
   beantwortet, und der Schalter bleibt aus.
-- **Das Vorzeichen der X-Achse** — siehe „Links und rechts“.
-- **Der Aufbau der Quittungen für `06` und `0B`.** Er stammt aus dem
-  MIT-lizenzierten [smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460),
-  weil der entsprechende Teil des Handbuchs nicht vorlag.
+- **Das Vorzeichen der X-Achse** — jetzt beschrieben (siehe „Links und
+  rechts“), aber an einem Modul nur mit den zwei Gängen zu bestätigen.
+- **Der Aufbau der Quittungen für `06` und `0B` und der Montage-Befehle
+  `07`–`0A`.** Er stammt aus dem MIT-lizenzierten
+  [smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460) und
+  dessen Einbauanleitung, weil das Handbuch selbst nicht vorlag.
+- **Was das Modul mit Montageart, Höhe und Neigung genau rechnet.** Dass es
+  sie nutzt, sagt die Anleitung; wie, nicht. Ob die Schrägkorrektur der
+  Kalibrierung danach noch nötig ist, entscheidet die Messung im Raum.
 - **Reichweite und Öffnungswinkel** des Sichtbereichs auf der Karte sind
   Planungswerte (6 m, 120°), keine gemessenen.
 - Raumkarte, Zonen und MQTT-Export sind mit simulierten Sensoren getestet,

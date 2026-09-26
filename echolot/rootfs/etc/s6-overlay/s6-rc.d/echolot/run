@@ -26,6 +26,10 @@ export PLATFORMIO_CORE_DIR="/data/platformio"
 mkdir -p "${PLATFORMIO_CORE_DIR}"
 bashio::log.info "PlatformIO cache: ${PLATFORMIO_CORE_DIR}"
 
+# Answer Home Assistant's ingress gateway only: every other add-on on the
+# internal network could otherwise read device keys and flash firmware.
+export ECHOLOT_INGRESS_ONLY="true"
+
 cd /opt/echolot || bashio::exit.nok "Could not find app directory"
 
 exec python3 -m uvicorn app.server:app \

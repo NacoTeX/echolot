@@ -123,6 +123,14 @@ echolot_ld2460:
     name: "Radar Status"
   radar_firmware:
     name: "Radar Firmware"
+  # How the module is mounted — it keeps these and uses them itself. The
+  # state is always what the module reads back. Echolot finds them by name.
+  mount_mode:
+    name: "Radar Mount Mode"
+  mount_height:
+    name: "Radar Mount Height"
+  mount_angle:
+    name: "Radar Mount Angle"
 {% if diagnostics %}
   rx_bytes:
     name: "Radar Bytes Received"
