@@ -50,7 +50,7 @@ FURNITURE_KINDS = (
     "sofa", "armchair", "bed", "table", "desk", "chair", "tv", "wardrobe",
     "plant", "door", "window", "kitchen", "bath", "other",
 )
-ZONE_KINDS = ("detect", "exclude")
+ZONE_KINDS = ("detect", "exclude", "entry")
 SMOOTHING = ("off", "normal", "strong")
 MAX_INTERFERENCE_SPOTS = 12
 
@@ -112,7 +112,9 @@ class Zone(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     #: `detect` counts the targets inside it and becomes entities in Home
     #: Assistant. `exclude` removes targets inside it from everything —
-    #: the fan, the curtain in the draught, the aquarium.
+    #: the fan, the curtain in the draught, the aquarium. `entry` is a
+    #: door or the edge where people leave the sensor's view: whoever was
+    #: last seen there has left (see Room.assume_present_s).
     kind: Literal[ZONE_KINDS] = "detect"  # type: ignore[valid-type]
     points: list[tuple[float, float]]
     #: Absence delay: how long the zone stays occupied after its last
@@ -310,6 +312,10 @@ class Room(BaseModel):
     zones: list[Zone] = Field(default_factory=list)
     #: How long the room stays occupied after its last target.
     hold_s: float = Field(default=10.0, ge=0, le=600)
+    #: With entrance zones: somebody who vanished anywhere but at an
+    #: entrance is assumed to be still there — sitting still, lost by the
+    #: radar — for at most this long, or until seen again. 0 turns it off.
+    assume_present_s: float = Field(default=1800.0, ge=0, le=43200)
     #: Targets this far outside the walls still count. The module measures
     #: to a decimetre at best, and a person against the wall shows up on
     #: either side of it.

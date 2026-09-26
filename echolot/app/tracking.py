@@ -69,6 +69,11 @@ class Track:
     y: float
     first_seen: float
     last_seen: float
+    #: Where the target was first reported, and where last, as reported
+    #: (unsmoothed). Where somebody came from and where they went
+    #: (room_engine's entrances) must not lag behind them.
+    origin: tuple[float, float] = (0.0, 0.0)
+    reported: tuple[float, float] = (0.0, 0.0)
     #: Start of the current confirmation run; None while there is none.
     confirm_since: float | None = None
     #: Reports during the current confirmation run, and those that had
@@ -147,6 +152,7 @@ class Tracker:
             px, py = points[pi]
             track.x += alpha * (px - track.x)
             track.y += alpha * (py - track.y)
+            track.reported = (px, py)
             track.last_seen = now
             track.seen = True
         for ti, track in enumerate(self.tracks):
@@ -154,7 +160,10 @@ class Tracker:
                 track.seen = False
         for pi, (px, py) in enumerate(points):
             if pi not in matched_points:
-                self.tracks.append(Track(id=self._next_id, x=px, y=py, first_seen=now, last_seen=now))
+                self.tracks.append(Track(
+                    id=self._next_id, x=px, y=py, first_seen=now, last_seen=now,
+                    origin=(px, py), reported=(px, py),
+                ))
                 self._next_id += 1
 
         self.tracks = [t for t in self.tracks if t.seen or now - t.last_seen <= TRACK_TTL_S]

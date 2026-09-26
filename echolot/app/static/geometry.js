@@ -127,6 +127,22 @@
     return [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => [cx + dx * c - dy * s, cy + dx * s + dy * c]);
   }
 
+  // The box a turned item fills on the plan: [left, top, right, bottom].
+  // Its top-left corner is what the editor calls an item's X and Y — the
+  // stored x, y is the corner before turning, and a long item turned by
+  // 90° about its centre shows up (w - h) / 2 away from it.
+  function furnitureBox(x, y, w, h, angle) {
+    const pts = furnitureOutline(x, y, w, h, angle, 0);
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+
+  // The stored x, y that puts an item's box with its top-left at left, top.
+  function furnitureAt(left, top, w, h, angle) {
+    const [bx, by] = furnitureBox(0, 0, w, h, angle);
+    return [left - bx, top - by];
+  }
+
   function clipToPlan(points, width, height) {
     const clip = (pts, inside, cut) => {
       const out = [];
@@ -164,7 +180,7 @@
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  const api = { toRoom, correct, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, clipToPlan };
+  const api = { toRoom, correct, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, furnitureBox, furnitureAt, clipToPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EcholotGeometry = api;
 })(typeof window !== "undefined" ? window : globalThis);

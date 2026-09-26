@@ -219,3 +219,34 @@ def test_the_browser_computes_the_same_answers():
         assert len(js) == len(py), args
         for a, b in zip(js, py):
             assert a == pytest.approx(list(b), abs=0.0011)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_a_turned_item_is_placed_by_what_shows_on_the_plan():
+    """X and Y in the editor are the top-left corner of an item as it shows
+    on the plan. Two items turned by 90° against the same wall have the same
+    X however long they are; the stored corner before turning does not —
+    that made a 1 m wardrobe and a 1.47 m TV, both at X -0.15, stand 17 and
+    40 cm from the edge."""
+    cases = [[-0.15, 1.7, 1, 0.37, -90], [-0.15, 3.35, 1.47, 0.37, -90], [0.5, 0.6, 2, 0.9, 0],
+             [1.0, 1.0, 2, 1, 45], [2.0, 0.5, 1.6, 0.5, 30], [0.4, 2.0, 1.2, 0.6, 180]]
+    script = f"""
+      const g = require({json.dumps(str(JS))});
+      const cases = {json.dumps(cases)};
+      console.log(JSON.stringify({{
+        boxes: cases.map(([x, y, w, h, a]) => g.furnitureBox(x, y, w, h, a)),
+        placed: cases.map(([x, y, w, h, a]) => {{ const [px, py] = g.furnitureAt(0.35, 1.2, w, h, a); return g.furnitureBox(px, py, w, h, a); }}),
+      }}));
+    """
+    result = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    wardrobe, tv = result["boxes"][:2]
+    assert wardrobe[0] == pytest.approx(0.165) and tv[0] == pytest.approx(0.40)
+    for (x, y, w, h, a), box in zip(cases, result["boxes"]):
+        outline = geometry.furniture_outline(x, y, w, h, a)
+        assert box == pytest.approx([min(p[0] for p in outline), min(p[1] for p in outline),
+                                     max(p[0] for p in outline), max(p[1] for p in outline)])
+    # Unturned, X and Y are the stored corner, as before.
+    assert result["boxes"][2] == pytest.approx([0.5, 0.6, 2.5, 1.5])
+    # Placed by that corner, every item lines up, whatever its size or angle.
+    for box in result["placed"]:
+        assert box[:2] == pytest.approx([0.35, 1.2])

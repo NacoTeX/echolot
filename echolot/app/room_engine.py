@@ -5,7 +5,7 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 5 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 6 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
@@ -29,7 +29,14 @@ The rules, in order — measurement definition 5 (`MEASUREMENT_VERSION`):
      (tracking.TRACK_TTL_S) — status "held". Not with a confirmation
      time of 0 s, which counts each report as it is.
 
-Definition 4 (1.4) counted only the targets of the latest report: one
+Entrances (zones of kind "entry"): a counted target that leaves the count
+anywhere but in an entrance (where it was last, smoothed or as reported) — the radar lost somebody sitting still, or
+they went where it cannot see — is somebody unaccounted for. While anybody
+is, the room stays occupied, for at most the room's assume_present_s, and
+until a target first reported away from the entrances counts again. Without entrances
+nothing of this applies. The person count stays what was measured.
+
+Definition 5 (1.5) had no entrances. Definition 4 (1.4) counted only the targets of the latest report: one
 dropped report took a person out of the count and put them back.
 Definition 3 (1.3) counted heartbeat repeats as reports, took only the
 latest report per evaluation, at evaluation time, and could match a
@@ -48,9 +55,10 @@ for three seconds, or a module that answers without reporting while
 """
 
 import asyncio
+import itertools
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app import geometry
 from app.radar_frame import QUIET, RECEIVING
@@ -62,7 +70,7 @@ logger = logging.getLogger("echolot.engine")
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 5
+MEASUREMENT_VERSION = 6
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -103,6 +111,59 @@ class _Hold:
         return False, 0.0
 
 
+@dataclass(frozen=True)
+class _Place:
+    """A counted target in room coordinates: where it is (smoothed), where
+    it was last reported and where it was first reported."""
+
+    at: tuple
+    reported: tuple
+    origin: tuple
+
+
+@dataclass
+class _Presence:
+    """Who left a room's count other than through an entrance."""
+
+    #: (tracker generation, track id) -> _Place of each counted target.
+    counted: dict = field(default_factory=dict)
+    #: People who vanished away from the entrances and have not been seen
+    #: again, and when the latest of them vanished.
+    unaccounted: int = 0
+    since: float | None = None
+
+    def account(self, now_counted: dict, entries: list, assume_s: float, now: float) -> None:
+        """Take this round's counted targets (key -> _Place)."""
+        if not entries or assume_s <= 0:
+            self.counted, self.unaccounted, self.since = dict(now_counted), 0, None
+            return
+
+        def at_entrance(*points) -> bool:
+            return any(geometry.point_in_polygon(x, y, z.points) for x, y in points for z in entries)
+
+        for key, place in self.counted.items():
+            # Gone where it was last seen, smoothed or as reported: the
+            # smoothed position lags behind somebody walking out.
+            if key not in now_counted and not at_entrance(place.at, place.reported):
+                self.unaccounted += 1
+                self.since = now
+        for key, place in now_counted.items():
+            # Somebody counted again who was first reported away from the
+            # entrances: one of those unaccounted for is found. Whoever came
+            # in at an entrance is somebody new, however far into the room
+            # they are by the time they count, and finds nobody.
+            if key not in self.counted and self.unaccounted and not at_entrance(place.origin):
+                self.unaccounted -= 1
+        self.counted = dict(now_counted)
+        if not self.unaccounted or (self.since is not None and now - self.since >= assume_s):
+            self.unaccounted, self.since = 0, None
+
+    def remaining(self, assume_s: float, now: float) -> float:
+        if not self.unaccounted or self.since is None:
+            return 0.0
+        return max(0.0, assume_s - (now - self.since))
+
+
 def filter_settings(room) -> dict:
     """What decides this room's counts besides its zones — for display
     and for Home Assistant."""
@@ -110,6 +171,8 @@ def filter_settings(room) -> dict:
     return {
         "definition_version": MEASUREMENT_VERSION,
         "confirm_s": cal.confirm_s,
+        "entrances": sum(1 for z in room.zones if z.kind == "entry"),
+        "assume_present_s": room.assume_present_s,
         "smoothing": cal.smoothing,
         "interference_spots": len(active_interference(room)),
         # The sensor model positions are corrected with (geometry.correct).
@@ -133,6 +196,8 @@ class _Follow:
     #: queued measurements it took (radar_link.LinkSnapshot.queue).
     session: int = 0
     last_index: int = 0
+    #: Tells this tracker's target ids from a previous one's.
+    generation: int = 0
 
 
 class RoomEngine:
@@ -143,6 +208,8 @@ class RoomEngine:
         self._devices: dict = {}
         self._holds: dict[str, _Hold] = {}
         self._follow: dict[str, _Follow] = {}
+        self._presence: dict[str, _Presence] = {}
+        self._generations = itertools.count(1)
         self._listeners: list = []
         #: Created in start(), on the loop that runs the engine: an Event
         #: made at import belongs to whichever loop touches it first.
@@ -166,10 +233,22 @@ class RoomEngine:
         for room_id in list(self._follow):
             if room_id not in live_keys:
                 del self._follow[room_id]
+        for room_id in list(self._presence):
+            if room_id not in live_keys:
+                del self._presence[room_id]
         self.evaluate()
 
     def add_listener(self, callback) -> None:
         self._listeners.append(callback)
+
+    def clear_presence(self, room_id: str) -> bool:
+        """Somebody says the room is empty: nobody is unaccounted for."""
+        presence = self._presence.get(room_id)
+        if presence is None or not presence.unaccounted:
+            return False
+        presence.unaccounted, presence.since = 0, None
+        self.evaluate()
+        return True
 
     def wake(self, _device_id: str | None = None) -> None:
         if self._wake is not None:
@@ -232,7 +311,9 @@ class RoomEngine:
         if follow is None or follow.setup != setup or follow.session != snap.session:
             # A fresh start takes the current measurement, not whatever is
             # still queued from before.
-            follow = self._follow[room.id] = _Follow(setup, Tracker(), snap.session, max(0, snap.index - 1))
+            follow = self._follow[room.id] = _Follow(
+                setup, Tracker(), snap.session, max(0, snap.index - 1), next(self._generations)
+            )
         quiet_is_empty = self._devices[room.sensor.device_id].config.radar_quiet_means_empty
         for index, received_at, frame in snap.pending(follow.last_index):
             follow.last_index = index
@@ -255,8 +336,13 @@ class RoomEngine:
         placement = room.sensor.model_dump()
         detect = [z for z in room.zones if z.kind == "detect"]
         exclude = [z for z in room.zones if z.kind == "exclude"]
+        entries = [z for z in room.zones if z.kind == "entry"]
+        presence = self._presence.setdefault(room.id, _Presence())
 
         if points is None:
+            # Whoever was counted when the sensor went away was not seen
+            # leaving: unaccounted for, like anybody lost in the room.
+            presence.account({}, entries, room.assume_present_s, now)
             self._reset(room)
             return {
                 "room_id": room.id,
@@ -266,6 +352,9 @@ class RoomEngine:
                 "count": None,
                 "occupied": None,
                 "hold_remaining": 0.0,
+                "assumed_present": None,
+                "assumed_remaining": 0.0,
+                "unaccounted": presence.unaccounted,
                 "targets": [],
                 "zones": [
                     {"id": z.id, "name": z.name, "count": None, "occupied": None, "hold_remaining": 0.0}
@@ -276,7 +365,9 @@ class RoomEngine:
             }
 
         targets = []
+        places = {}
         tracker = self._tracker(room, snap)
+        generation = self._follow[room.id].generation
         # With a confirmation time of 0 s the room counts what each report
         # says and nothing else, as definition 1 did: nothing is held.
         held = tracker.held(now) if room.calibration.confirm_s > 0 else []
@@ -292,6 +383,11 @@ class RoomEngine:
             else:
                 status = "counted" if track.seen else "held"
                 zone_ids = [z.id for z in detect if geometry.point_in_polygon(x, y, z.points)]
+                places[(generation, track.id)] = _Place(
+                    (x, y),
+                    geometry.to_room(*track.reported, placement),
+                    geometry.to_room(*track.origin, placement),
+                )
             targets.append({
                 "id": track.id,
                 "x": round(x, 3), "y": round(y, 3),
@@ -301,6 +397,8 @@ class RoomEngine:
             })
 
         count = sum(1 for t in targets if t["status"] in ("counted", "held"))
+        presence.account(places, entries, room.assume_present_s, now)
+        assumed = presence.unaccounted > 0
         occupied, left = self._hold(room.id).update(count > 0, now, room.hold_s)
         zone_views = []
         for zone in detect:
@@ -318,8 +416,13 @@ class RoomEngine:
             "reason": None,
             "reason_text": None,
             "count": count,
-            "occupied": occupied,
+            # Somebody unaccounted for keeps the room occupied; the count
+            # stays what was measured.
+            "occupied": occupied or assumed,
             "hold_remaining": round(left, 1),
+            "assumed_present": assumed,
+            "assumed_remaining": round(presence.remaining(room.assume_present_s, now), 1),
+            "unaccounted": presence.unaccounted,
             "targets": targets,
             "zones": zone_views,
             "sensor": sensor_view,

@@ -92,6 +92,17 @@ def test_a_room_becomes_two_entities_and_each_detect_zone_two_more(env):
     assert json.loads(payload_of(client, discovery[3]))["name"] == "Sofa Personen"
 
 
+def test_an_entrance_is_no_entity(env):
+    bridge, client, _ = env
+    door = {"id": "zdoor", "name": "Tür", "kind": "entry", "points": [[4, 3], [5, 3], [5, 4], [4, 4]]}
+    mqtt_bridge.RoomPublisher(bridge).publish([make_room(zones=[door])], [result()])
+    assert not any("zdoor" in t for t in topics(client))
+    assert [t for t in topics(client) if t.endswith("/config")] == [
+        "homeassistant/binary_sensor/echolot/room_r1_occupancy/config",
+        "homeassistant/sensor/echolot/room_r1_count/config",
+    ]
+
+
 def test_states_then_availability(env):
     bridge, client, _ = env
     mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result()])
@@ -139,14 +150,14 @@ def test_every_entity_carries_the_rules_behind_its_value(env):
     config = json.loads(payload_of(client, "homeassistant/sensor/echolot/room_r1_zone_zsofa_count/config"))
     assert config["json_attributes_topic"] == "echolot/room_r1_zone_zsofa_count/attributes"
     attributes = json.loads(payload_of(client, "echolot/room_r1_zone_zsofa_count/attributes"))
-    assert attributes == {"definition_version": 5, "confirm_s": 1.0, "smoothing": "normal",
-                          "interference_spots": 0, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
+    assert attributes == {"definition_version": 6, "confirm_s": 1.0, "smoothing": "normal",
+                          "entrances": 0, "assume_present_s": 1800.0, "interference_spots": 0, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
 
 
 def test_the_rules_are_published_even_while_the_room_is_unavailable(env):
     bridge, client, _ = env
     mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result(available=False)])
-    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 5
+    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 6
 
 
 def test_an_entity_from_1_0_learns_its_attributes_topic_and_takes_it_along(env):

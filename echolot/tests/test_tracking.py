@@ -252,6 +252,7 @@ def test_every_result_names_its_rules():
     rig = Rig()
     result = rig.report("")
     assert result["filter"] == {"definition_version": MEASUREMENT_VERSION, "confirm_s": 1.0,
+                                "entrances": 0, "assume_present_s": 1800.0,
                                 "smoothing": "off", "interference_spots": 0, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
     assert rig.tick(5)["filter"]["definition_version"] == MEASUREMENT_VERSION
 
@@ -416,3 +417,182 @@ def test_a_new_connection_confirms_afresh():
     rig.links.snaps["dev"].new_session()
     rig.seq = 0
     assert statuses(rig.report("-15,30")) == ["pending"]
+
+
+# --- entrances ------------------------------------------------------------------
+#
+# Sensor at (3, 0) looking down: sensor (x, y) dm is room (3 + x/10, y/10).
+# The sofa is at room (1.5, 3.0) = sensor "-15,30"; the door on the right
+# wall at room (5.5, 1.5) = sensor "25,15".
+
+DOOR = {"id": "door", "name": "Tür", "kind": "entry", "points": [[5.2, 1.0], [6, 1.0], [6, 2.2], [5.2, 2.2]]}
+
+
+def with_door(**extra):
+    base = room()
+    zones = [z.model_dump() for z in base.zones] + [DOOR]
+    return room(zones=zones, **extra)
+
+
+def seated(rig, at="-15,30", times=7):
+    for _ in range(times):
+        result = rig.report(at)
+    assert result["count"] == at.count(";") + 1
+    return result
+
+
+def walk(rig, start, end, steps=8):
+    """Half a metre or less per report, as a person walks."""
+    (x0, y0), (x1, y1) = start, end
+    for i in range(1, steps + 1):
+        result = rig.report(f"{round(x0 + (x1 - x0) * i / steps)},{round(y0 + (y1 - y0) * i / steps)}")
+    return result
+
+
+def lost(rig, rounds=9):
+    """The radar reports nothing for a while — 1.8 s, past the tracker's memory."""
+    for _ in range(rounds):
+        result = rig.report("")
+    return result
+
+
+def test_somebody_leaving_through_the_door_leaves_the_room_empty():
+    rig = Rig(with_door())
+    seated(rig)
+    assert walk(rig, (-15, 30), (25, 15))["count"] == 1  # to the door, one target all the way
+    result = lost(rig)
+    assert result["count"] == 0 and result["occupied"] is False
+    assert result["assumed_present"] is False and result["unaccounted"] == 0
+
+
+def test_somebody_lost_on_the_sofa_is_assumed_to_be_still_there():
+    rig = Rig(with_door(assume_present_s=600))
+    seated(rig)
+    result = lost(rig)
+    # Counted as measured — nobody — but the room stays occupied.
+    assert result["count"] == 0 and result["occupied"] is True
+    assert result["assumed_present"] is True and result["unaccounted"] == 1
+    assert 595 < result["assumed_remaining"] <= 600
+    # Seen again on the sofa: found, and counted as before.
+    back = seated(rig)
+    assert back["assumed_present"] is False and back["unaccounted"] == 0 and back["occupied"] is True
+
+
+def test_the_assumption_ends_after_its_time():
+    rig = Rig(with_door(assume_present_s=60))
+    seated(rig)
+    lost(rig)  # 1.8 s
+    # The module goes on reporting an empty room, once a second.
+    for _ in range(40):
+        result = rig.report("", step=1.0)
+    assert result["occupied"] is True
+    for _ in range(20):
+        result = rig.report("", step=1.0)
+    assert result["occupied"] is False and result["assumed_present"] is False and result["unaccounted"] == 0
+
+
+def test_a_newcomer_at_the_door_does_not_find_the_one_lost_on_the_sofa():
+    rig = Rig(with_door())
+    seated(rig)
+    lost(rig)
+    arrived = seated(rig, at="25,15")  # confirmed at the door
+    assert arrived["count"] == 1 and arrived["unaccounted"] == 1
+    walk(rig, (25, 15), (15, 20), steps=3)  # a few steps in, and out again
+    walk(rig, (15, 20), (25, 15), steps=3)
+    gone = lost(rig)
+    assert gone["occupied"] is True and gone["unaccounted"] == 1
+
+
+def test_a_newcomer_counts_as_new_even_once_past_the_door():
+    """Confirmation takes a second; somebody walking in is well into the
+    room by then. Where they were first reported decides."""
+    rig = Rig(with_door())
+    seated(rig)
+    lost(rig)
+    arrived = walk(rig, (25, 15), (5, 25), steps=7)
+    assert arrived["count"] == 1 and arrived["targets"][0]["x"] < 5.2  # counted past the door
+    assert arrived["unaccounted"] == 1 and arrived["occupied"] is True
+
+
+def test_leaving_is_judged_where_last_reported_not_where_smoothing_lags():
+    rig = Rig(with_door(calibration={"confirm_s": 1.0, "smoothing": "strong"}))
+    seated(rig, times=12)
+    out = walk(rig, (-15, 30), (25, 15), steps=24)
+    assert out["count"] == 1 and out["targets"][0]["x"] < 5.2  # the smoothed target is short of the door
+    result = lost(rig)
+    assert result["occupied"] is False and result["unaccounted"] == 0
+
+
+def test_without_an_entrance_or_with_the_time_at_0_nothing_is_assumed():
+    for the_room in (room(), with_door(assume_present_s=0)):
+        rig = Rig(the_room)
+        seated(rig)
+        result = lost(rig)
+        assert result["occupied"] is False and result["assumed_present"] is False
+
+
+def test_a_sensor_outage_counts_as_not_seen_leaving():
+    rig = Rig(with_door())
+    seated(rig)
+    down = rig.tick(4)  # no frame for over three seconds
+    assert down["available"] is False and down["unaccounted"] == 1
+    up = rig.report("")
+    assert up["available"] and up["occupied"] is True and up["assumed_present"] is True
+
+
+def test_a_restarted_tracker_does_not_mistake_new_ids_for_old_ones():
+    rig = Rig(with_door())
+    seated(rig)
+    # A new confirmation time starts the tracker afresh; its ids start over.
+    rig.engine.load([with_door(calibration={"confirm_s": 0.5, "smoothing": "off"})], [device()])
+    result = rig.report("-15,30")
+    assert result["unaccounted"] == 1  # the one counted before, not seen leaving
+    for _ in range(3):
+        result = rig.report("-15,30")
+    assert result["count"] == 1 and result["unaccounted"] == 0  # found again
+
+
+def test_a_new_tracker_s_first_target_is_not_the_old_one_with_the_same_id():
+    # Without a confirmation time a target counts with its first report.
+    rig = Rig(with_door(calibration={"confirm_s": 0.0, "smoothing": "off"}))
+    assert rig.report("-15,30")["targets"][0]["id"] == 1  # on the sofa
+    # A new connection starts a new tracker, whose ids start over: its
+    # first target is id 1 again — somebody at the door, not the one on
+    # the sofa, who was not seen leaving.
+    rig.links.snaps["dev"].new_session()
+    rig.seq = 0
+    result = rig.report("25,15")
+    assert result["targets"][0]["id"] == 1 and result["count"] == 1
+    assert result["unaccounted"] == 1 and result["occupied"] is True
+
+
+def test_the_time_runs_from_the_latest_one_to_vanish():
+    rig = Rig(with_door(assume_present_s=60))
+    seated(rig, at="-15,30;5,25")
+    lost_one = [rig.report("5,25") for _ in range(9)][-1]  # the sofa one is lost
+    assert lost_one["count"] == 1 and lost_one["unaccounted"] == 1
+    for _ in range(40):
+        rig.report("5,25", step=1.0)
+    lost(rig)  # the other one too, 40 s later
+    for _ in range(30):
+        result = rig.report("", step=1.0)
+    assert result["occupied"] is True and result["unaccounted"] == 2
+    for _ in range(30):
+        result = rig.report("", step=1.0)
+    assert result["occupied"] is False and result["unaccounted"] == 0
+
+
+def test_somebody_can_say_the_room_is_empty():
+    rig = Rig(with_door())
+    seated(rig)
+    lost(rig)
+    assert rig.engine.clear_presence("r1") is True
+    assert rig.tick(0.1)["occupied"] is False
+    assert rig.engine.clear_presence("r1") is False  # nothing left to clear
+
+
+def test_an_entrance_is_no_detection_zone():
+    rig = Rig(with_door())
+    at_door = seated(rig, at="25,15")
+    assert at_door["targets"][0]["zones"] == [] and at_door["count"] == 1
+    assert [z["id"] for z in at_door["zones"]] == ["sofa"]

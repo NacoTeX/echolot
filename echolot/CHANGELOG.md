@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.6.0
+
+**Eingänge: wer nicht gegangen ist, ist noch da (Messdefinition 6).** Das
+Radar verliert Menschen, die still sitzen oder liegen, oft länger als jede
+Abwesenheitsverzögerung — dann ging das Licht über dem Sofa aus. Die Idee
+kommt von den Sensoren, die das schon können: *Assumed Present* bei
+Everything Presence, Ein- und Ausgänge beim Aqara FP2.
+
+- **Neue Zonenart „Eingang“** für Tür, Durchgang oder den Rand des
+  Sichtfelds, gezeichnet oder als *Als Zone* einer Tür. Verschwindet ein
+  gezähltes Ziel anderswo, bleibt der Raum belegt, bis jemand abseits der
+  Eingänge wieder erkannt wird, bis die Zeit *Anwesenheit annehmen* abläuft
+  (beim Raum, Standard 30 min, 0 = aus) oder bis *Raum ist leer* getippt
+  wird. Ein Sensorausfall zählt als nicht gegangen.
+- **Die Personenzahl bleibt gemessen**; nur die Belegung des Raums schließt
+  die Annahme ein, in Echolot wie in Home Assistant. Zonen ändern sich
+  nicht. Ohne Eingang zählt alles wie in 1.5.
+- **Wo jemand herkam und hinging, zählt ungeglättet:** Hinaus ist, wer
+  zuletzt — geglättet oder wie gemeldet — in einem Eingang war; neu ist,
+  wer in einem Eingang *zuerst* gemeldet wurde, auch wenn er bei seiner
+  Bestätigung schon einen Meter im Raum steht. Ziel-IDs eines neu
+  gestarteten Trackers werden nicht mit alten verwechselt.
+- **Raumseite:** „Vermutlich belegt“, *vermutlich noch da* mit der
+  verbleibenden Zeit und *Raum ist leer*; Eingänge grau gepunktet auf der
+  Karte; die Übersicht sagt „vermutlich noch da“.
+- **Home Assistant:** Eingänge werden keine Entitäten; die Attribute tragen
+  `definition_version` 6, `entrances` und `assume_present_s`.
+- **Gedrehte Möbel stehen, wo X und Y sagen.** Der Inspektor zeigte die
+  linke obere Ecke *vor* dem Drehen; gedreht wird um die Mitte. Ein um 90°
+  gedrehtes Möbelstück stand so um (Breite − Tiefe) / 2 neben seinem X:
+  Schrank (1 m) und TV (1,47 m), beide bei X −0,15, standen 17 und 40 cm
+  vom Rand. Jetzt sind X und Y die linke obere Ecke dessen, was auf dem
+  Plan steht; Breite und Tiefe ändern hält diese Ecke fest, und beim
+  Ziehen rasten die sichtbaren Kanten auf 5 cm ein. Gespeichert wird wie
+  bisher — nichts verschiebt sich beim Update, nur die angezeigten Zahlen
+  gedrehter Möbel ändern sich.
+- **„Radarchip-Firmware“** statt „Modul-Firmware“: Das ist die Firmware
+  des HLK-LD2460 selbst, die das Modul meldet. Sie ändert sich nicht,
+  wenn der ESP32 neu geflasht wird.
+- **Zurück auf 1.5** geht erst, wenn alle Eingänge wieder gelöscht sind:
+  1.5 kennt die Zonenart nicht und lädt die Räume dann nicht. Die Datei
+  bleibt dabei unverändert.
+
 ## 1.5.0
 
 **Das Modul erfährt, wie es hängt.** Das LD2460 kennt eine Montageart —

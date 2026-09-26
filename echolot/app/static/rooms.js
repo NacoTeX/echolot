@@ -121,7 +121,7 @@
       ["Radar", s && s.link_state ? escapeHtml(linkState[s.link_state] || s.link_state) : "—"],
       ["Letzte Meldung", s && s.frame_age_s !== null ? `vor ${E.formatNumber(s.frame_age_s, 1)} s` : "—"],
       ["WLAN", s && s.wifi_signal !== null ? `${Math.round(s.wifi_signal)} dBm` : "—"],
-      ["Modul-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
+      ["Radarchip-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
     ];
     return `<div class="stat-lines">${rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")}</div>`;
   }
@@ -163,13 +163,14 @@
               <span><i class="lg-pending"></i>noch nicht bestätigt</span>
               <span><i class="lg-ring"></i>zählt nicht (außerhalb / ausgeschlossen / Störquelle)</span>
               <span><i class="lg-zone"></i>Zone</span>
+              ${room.zones.some((z) => z.kind === "entry") ? `<span><i class="lg-entry"></i>Eingang</span>` : ""}
               <span><i class="lg-fov"></i>geplanter Sichtbereich</span>
               <span>Raster 0,5 m</span>
             </div>
           </section>
           <aside class="side">
             <div class="card"><div class="eyebrow">Gerade im Raum</div>
-              <div class="big-row"><div class="big-number" id="room-count">–</div><div id="room-state"></div></div>
+              <div class="big-row"><div class="big-number" id="room-count">–</div><div id="room-state" class="state-stack"></div></div>
               <p class="hint" id="room-reason" style="margin-top:10px"></p></div>
             <div class="card"><h2>Zonen</h2><div class="zone-list" id="zone-list"></div></div>
             <div class="card"><h2>Sensor</h2><div id="sensor-lines"></div></div>
@@ -201,12 +202,32 @@
       const status = E.roomStatus(room.id);
       const chip = this.el.querySelector("#room-chip");
       chip.className = `chip ${status.kind === "present" ? "present" : status.kind === "empty" ? "ok" : "warn"}`;
-      chip.textContent = status.kind === "present" ? "Anwesend" : status.kind === "empty" ? "Leer" : "Nicht verfügbar";
+      chip.textContent = status.assumed ? "Vermutlich belegt" : status.kind === "present" ? "Anwesend" : status.kind === "empty" ? "Leer" : "Nicht verfügbar";
       this.el.querySelector("#room-count").textContent = status.count === null ? "–" : status.count;
-      this.el.querySelector("#room-state").innerHTML = live && live.available && live.occupied && !live.count
-        ? `<span class="chip present">hält noch ${E.formatSeconds(live.hold_remaining)}</span>` : "";
+      const assumed = live && live.available && live.assumed_present;
+      const roomState = this.el.querySelector("#room-state");
+      const holding = live && live.available && live.occupied && !live.count;
+      const shape = assumed ? "assumed" : holding ? "hold" : "";
+      // Built only when its shape changes, the countdown alone is updated:
+      // the button must stay clickable between two live updates.
+      if (roomState.dataset.shape !== shape) {
+        roomState.dataset.shape = shape;
+        roomState.innerHTML = assumed
+          ? `<span class="chip present">vermutlich noch da</span><span class="hint" id="room-chip-time"></span>
+             <button class="btn small" id="room-clear" type="button">Raum ist leer</button>`
+          : holding ? `<span class="chip present" id="room-chip-time"></span>` : "";
+        const clear = roomState.querySelector("#room-clear");
+        if (clear) clear.addEventListener("click", () => this.clearPresence(clear));
+      }
+      const time = roomState.querySelector("#room-chip-time");
+      if (time) {
+        time.textContent = assumed ? `höchstens noch ${E.formatSeconds(live.assumed_remaining)}`
+          : `hält noch ${E.formatSeconds(live.hold_remaining)}`;
+      }
       const reason = this.el.querySelector("#room-reason");
-      reason.textContent = live && !live.available ? live.reason_text : live && live.available ? "Gezählt werden bestätigte Ziele. Echolot folgt ihnen von Meldung zu Meldung — wer wer ist, weiß das Radar nicht." : "";
+      reason.textContent = live && !live.available ? live.reason_text
+        : assumed ? `${live.unaccounted === 1 ? "Jemand ist" : `${live.unaccounted} Personen sind`} aus der Erkennung verschwunden, ohne durch einen Eingang zu gehen — vermutlich still sitzend oder außer Sicht. Der Raum gilt als belegt, bis wieder jemand abseits der Eingänge erkannt wird oder die Zeit abläuft. Die Personenzahl zeigt, was das Radar misst.`
+        : live && live.available ? "Gezählt werden bestätigte Ziele. Echolot folgt ihnen von Meldung zu Meldung — wer wer ist, weiß das Radar nicht." : "";
 
       const overlay = this.el.querySelector("#overlay");
       if (live && !live.available && (live.reason === "no_sensor" || live.reason === "offline" || live.reason === "device_missing" || live.reason === "no_frame_entity")) {
@@ -223,6 +244,9 @@
       const zoneList = this.el.querySelector("#zone-list");
       const detect = room.zones.filter((z) => z.kind === "detect");
       const excluded = room.zones.filter((z) => z.kind === "exclude");
+      const entries = room.zones.filter((z) => z.kind === "entry");
+      const others = (excluded.length ? `<p class="hint">${excluded.length} Ausschlusszone${excluded.length === 1 ? "" : "n"}: ${excluded.map((z) => escapeHtml(z.name)).join(", ")}</p>` : "")
+        + (entries.length ? `<p class="hint">${entries.length} Eingang${entries.length === 1 ? "" : "e"}: ${entries.map((z) => escapeHtml(z.name)).join(", ")}</p>` : "");
       zoneList.innerHTML = detect.length ? detect.map((z) => {
         const zs = live && live.available ? live.zones.find((x) => x.id === z.id) : null;
         const meta = !zs ? "nicht verfügbar" : zs.count ? "belegt" : zs.occupied ? `hält noch ${E.formatSeconds(zs.hold_remaining)}` : "frei";
@@ -230,13 +254,40 @@
           <span class="swatch" style="background:${Plan.zoneColor(z.color)}"></span>
           <div class="grow"><div class="name">${escapeHtml(z.name)}</div><div class="meta">${meta}</div></div>
           <div class="count">${zs ? zs.count : "–"}</div></div>`;
-      }).join("") + (excluded.length ? `<p class="hint">${excluded.length} Ausschlusszone${excluded.length === 1 ? "" : "n"}: ${excluded.map((z) => escapeHtml(z.name)).join(", ")}</p>` : "")
-        : `<div class="empty-state">Noch keine Zonen. Unter „Raum einrichten“ zeichnest du zum Beispiel das Sofa oder den Esstisch ein.</div>`;
+      }).join("") + others
+        : others || `<div class="empty-state">Noch keine Zonen. Unter „Raum einrichten“ zeichnest du zum Beispiel das Sofa oder den Esstisch ein.</div>`;
       this.el.querySelector("#sensor-lines").innerHTML = sensorLines(live, room);
+    },
+    async clearPresence(button) {
+      button.disabled = true;
+      try {
+        const res = await api(`api/rooms/${encodeURIComponent(this.id)}/presence/clear`, { method: "POST" });
+        if (res.live) state.live[this.id] = res.live;
+        toast(res.cleared ? "Der Raum gilt als leer — wer jetzt erkannt wird, zählt wieder." : "Es wurde schon niemand mehr vermutet.");
+        this.update();
+      } catch (err) {
+        button.disabled = false;
+        toast(err.message, "err");
+      }
     },
   };
 
   // --------------------------------------------------------------- editor
+
+  const ZONE_KIND_LABEL = { detect: "Erkennung", exclude: "Ausschluss", entry: "Eingang" };
+  const ENTRY_HINT = "Tür oder Durchgang, durch den man den Raum verlässt. Wer woanders aus der Erkennung verschwindet, gilt weiter als im Raum — wie lange, stellst du beim Raum unter „Anwesenheit annehmen“ ein. Zählt mit wie der übrige Raum und wird kein eigener Sensor in Home Assistant.";
+
+  function assumeText(seconds) {
+    return seconds > 0 ? `bis ${E.formatSeconds(seconds)}` : "aus";
+  }
+
+  // An item's X and Y in the editor: the top-left corner of what shows on
+  // the plan, turned or not (geometry.js furnitureBox). To the millimetre,
+  // and never "-0".
+  function furnitureCorner(f) {
+    const [left, top] = window.EcholotGeometry.furnitureBox(f.x, f.y, f.w, f.h, f.angle || 0);
+    return [Math.round(left * 1000) / 1000 + 0, Math.round(top * 1000) / 1000 + 0];
+  }
 
   function field(label, inner, hint = "") {
     return `<label class="field"><span>${label}</span>${inner}${hint ? `<p class="hint">${hint}</p>` : ""}</label>`;
@@ -355,9 +406,11 @@
       const item = this.plan.find(sel);
       if (liveDrag && item) {
         // Numbers follow the drag without rebuilding the form.
+        const corner = sel.kind === "furniture" ? furnitureCorner(item) : null;
         host.querySelectorAll("[data-f]").forEach((input) => {
           const v = input.dataset.f;
-          if (v in item && typeof item[v] === "number") input.value = Math.round(item[v] * 100) / 100;
+          const value = corner && (v === "x" || v === "y") ? corner[v === "x" ? 0 : 1] : item[v];
+          if (v in item && typeof value === "number") input.value = Math.round(value * 100) / 100;
         });
         return;
       }
@@ -398,6 +451,11 @@
           ${field(`Abwesenheitsverzögerung · <b data-out="hold">${E.formatSeconds(r.hold_s)}</b>`,
             `<input type="range" data-room="hold_s" min="0" max="300" step="5" value="${r.hold_s}">`,
             "So lange gilt der Raum nach dem letzten erkannten Ziel noch als belegt. Hilft, wenn das Radar ruhig sitzende Personen kurz verliert.")}
+          ${field(`Anwesenheit annehmen · <b data-out="assume">${assumeText(r.assume_present_s)}</b>`,
+            `<input type="range" data-room="assume_present_s" min="0" max="14400" step="300" value="${Math.min(r.assume_present_s, 14400)}">`,
+            r.zones.some((z) => z.kind === "entry")
+              ? "Wer aus der Erkennung verschwindet, ohne durch einen Eingang zu gehen, gilt so lange als noch im Raum — bis jemand abseits der Eingänge wieder erkannt wird."
+              : "Wirkt erst mit einer Zone der Art „Eingang“ an Tür oder Durchgang.")}
           ${field(`Randtoleranz · <b data-out="margin">${Math.round(r.edge_margin_m * 100)} cm</b>`,
             `<input type="range" data-room="edge_margin_m" min="0" max="1.5" step="0.05" value="${r.edge_margin_m}">`,
             "Ziele bis zu diesem Abstand hinter der Wand zählen noch mit. Radar sieht durch Trockenbau.")}
@@ -413,8 +471,8 @@
         <div class="card"><h2>Zonen</h2>
           ${r.zones.length ? `<div class="zone-list">${r.zones.map((z) => `
             <button class="zone-row" data-pick="${escapeHtml(z.id)}" style="cursor:pointer;text-align:left">
-              <span class="swatch" style="background:${z.kind === "exclude" ? "var(--danger)" : Plan.zoneColor(z.color)}"></span>
-              <span class="grow"><span class="name">${escapeHtml(z.name)}</span><br><span class="meta">${z.kind === "exclude" ? "Ausschluss" : "Erkennung"} · ${z.furniture_id ? "folgt dem Möbelstück" : `${z.points.length} Ecken`}</span></span>
+              <span class="swatch" style="background:${z.kind === "exclude" ? "var(--danger)" : z.kind === "entry" ? "var(--muted)" : Plan.zoneColor(z.color)}"></span>
+              <span class="grow"><span class="name">${escapeHtml(z.name)}</span><br><span class="meta">${ZONE_KIND_LABEL[z.kind]} · ${z.furniture_id ? "folgt dem Möbelstück" : `${z.points.length} Ecken`}</span></span>
             </button>`).join("")}</div>`
             : `<p class="hint">Mit „Rechteck“ oder „Freiform“ in der Werkzeugleiste zeichnest du eine Zone direkt auf den Plan.</p>`}
         </div>
@@ -466,11 +524,13 @@
       const zs = live && live.available ? live.zones.find((x) => x.id === z.id) : null;
       return `<div class="card"><h2>Zone</h2>
         ${field("Name", `<input data-f="name" value="${escapeHtml(z.name)}" maxlength="40">`)}
-        <div class="field"><span>Art</span><div class="segmented">
+        <div class="field"><span>Art</span><div class="segmented fill tight">
           <button type="button" data-kind="detect" class="${z.kind === "detect" ? "active" : ""}">Erkennung</button>
-          <button type="button" data-kind="exclude" class="${z.kind === "exclude" ? "active" : ""}">Ausschluss</button></div>
+          <button type="button" data-kind="exclude" class="${z.kind === "exclude" ? "active" : ""}">Ausschluss</button>
+          <button type="button" data-kind="entry" class="${z.kind === "entry" ? "active" : ""}">Eingang</button></div>
           <p class="hint">${z.kind === "exclude"
             ? "Ziele hier zählen nirgends — für Ventilator, Vorhang, Aquarium."
+            : z.kind === "entry" ? ENTRY_HINT
             : "Zählt die Ziele in der Fläche und wird in Home Assistant zu einem Belegt-Sensor und einer Personenzahl."}</p></div>
         ${z.kind === "detect" ? `
           ${field(`Abwesenheitsverzögerung · <b data-out="zhold">${E.formatSeconds(z.hold_s)}</b>`, `<input type="range" data-f="hold_s" min="0" max="300" step="5" value="${z.hold_s}">`)}
@@ -484,11 +544,13 @@
     },
 
     furnitureForm(f) {
+      const [left, top] = furnitureCorner(f);
       return `<div class="card"><h2>${escapeHtml(Plan.FURNITURE[f.kind] ? Plan.FURNITURE[f.kind].label : "Objekt")}</h2>
         ${field("Bezeichnung", `<input data-f="name" value="${escapeHtml(f.name)}" maxlength="40">`)}
         ${field("Art", `<select data-f="kind">${Object.entries(Plan.FURNITURE).map(([k, v]) => `<option value="${k}" ${f.kind === k ? "selected" : ""}>${v.label}</option>`).join("")}</select>`)}
         <div class="row2">${field("Breite · m", num("w", f.w, { min: 0.1, step: 0.05 }))}${field("Tiefe · m", num("h", f.h, { min: 0.1, step: 0.05 }))}</div>
-        <div class="row2">${field("X · m", num("x", f.x, { step: 0.05 }))}${field("Y · m", num("y", f.y, { step: 0.05 }))}</div>
+        <div class="row2">${field("X · m", num("x", left, { step: 0.05 }))}${field("Y · m", num("y", top, { step: 0.05 }))}</div>
+        <p class="hint" style="margin:-4px 0 12px">Linke obere Ecke, so wie das Möbelstück auf dem Plan steht — auch gedreht. Zwei Möbel mit gleichem X stehen an derselben Linie.</p>
         ${field("Drehung · Grad", num("angle", f.angle, { min: -360, max: 360, step: 15 }))}
         <div class="actions" style="margin-top:6px">
           <button class="btn" data-done>Fertig</button>
@@ -506,19 +568,23 @@
         none: "Mach das Möbelstück zur Zone, und Home Assistant bekommt dafür einen Belegt-Sensor und eine Personenzahl — Sofa, Bett, Schreibtisch, Esstisch.",
         detect: `Zählt, wer auf oder an „${escapeHtml(z ? z.name : "")}“ ist. Die Zone folgt dem Möbelstück, wenn du es verschiebst, drehst oder in der Größe änderst.`,
         exclude: "Was hier gemeldet wird, zählt nirgends — für Ventilator, Pflanze im Luftzug, Aquarium. Die Zone folgt dem Möbelstück.",
+        entry: `${ENTRY_HINT} Die Zone folgt dem Möbelstück.`,
       };
       return `<div class="card"><h2>Als Zone</h2>
-        <div class="field"><div class="segmented fill">
+        <div class="field"><div class="segmented fill quad">
           <button type="button" data-fzone="none" class="${kind === "none" ? "active" : ""}">Keine</button>
           <button type="button" data-fzone="detect" class="${kind === "detect" ? "active" : ""}">Erkennung</button>
-          <button type="button" data-fzone="exclude" class="${kind === "exclude" ? "active" : ""}">Ausschluss</button></div>
+          <button type="button" data-fzone="exclude" class="${kind === "exclude" ? "active" : ""}">Ausschluss</button>
+          <button type="button" data-fzone="entry" class="${kind === "entry" ? "active" : ""}">Eingang</button></div>
           <p class="hint">${hints[kind]}</p></div>
         ${z ? `
           ${field(`Rand ums Möbelstück · <b data-out="zmargin">${Math.round((z.margin_m ?? 0.2) * 100)} cm</b>`,
             `<input type="range" data-zf="margin_m" min="0" max="1" step="0.05" value="${z.margin_m ?? 0.2}">`,
             z.kind === "detect"
               ? "Das Radar verortet jemanden, der darauf sitzt oder liegt, irgendwo darum herum — der Rand fängt das auf."
-              : "Wie weit um das Möbelstück herum Meldungen verworfen werden.")}
+              : z.kind === "entry"
+                ? "Wie weit vor der Tür jemand noch als an der Tür gilt. Großzügig: das Radar verliert Gehende oft kurz vor der Tür."
+                : "Wie weit um das Möbelstück herum Meldungen verworfen werden.")}
           ${z.kind === "detect" ? `
             ${field(`Abwesenheitsverzögerung · <b data-out="zfhold">${E.formatSeconds(z.hold_s)}</b>`,
               `<input type="range" data-zf="hold_s" min="0" max="300" step="5" value="${z.hold_s}">`,
@@ -527,6 +593,35 @@
               `<button type="button" data-zcolor="${i}" class="${z.color === i ? "active" : ""}" style="background:${Plan.zoneColor(i)}" aria-label="Farbe ${i + 1}"></button>`).join("")}</div></div>
             ${zs ? `<p class="hint">Jetzt: ${zs.count ? E.people(zs.count) : "frei"}${zs.occupied && !zs.count ? ` (hält noch ${E.formatSeconds(zs.hold_remaining)})` : ""}</p>` : ""}` : ""}` : ""}
       </div>`;
+    },
+
+    // X and Y are the corner of what shows on the plan (furnitureCorner).
+    // Width and depth change the item in place: that corner stays where it
+    // is, so a wardrobe against the wall stays against it. A new angle
+    // turns it about its centre, as the handle on the plan does.
+    placeFurniture(f, key, value, input, host) {
+      const G = window.EcholotGeometry;
+      const r = this.plan.room;
+      let [left, top] = G.furnitureBox(f.x, f.y, f.w, f.h, f.angle || 0);
+      if (key === "x") left = value;
+      else if (key === "y") top = value;
+      else if (key === "w") f.w = G.clamp(value, 0.1, r.width);
+      else if (key === "h") f.h = G.clamp(value, 0.1, r.height);
+      else f.angle = value;
+      if (key !== "angle") {
+        // The centre stays on the plan.
+        const [bl, bt, br, bb] = G.furnitureBox(0, 0, f.w, f.h, f.angle || 0);
+        left = G.clamp(left, -(br - bl) / 2, r.width - (br - bl) / 2);
+        top = G.clamp(top, -(bb - bt) / 2, r.height - (bb - bt) / 2);
+        const [x, y] = G.furnitureAt(left, top, f.w, f.h, f.angle || 0);
+        f.x = Math.round(x * 1000) / 1000;
+        f.y = Math.round(y * 1000) / 1000;
+      }
+      // The other fields follow; the one being typed in is left alone.
+      const corner = furnitureCorner(f);
+      host.querySelectorAll('[data-f="x"], [data-f="y"]').forEach((other) => {
+        if (other !== input) other.value = Math.round(corner[other.dataset.f === "x" ? 0 : 1] * 100) / 100;
+      });
     },
 
     bindInspector(host, sel, item) {
@@ -578,10 +673,15 @@
           else if (input.type === "number" || input.type === "range") {
             value = Number(input.value);
             if (!Number.isFinite(value)) return;
-            if (key === "x") value = window.EcholotGeometry.clamp(value, sel.kind === "furniture" ? -target.w / 2 : 0, r.width);
-            if (key === "y") value = window.EcholotGeometry.clamp(value, sel.kind === "furniture" ? -target.h / 2 : 0, r.height);
-            if (key === "w") value = window.EcholotGeometry.clamp(value, 0.1, r.width);
-            if (key === "h") value = window.EcholotGeometry.clamp(value, 0.1, r.height);
+            if (sel.kind === "furniture" && ["x", "y", "w", "h", "angle"].includes(key)) {
+              this.placeFurniture(target, key, value, input, host);
+              plan.render();
+              if (commit) plan.commit();
+              return;
+            }
+            // The sensor; furniture went to placeFurniture above.
+            if (key === "x") value = window.EcholotGeometry.clamp(value, 0, r.width);
+            if (key === "y") value = window.EcholotGeometry.clamp(value, 0, r.height);
           } else value = input.value;
           if (key === "name" && typeof value === "string" && !value.trim() && sel.kind === "zone") return;
           target[key] = value;
@@ -621,8 +721,14 @@
             this.resize(key, v);
           } else {
             r[key] = Number(input.value);
-            const out = host.querySelector(`[data-out="${key === "hold_s" ? "hold" : "margin"}"]`);
-            if (out) out.textContent = key === "hold_s" ? E.formatSeconds(r.hold_s) : `${Math.round(r.edge_margin_m * 100)} cm`;
+            const outs = {
+              hold_s: ["hold", () => E.formatSeconds(r.hold_s)],
+              assume_present_s: ["assume", () => assumeText(r.assume_present_s)],
+              edge_margin_m: ["margin", () => `${Math.round(r.edge_margin_m * 100)} cm`],
+            };
+            const [outKey, text] = outs[key];
+            const out = host.querySelector(`[data-out="${outKey}"]`);
+            if (out) out.textContent = text();
           }
           plan.render();
           if (commit) plan.commit();

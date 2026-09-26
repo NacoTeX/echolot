@@ -37,6 +37,11 @@ const Echolot = (() => {
   }
 
   function formatSeconds(seconds) {
+    if (seconds >= 3600) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.round((seconds % 3600) / 60);
+      return m ? `${h} h ${m} min` : `${h} h`;
+    }
     if (seconds >= 60) {
       const m = Math.floor(seconds / 60);
       const rest = Math.round(seconds % 60);
@@ -193,6 +198,8 @@ const Echolot = (() => {
     if (!r) return { kind: "pending", text: "wird ausgewertet…", count: null };
     if (!r.available) return { kind: "off", text: "nicht verfügbar", count: null };
     if (r.count > 0) return { kind: "present", text: people(r.count), count: r.count };
+    // Somebody vanished away from the entrances (room_engine, entrances).
+    if (r.assumed_present) return { kind: "present", assumed: true, text: "vermutlich noch da", count: 0 };
     if (r.occupied) return { kind: "present", text: `hält noch ${formatSeconds(r.hold_remaining)}`, count: 0 };
     return { kind: "empty", text: "niemand da", count: 0 };
   }
