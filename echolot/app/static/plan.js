@@ -382,13 +382,14 @@ const Plan = (() => {
 
     zoneSvg(zone, uid) {
       const exclude = zone.kind === "exclude";
-      const color = exclude ? "var(--danger)" : zoneColor(zone.color);
-      const state = exclude ? null : this.zoneState(zone.id);
+      const entry = zone.kind === "entry";
+      const color = exclude ? "var(--danger)" : entry ? "var(--muted)" : zoneColor(zone.color);
+      const state = zone.kind === "detect" ? this.zoneState(zone.id) : null;
       const occupied = state && state.occupied;
       const sel = this.mode === "edit" && this.selection && this.selection.kind === "zone" && this.selection.id === zone.id;
       const points = zone.points.map((p) => `${fmt(p[0])},${fmt(p[1])}`).join(" ");
       const fill = exclude ? `url(#hatch-${uid})` : color;
-      const opacity = exclude ? 1 : occupied ? 0.34 : 0.13;
+      const opacity = exclude ? 1 : entry ? 0.08 : occupied ? 0.34 : 0.13;
       // Name in the zone's top-left corner rather than its middle, where
       // the furniture it was drawn around already carries a label.
       const xs = zone.points.map((p) => p[0]), ys = zone.points.map((p) => p[1]);
@@ -404,7 +405,7 @@ const Plan = (() => {
         }
       }
       return `<g data-kind="zone" data-id="${escapeHtml(zone.id)}">
-          <polygon class="pl-zone ${exclude ? "exclude" : ""} ${sel ? "pl-selected" : ""}" points="${points}"
+          <polygon class="pl-zone ${exclude ? "exclude" : entry ? "entry" : ""} ${sel ? "pl-selected" : ""}" points="${points}"
                    style="fill:${fill};fill-opacity:${opacity};stroke:${color}"/>${label}</g>`;
     }
 
@@ -834,7 +835,7 @@ const Plan = (() => {
       return this.room.zones.find((z) => z.furniture_id === furnitureId) || null;
     }
 
-    // kind: "detect", "exclude" or null to take the zone away.
+    // kind: "detect", "exclude", "entry" or null to take the zone away.
     setFurnitureZone(furnitureId, kind) {
       const r = this.room;
       const existing = this.furnitureZone(furnitureId);

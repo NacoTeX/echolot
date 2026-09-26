@@ -78,9 +78,14 @@ Zahl je Raum; auf dem Handy wird sie zur Leiste unten.
 - **Orange Kreise mit Kreuz** — gelernte Störquellen.
 - **Zonen** — leuchten auf, sobald jemand darin ist, mit der Zahl in der
   Ecke. Rechts stehen sie mit Zustand und Abwesenheits-Countdown.
+- **Eingänge** — grau gepunktet umrandet (siehe „Eingänge“).
 - **Sensor und Sichtbereich** — der gestrichelte Fächer ist eine
   Planungshilfe aus Reichweite und Öffnungswinkel, keine Messung. Wie weit
   das Modul wirklich sieht, zeigen die Punkte.
+
+Ist jemand verschwunden, ohne durch einen Eingang zu gehen, steht rechts
+**vermutlich noch da** mit der Zeit, die das höchstens noch gilt, und
+**Raum ist leer** — für den Fall, dass du es besser weißt.
 
 Hat ein Raum keine aktuelle Messung, sagt die Karte warum — kein Sensor
 zugeordnet, keine Verbindung, Radar antwortet nicht — statt einen leeren
@@ -93,14 +98,15 @@ Raum zu zeigen.
 | Auswahl | V | Antippen wählt, Ziehen verschiebt. Bei Zonen: Eckpunkte ziehen verformt, die kleinen Punkte zwischen den Ecken ziehen fügt eine Ecke hinzu, Doppelklick auf eine Ecke entfernt sie. Möbel: Griff oben dreht, Ecke unten rechts ändert die Größe. Sensor: der Griff vor ihm dreht ihn. |
 | Rechteck | R | Zone aufziehen. |
 | Freiform | P | Ecken antippen; auf die erste tippen oder Enter schließt, Esc bricht ab. |
-| Möbel | | Sofa, Bett, Tisch, Schrank, Tür, Fenster … als Orientierung. Unter *Als Zone* wird ein Möbelstück zur Erkennungs- oder Ausschlusszone, die ihm folgt (siehe unten). |
+| Möbel | | Sofa, Bett, Tisch, Schrank, Tür, Fenster … als Orientierung. Unter *Als Zone* wird ein Möbelstück zur Erkennungs-, Ausschluss- oder Eingangszone, die ihm folgt (siehe unten). |
 | Wände | | Der Umriss des Raums, für Nischen, L-Formen, Vorsprünge. Ecken ziehen, über die Punkte dazwischen neue einfügen, Doppelklick entfernt eine. *Neu nachzeichnen* zieht die Wände Ecke für Ecke, etwa über dem Grundrissbild. |
 | Einrasten | | 5-cm-Raster, Drehungen in 15°-Schritten (Sensor 5°). |
 | Rückgängig / Wiederholen | ⌘Z / ⇧⌘Z | |
 
 **Möbel als Zone.** Wähle ein Möbelstück und stell *Als Zone* auf
-*Erkennung* — für Sofa, Bett, Schreibtisch, Esstisch — oder auf
-*Ausschluss* — für Pflanze, Ventilator, Aquarium. Die Zone trägt den Namen
+*Erkennung* — für Sofa, Bett, Schreibtisch, Esstisch —, auf
+*Ausschluss* — für Pflanze, Ventilator, Aquarium — oder, bei einer Tür, auf
+*Eingang* (siehe unten). Die Zone trägt den Namen
 des Möbelstücks und folgt ihm, wenn du es verschiebst, drehst, in der Größe
 änderst oder umbenennst; löschst du es, geht die Zone mit, auch aus Home
 Assistant. Der **Rand** (Standard 20 cm) legt fest, wie weit um das Möbel
@@ -109,6 +115,19 @@ liegt, nicht genau auf den Polstern. An einer Wand endet die Zone an der
 Wand. Sitz- und Liegemöbel bekommen 30 s Abwesenheitsverzögerung statt
 10 s. Ein Tipp auf die Zone wählt das Möbelstück; einzeln verformen lässt
 sich eine Möbelzone nicht — dafür eine Zone von Hand zeichnen.
+
+**Eingänge.** Das Radar verliert Menschen, die still sitzen oder liegen,
+auch für länger als jede Abwesenheitsverzögerung. Eine Zone der Art
+*Eingang* — über die Tür, einen Durchgang oder den Rand des Sichtfelds,
+an dem man aus dem Blick geht — sagt Echolot, wo man den Raum verlässt.
+Verschwindet ein gezähltes Ziel **woanders**, gilt der Raum weiter als
+belegt: bis jemand abseits der Eingänge wieder erkannt wird, bis die Zeit
+unter *Anwesenheit annehmen* abläuft (beim Raum, Standard 30 min, 0 schaltet
+es ab) oder bis du *Raum ist leer* tippst. Die Personenzahl bleibt, was das
+Radar misst. Wer an einem Eingang zum ersten Mal gemeldet wird, ist jemand
+Neues und hebt die Annahme nicht auf. Ein Eingang zählt mit wie der übrige
+Raum und wird keine eigene Entität. Zeichne ihn großzügig: Das Radar
+verliert Gehende oft kurz vor der Tür. Ohne Eingang gibt es keine Annahme.
 
 **Wände.** Ein neuer Raum ist ein Rechteck aus Breite × Tiefe. Folgt der
 Raum nicht einem Rechteck — eine L-förmige Wohnküche, ein Erker, eine
@@ -287,7 +306,7 @@ Zeichnung; die Ausrichtung gilt dann als veraltet.
 
 ## Wie gezählt wird
 
-Messdefinition 5 (seit 1.5). Was eine **neue Meldung** ist, entscheidet
+Messdefinition 6 (seit 1.6). Was eine **neue Meldung** ist, entscheidet
 die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
 Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
 sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
@@ -334,7 +353,7 @@ dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
-Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
+Definition 5 (1.5) kannte keine Eingänge. Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
 ausgefallene Meldung nahm eine Person aus der Zählung und gab sie mit der
 nächsten zurück. Definition 3 (1.3) zählte die Lebenszeichen-Wiederholungen als Meldungen
 — ein Ziel wurde so schneller bestätigt, als das Radar es tatsächlich
@@ -348,6 +367,16 @@ Raum und Zone gelten als belegt, solange ein Ziel darin ist, und danach
 noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar).
 Das ist der ehrliche Regler dafür, dass das Modul still sitzende Menschen
 zeitweise verliert.
+
+Hat der Raum **Eingänge**, gilt er außerdem als belegt, solange jemand
+nicht abgemeldet ist: Ein gezähltes Ziel, das aus der Zählung fällt, ohne
+dass es zuletzt — geglättet oder wie gemeldet — in einem Eingang lag, ist
+eine Person mehr, die nicht abgemeldet ist. Ein Ausfall des Sensors zählt
+genauso. Jedes Ziel, das neu zu zählen beginnt und *zuerst* abseits der
+Eingänge gemeldet wurde, ist eine davon weniger; eines, das in einem
+Eingang zuerst gemeldet wurde, ist jemand Neues. Die Annahme endet
+*Anwesenheit annehmen* nach dem letzten Verschwinden, oder mit *Raum ist
+leer*. Die Personenzahl ändert sie nicht, nur die Belegung.
 
 **Nicht verfügbar ist nicht leer.** Ohne aktuelle Meldung — keine
 Verbindung, drei Sekunden keine Zeile, Modul antwortet nicht — sind Raum und
@@ -375,9 +404,11 @@ vorgeschlagenem Bereich) mit
 - `sensor` *Personen*
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
-Ausschlusszonen werden keine Entitäten. Jede Entität trägt als Attribute
-die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 5),
-`confirm_s`, `smoothing`, `interference_spots` und das Sensormodell
+Ausschlusszonen und Eingänge werden keine Entitäten. *Anwesenheit* des
+Raums schließt die Annahme an Eingängen ein, *Personen* nicht. Jede Entität
+trägt als Attribute die Regeln, nach denen ihr Wert entstand:
+`definition_version` (jetzt 6), `confirm_s`, `smoothing`, `entrances`,
+`assume_present_s`, `interference_spots` und das Sensormodell
 (`range_scale`, `range_offset_m`, `azimuth_scale`, `slant`). So lässt sich ein
 Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
 Verfügbarkeiten: dem Add-on und dem Raum. Gelöschte Zonen und Räume
@@ -460,6 +491,11 @@ Annahmen:
   50 % Trefferquote, 20 s Vertrauen in Störquellen, Störquellen ab 3 % der
   Meldungen — sind an simulierten Meldungen gewählt. Wie gut sie zu einem
   echten LD2460 passen, zeigt erst der Raum.
+- **Eingänge sind an simulierten Meldungen geprüft.** Wie oft ein echtes
+  Modul jemanden mitten im Raum verliert, der dann wirklich gegangen ist
+  (etwa durch eine Tür, die nicht als Eingang eingezeichnet ist), und wie
+  oft ein kurz bestätigter Reflex eine Annahme auslöst, zeigt erst der
+  Raum. *Raum ist leer* und *Anwesenheit annehmen* sind die Regler dafür.
 - **Die Kalibrierung ist nur an simulierten Modulen geprüft.** Die
   Rauschgrenze (6 cm) und die Stufen der Kontrollpunkte (15/30 cm) sind
   gewählt, nicht an echten Messungen abgeleitet. Ob ein Fehler, der mit

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.6.0
+
+**Eingänge: wer nicht gegangen ist, ist noch da (Messdefinition 6).** Das
+Radar verliert Menschen, die still sitzen oder liegen, oft länger als jede
+Abwesenheitsverzögerung — dann ging das Licht über dem Sofa aus. Die Idee
+kommt von den Sensoren, die das schon können: *Assumed Present* bei
+Everything Presence, Ein- und Ausgänge beim Aqara FP2.
+
+- **Neue Zonenart „Eingang“** für Tür, Durchgang oder den Rand des
+  Sichtfelds, gezeichnet oder als *Als Zone* einer Tür. Verschwindet ein
+  gezähltes Ziel anderswo, bleibt der Raum belegt, bis jemand abseits der
+  Eingänge wieder erkannt wird, bis die Zeit *Anwesenheit annehmen* abläuft
+  (beim Raum, Standard 30 min, 0 = aus) oder bis *Raum ist leer* getippt
+  wird. Ein Sensorausfall zählt als nicht gegangen.
+- **Die Personenzahl bleibt gemessen**; nur die Belegung des Raums schließt
+  die Annahme ein, in Echolot wie in Home Assistant. Zonen ändern sich
+  nicht. Ohne Eingang zählt alles wie in 1.5.
+- **Wo jemand herkam und hinging, zählt ungeglättet:** Hinaus ist, wer
+  zuletzt — geglättet oder wie gemeldet — in einem Eingang war; neu ist,
+  wer in einem Eingang *zuerst* gemeldet wurde, auch wenn er bei seiner
+  Bestätigung schon einen Meter im Raum steht. Ziel-IDs eines neu
+  gestarteten Trackers werden nicht mit alten verwechselt.
+- **Raumseite:** „Vermutlich belegt“, *vermutlich noch da* mit der
+  verbleibenden Zeit und *Raum ist leer*; Eingänge grau gepunktet auf der
+  Karte; die Übersicht sagt „vermutlich noch da“.
+- **Home Assistant:** Eingänge werden keine Entitäten; die Attribute tragen
+  `definition_version` 6, `entrances` und `assume_present_s`.
+- **Zurück auf 1.5** geht erst, wenn alle Eingänge wieder gelöscht sind:
+  1.5 kennt die Zonenart nicht und lädt die Räume dann nicht. Die Datei
+  bleibt dabei unverändert.
+
 ## 1.5.0
 
 **Das Modul erfährt, wie es hängt.** Das LD2460 kennt eine Montageart —
