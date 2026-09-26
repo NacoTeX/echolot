@@ -300,9 +300,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pl-target { transition: transform .32s linear; }
 .pl-target .halo { fill: var(--target); opacity: .16; }
 .pl-target .dot { fill: var(--target); stroke: var(--surface); stroke-width: .035; }
-.pl-target.outside .dot, .pl-target.excluded .dot { fill: var(--surface); stroke: var(--faint); stroke-width: .03; }
-.pl-target.outside .halo, .pl-target.excluded .halo,
-.pl-target.outside .pulse, .pl-target.excluded .pulse { display: none; }
+.pl-target.outside .dot, .pl-target.excluded .dot, .pl-target.invalid .dot { fill: var(--surface); stroke: var(--faint); stroke-width: .03; }
+.pl-target.invalid .dot { stroke-dasharray: .03 .03; }
+.pl-target.outside .halo, .pl-target.excluded .halo, .pl-target.invalid .halo,
+.pl-target.outside .pulse, .pl-target.excluded .pulse, .pl-target.invalid .pulse { display: none; }
 .pl-target .pulse { fill: none; stroke: var(--target); stroke-width: .02; opacity: 0;
   animation: pulse 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes pulse { 0% { opacity: .5; transform: scale(.6); } 100% { opacity: 0; transform: scale(2.1); } }
@@ -325,6 +326,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .cal-error { stroke: var(--danger); stroke-width: .025; stroke-dasharray: .05 .04; }
 .cal-seen { fill: var(--danger); opacity: .8; }
 .cal-seen.after { fill: var(--accent); }
+.cal-seen.placeless { fill: none; stroke: var(--faint); stroke-width: .025; stroke-dasharray: .03 .03; opacity: 1; }
 .cal-mark circle { fill: var(--surface); stroke: var(--text); stroke-width: .03; }
 .cal-mark text { font-size: .15px; font-weight: 700; fill: var(--text); }
 .cal-mark.pending circle { stroke: var(--accent); stroke-width: .04; stroke-dasharray: .06 .04; }

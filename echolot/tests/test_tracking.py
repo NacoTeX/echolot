@@ -5,6 +5,7 @@ reflector learned in the empty room does not count, a person does — and
 with the filters off the answers are exactly those of definition 1.
 """
 
+import math
 import random
 import sys
 from pathlib import Path
@@ -596,3 +597,34 @@ def test_an_entrance_is_no_detection_zone():
     at_door = seated(rig, at="25,15")
     assert at_door["targets"][0]["zones"] == [] and at_door["count"] == 1
     assert [z["id"] for z in at_door["zones"]] == ["sofa"]
+
+
+# --- reports the sensor model has no place for --------------------------------------
+
+def slanted():
+    return room(sensor={"device_id": "dev", "x": 3, "y": 0, "angle": 0,
+                        "slant": True, "mount_height_m": 2.2, "target_height_m": 1.0})
+
+
+def test_a_report_the_slant_cannot_explain_counts_nowhere():
+    """1.2 m between module and body: a slant line of 0.8 m has no place on
+    the floor. It used to count at the sensor's foot."""
+    rig = Rig(slanted())
+    for _ in range(7):
+        result = rig.report("0,8")
+    assert statuses(result) == ["invalid"] and result["count"] == 0 and not result["occupied"]
+
+
+def test_a_report_just_short_of_the_slant_is_somebody_at_the_foot():
+    """Within the tolerance a report is a person right below the sensor,
+    placed at its foot, as before."""
+    rig = Rig(slanted())
+    for _ in range(7):
+        result = rig.report("0,11")
+    assert statuses(result) == ["counted"] and result["count"] == 1
+    assert (result["targets"][0]["x"], result["targets"][0]["y"]) == (3.0, 0.0)
+    # And one farther out is placed by the slant as it always was.
+    far = Rig(slanted())
+    for _ in range(7):
+        result = far.report("0,25")
+    assert statuses(result) == ["counted"] and result["targets"][0]["y"] == pytest.approx(math.sqrt(2.5**2 - 1.2**2), abs=1e-3)

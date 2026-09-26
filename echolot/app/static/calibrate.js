@@ -581,13 +581,16 @@
           svg += `<g class="cal-mark suggested"><circle cx="${q[0]}" cy="${q[1]}" r="0.14"/>
             <text x="${q[0]}" y="${q[1]}" text-anchor="middle" dominant-baseline="central">${String.fromCharCode(65 + i)}</text></g>`;
         });
+        // A report the model has no place for sits at the sensor's foot
+        // only because the arithmetic put it there: drawn as such.
+        const placeless = (raw, model) => G.modelShortfall(raw[0], raw[1], model) > G.MODEL_TOLERANCE_M ? " placeless" : "";
         this.points().forEach((p, i) => {
           const now = G.toRoom(p.raw[0], p.raw[1], room.sensor);
           svg += `<line class="cal-error" x1="${p.ref[0]}" y1="${p.ref[1]}" x2="${now.x.toFixed(3)}" y2="${now.y.toFixed(3)}"/>`;
-          svg += `<circle class="cal-seen" cx="${now.x.toFixed(3)}" cy="${now.y.toFixed(3)}" r="0.06"/>`;
+          svg += `<circle class="cal-seen${placeless(p.raw, room.sensor)}" cx="${now.x.toFixed(3)}" cy="${now.y.toFixed(3)}" r="0.06"/>`;
           if (pr) {
             const then = G.toRoom(p.raw[0], p.raw[1], pr);
-            svg += `<circle class="cal-seen after" cx="${then.x.toFixed(3)}" cy="${then.y.toFixed(3)}" r="0.06"/>`;
+            svg += `<circle class="cal-seen after${placeless(p.raw, pr)}" cx="${then.x.toFixed(3)}" cy="${then.y.toFixed(3)}" r="0.06"/>`;
           }
           const isCheck = p.role === "check";
           const label = isCheck ? `K${this.points().slice(0, i + 1).filter((q) => q.role === "check").length}`

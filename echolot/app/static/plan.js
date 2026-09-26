@@ -482,6 +482,7 @@ const Plan = (() => {
         const title = {
           outside: "außerhalb des Raums — zählt nicht",
           excluded: "in einer Ausschlusszone — zählt nicht",
+          invalid: "näher, als das Sensormodell erlaubt — ohne Ort, zählt nicht",
           pending: "noch nicht bestätigt — zählt, wenn es bleibt",
           interference: "an einer bekannten Störquelle — zählt nicht",
           held: "gerade nicht gemeldet — zählt noch, wo es zuletzt war",

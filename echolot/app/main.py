@@ -822,7 +822,7 @@ def _solve_for(room: rooms.Room, pairs: list, checks: list, key: str, heights: d
         **room.sensor.model_dump(),
         **{k: heights[k] for k in ("mount_height_m", "target_height_m") if k in heights},
     })
-    result = alignment.solve(pairs, sensor.model_dump(), room.width, room.height, checks=checks)
+    result = alignment.solve(pairs, sensor.model_dump(), room.width, room.height, checks=checks, outline=room.outline)
     # What this was computed for. Applying checks it against the room.
     result["basis"] = {
         "revision": room.revision,

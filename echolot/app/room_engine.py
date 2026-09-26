@@ -5,7 +5,7 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 6 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 7 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
@@ -16,6 +16,9 @@ The rules, in order — measurement definition 6 (`MEASUREMENT_VERSION`):
   2. Each target of the latest report is corrected by the sensor model
      the calibration fitted — distance and angle scale, slant line — and
      turned into room coordinates (geometry.to_room).
+     A report more than geometry.MODEL_TOLERANCE_M below what that model
+     can place — nearer than the slant line or the range offset allows —
+     has no place: status "invalid", counted nowhere.
   3. Outside the walls by more than the room's edge margin: shown on the
      map, counted nowhere. Radar sees through drywall. The walls are the
      room's outline when it has one (niches, L-shapes), else its
@@ -36,7 +39,9 @@ is, the room stays occupied, for at most the room's assume_present_s, and
 until a target first reported away from the entrances counts again. Without entrances
 nothing of this applies. The person count stays what was measured.
 
-Definition 5 (1.5) had no entrances. Definition 4 (1.4) counted only the targets of the latest report: one
+Definition 6 (1.6) put a report the sensor model cannot place at the
+sensor's foot and counted it there. Definition 5 (1.5) had no entrances.
+Definition 4 (1.4) counted only the targets of the latest report: one
 dropped report took a person out of the count and put them back.
 Definition 3 (1.3) counted heartbeat repeats as reports, took only the
 latest report per evaluation, at evaluation time, and could match a
@@ -70,7 +75,7 @@ logger = logging.getLogger("echolot.engine")
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 6
+MEASUREMENT_VERSION = 7
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -374,7 +379,11 @@ class RoomEngine:
         for track in sorted(tracker.visible() + held, key=lambda t: t.id):
             x, y = geometry.to_room(track.x, track.y, placement)
             zone_ids: list[str] = []
-            if not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):
+            if geometry.model_shortfall(track.x, track.y, placement) > geometry.MODEL_TOLERANCE_M:
+                # The sensor model has no place for it (see geometry): the
+                # position it got — the sensor's foot — says nothing.
+                status = "invalid"
+            elif not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):
                 status = "outside"
             elif any(geometry.point_in_polygon(x, y, z.points) for z in exclude):
                 status = "excluded"

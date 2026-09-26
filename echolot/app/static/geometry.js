@@ -24,6 +24,20 @@
     return [d * Math.sin(phi), d * Math.cos(phi)];
   }
 
+  // See model_shortfall() and MODEL_TOLERANCE_M in app/geometry.py.
+  const MODEL_TOLERANCE_M = 0.2;
+
+  function modelShortfall(xM, yM, placement) {
+    if (isNeutral(placement)) return 0;
+    const r = Math.hypot(xM, yM);
+    const d = (r - (placement.range_offset_m ?? 0)) / (placement.range_scale ?? 1);
+    if (placement.slant && placement.mount_height_m !== null && placement.mount_height_m !== undefined) {
+      const dh = Math.abs(placement.mount_height_m - (placement.target_height_m ?? 1));
+      return Math.max(0, dh - d);
+    }
+    return Math.max(0, -d);
+  }
+
   function toRoom(xM, yM, placement) {
     [xM, yM] = correct(xM, yM, placement);
     if (placement.mirror) xM = -xM;
@@ -180,7 +194,7 @@
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  const api = { toRoom, correct, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, furnitureBox, furnitureAt, clipToPlan };
+  const api = { toRoom, correct, modelShortfall, MODEL_TOLERANCE_M, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, furnitureBox, furnitureAt, clipToPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EcholotGeometry = api;
 })(typeof window !== "undefined" ? window : globalThis);
