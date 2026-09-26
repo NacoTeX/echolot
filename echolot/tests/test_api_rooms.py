@@ -339,7 +339,7 @@ def test_live_names_the_measurement_definition(client):
     c, _ = client
     _, room = room_with_sensor(c)
     live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
-    assert live["filter"]["definition_version"] == 5
+    assert live["filter"]["definition_version"] == 6
 
 
 def test_taking_single_spots_away_keeps_the_learning_date(client):
@@ -812,3 +812,25 @@ def test_the_mounting_route_checks_what_it_is_given(client, monkeypatch):
     r = c.put(url, json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
     assert r.status_code == 409 and "neu bauen" in r.json()["detail"]
     assert stub.asked == []
+
+
+def test_an_entrance_is_kept_and_the_room_can_be_called_empty(client):
+    c, _ = client
+    _, room = room_with_sensor(c)
+    room["zones"] = [{"id": "door", "name": "Tür", "kind": "entry", "points": [[5, 1], [6, 1], [6, 2], [5, 2]]}]
+    room["assume_present_s"] = 900
+    saved = c.put(f"/api/rooms/{room['id']}", json=room).json()
+    assert saved["zones"][0]["kind"] == "entry" and saved["assume_present_s"] == 900
+    bad = {**saved, "assume_present_s": 50000}
+    assert c.put(f"/api/rooms/{room['id']}", json=bad).status_code == 422
+    r = c.post(f"/api/rooms/{room['id']}/presence/clear")
+    assert r.status_code == 200 and r.json()["cleared"] is False  # nobody unaccounted for
+    assert c.post("/api/rooms/nope/presence/clear").status_code == 404
+
+
+def test_calling_the_room_empty_runs_on_the_engine_s_loop():
+    """The engine is driven from the event loop. A plain def route runs in
+    a worker thread and would evaluate alongside it."""
+    import inspect
+    from app import main
+    assert inspect.iscoroutinefunction(main.api_clear_presence)

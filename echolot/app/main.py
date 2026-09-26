@@ -605,6 +605,18 @@ async def api_delete_room(room_id: str) -> None:
     await refresh()
 
 
+@app.post("/api/rooms/{room_id}/presence/clear")
+async def api_clear_presence(room_id: str) -> dict:
+    """Somebody in the room says it is empty: nobody is unaccounted for
+    any more. Whoever the radar sees still counts.
+
+    async on purpose: the engine is driven from the event loop; a plain
+    def would run in a worker thread and evaluate alongside it."""
+    _room_or_404(room_id)
+    cleared = engine.clear_presence(room_id)
+    return {"cleared": cleared, "live": engine.latest.get(room_id)}
+
+
 @app.put("/api/rooms/{room_id}/image")
 async def api_upload_room_image(room_id: str, request: Request) -> dict:
     content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
