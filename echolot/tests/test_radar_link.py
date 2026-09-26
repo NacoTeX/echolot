@@ -26,9 +26,19 @@ class State:
     missing_state: bool = False
 
 
+@dataclass
+class NodeInfo:
+    """Like aioesphomeapi's DeviceInfo, the fields the link reads."""
+    project_name: str = "nacotex.echolot"
+    project_version: str = "1.7.0 (a1b2c3d4)"
+    esphome_version: str = "2026.6.5"
+    compilation_time: str = "Sep 26 2026, 20:30:12"
+
+
 class FakeClient:
     instances = []
     fail_with = None
+    node = None
     entities = [Info(1, "Radar Frame"), Info(2, "Radar Status"), Info(3, "WiFi Signal"), Info(4, "Radar Firmware")]
 
     def __init__(self, address, port, key, name):
@@ -46,6 +56,11 @@ class FakeClient:
     async def list_entities_services(self):
         return list(FakeClient.entities), []
 
+    async def device_info(self):
+        if isinstance(FakeClient.node, Exception):
+            raise FakeClient.node
+        return FakeClient.node
+
     def subscribe_states(self, callback):
         self.on_state = callback
 
@@ -57,6 +72,7 @@ class FakeClient:
 def reset(monkeypatch):
     FakeClient.instances = []
     FakeClient.fail_with = None
+    FakeClient.node = NodeInfo()
     FakeClient.entities = [Info(1, "Radar Frame"), Info(2, "Radar Status"), Info(3, "WiFi Signal"),
                            Info(4, "Radar Firmware")]
     monkeypatch.setattr(radar_link, "BACKOFF", (0.01, 0.01))
@@ -379,3 +395,37 @@ def test_a_new_connection_forgets_the_mounting_until_the_module_says_it_again():
     snap.mount_mode, snap.mount_height_m, snap.mount_angle_deg = "side", 2.6, 25.0
     snap.new_session()
     assert snap.mounting() is None
+
+
+def test_the_node_says_which_firmware_it_runs():
+    async def run():
+        links = radar_link.RadarLinks(client_factory=FakeClient)
+        await links.sync([device()])
+        await settle()
+        snap = links.snapshot("dev")
+        assert snap.connected
+        assert snap.node == {"project": "nacotex.echolot", "version": "1.7.0 (a1b2c3d4)",
+                             "esphome": "2026.6.5", "compiled": "Sep 26 2026, 20:30:12"}
+        assert snap.as_dict()["node"] == snap.node
+        await links.stop_all()
+    asyncio.run(run())
+
+
+def test_a_node_that_does_not_say_is_still_linked_and_says_nothing_old():
+    async def run():
+        links = radar_link.RadarLinks(client_factory=FakeClient)
+        await links.sync([device()])
+        await settle()
+        assert links.snapshot("dev").node is not None
+        # The next connection's question goes unanswered: what the last one
+        # said is not carried over — after a flash it describes another image.
+        FakeClient.node = TimeoutError("no answer")
+        await FakeClient.instances[0].on_stop(False)
+        await settle(10)
+        snap = links.snapshot("dev")
+        assert len(FakeClient.instances) == 2 and snap.connected
+        assert snap.node is None
+        FakeClient.instances[1].on_state(State(1, "1|R|1|15,23"))
+        assert snap.frame.targets_m == ((1.5, 2.3),)
+        await links.stop_all()
+    asyncio.run(run())

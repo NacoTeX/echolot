@@ -834,3 +834,30 @@ def test_calling_the_room_empty_runs_on_the_engine_s_loop():
     import inspect
     from app import main
     assert inspect.iscoroutinefunction(main.api_clear_presence)
+
+
+def test_the_device_page_says_which_firmware_the_node_runs_while_connected(client, monkeypatch):
+    from app import builder
+    from app.radar_link import LinkSnapshot
+
+    c, _ = client
+    device = new_device(c)
+
+    class Stub:
+        snapshot = LinkSnapshot(device_id=device["id"], connected=True)
+
+    with_stub(monkeypatch, device["id"], Stub)
+
+    def view():
+        return next(d for d in c.get("/api/devices").json() if d["id"] == device["id"])
+
+    Stub.snapshot.node = {"project": builder.FIRMWARE_PROJECT, "version": "1.6.0 (00000000)",
+                          "esphome": "2026.6.5", "compiled": "Sep 26 2026, 20:30:12"}
+    running = view()["firmware_running"]
+    assert running["state"] == "outdated" and running["version"] == "1.6.0"
+    assert running["builds"] == {"version": builder.addon_version(), "revision": builder.firmware_revision()}
+    Stub.snapshot.node = {**Stub.snapshot.node, "version": builder.firmware_version()}
+    assert view()["firmware_running"]["state"] == "current"
+    # Disconnected, the last answer may describe an image since replaced.
+    Stub.snapshot.connected = False
+    assert view()["firmware_running"] is None

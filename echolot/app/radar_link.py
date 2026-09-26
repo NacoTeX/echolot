@@ -112,6 +112,10 @@ class LinkSnapshot:
     mount_mode: str | None = None
     mount_height_m: float | None = None
     mount_angle_deg: float | None = None
+    #: What the node said about itself on this connection (ESPHome's
+    #: device info): {"project", "version", "esphome", "compiled"}. None
+    #: until it has answered, or when it did not.
+    node: dict | None = None
 
     def mounting(self) -> dict | None:
         """The module's mounting, once all three are known."""
@@ -200,6 +204,7 @@ class LinkSnapshot:
             "dropped": self.dropped,
             "mounting_entities": self.mounting_entities,
             "mounting": self.mounting(),
+            "node": self.node,
         }
 
 
@@ -315,6 +320,7 @@ class RadarLink:
             self.snapshot.no_frame_entity = "frame" not in self._roles.values()
             self.snapshot.mounting_entities = all(r in self._roles.values() for r in MOUNT_ROLES)
             self.snapshot.new_session()
+            self.snapshot.node = await self._node_info(client)
             self.snapshot.connected = True
             self.snapshot.connected_since = time.time()
             self.snapshot.error = (
@@ -335,6 +341,23 @@ class RadarLink:
                 await client.disconnect(force=True)
             except Exception:  # noqa: BLE001 - already gone is fine
                 pass
+
+    async def _node_info(self, client) -> dict | None:
+        """Which firmware the node runs, as it says. A node that does not
+        answer is still a node: the link goes on without it."""
+        try:
+            info = await asyncio.wait_for(client.device_info(), LIST_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - an unanswered question is no failed link
+            logger.debug("Radar %s: keine Geräteinfo: %s", self.name, err)
+            return None
+        return {
+            "project": str(getattr(info, "project_name", "") or ""),
+            "version": str(getattr(info, "project_version", "") or ""),
+            "esphome": str(getattr(info, "esphome_version", "") or ""),
+            "compiled": str(getattr(info, "compilation_time", "") or ""),
+        }
 
     def _on_state(self, state) -> None:
         role = self._roles.get(getattr(state, "key", None))

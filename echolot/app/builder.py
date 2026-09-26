@@ -1,9 +1,11 @@
 """Renders per-device ESPHome YAML and drives `esphome compile` for it."""
 
+import functools
 import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -35,6 +37,11 @@ COMPONENTS_DIR = Path(__file__).parent / "esphome_components"
 RADAR_COMPONENT = "echolot_ld2460"
 #: The frame line the component publishes, see app/radar_frame.py.
 RADAR_FRAME_FORMAT = 1
+#: The ESPHome project a radar image names itself after (esphome:
+#: project:). The node reports it, with firmware_version(), to every API
+#: client — which is how the device page knows what is running on it.
+FIRMWARE_PROJECT = "nacotex.echolot"
+_RADAR_TEMPLATE = "ld2460.yaml.j2"
 _env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
     autoescape=select_autoescape(disabled_extensions=("j2",), default=False),
@@ -226,6 +233,69 @@ def radar_component_digest() -> str:
     return digest.hexdigest()
 
 
+@functools.lru_cache(maxsize=1)
+def firmware_revision() -> str:
+    """Echolot's own part of a radar image — the component and the
+    template — in eight hex digits.
+
+    It changes only when they do. The add-on version alone would call
+    every image outdated after an update that did not touch the firmware.
+    The sources ship inside the add-on and do not change while it runs.
+    """
+    digest = hashlib.sha256()
+    digest.update(radar_component_digest().encode() + b"\0")
+    digest.update((TEMPLATES_DIR / _RADAR_TEMPLATE).read_bytes())
+    return digest.hexdigest()[:8]
+
+
+def firmware_version() -> str:
+    """What a radar image built now reports as its version:
+    "<add-on version> (<firmware_revision>)"."""
+    return f"{addon_version()} ({firmware_revision()})"
+
+
+_REPORTED_VERSION = re.compile(r"(?P<version>.+) \((?P<revision>[0-9a-f]{8})\)")
+
+
+def running_firmware(node: dict | None) -> dict | None:
+    """What a node says it runs, next to what this add-on builds now.
+
+    `state` is one of
+      current   an Echolot image of the same firmware revision
+      outdated  an Echolot image of another revision: a new build and a
+                flash bring the node to what this add-on has
+      unknown   the node names no project — built before Echolot 1.7,
+                which did not stamp its images, or not by Echolot at all
+      foreign   the node names somebody else's project
+    None when the node has not said anything (no connection, no answer).
+    """
+    if node is None:
+        return None
+    project = node.get("project") or ""
+    reported = node.get("version") or ""
+    out = {
+        "state": "unknown",
+        "project": project or None,
+        "version": None,
+        "revision": None,
+        "esphome": node.get("esphome") or None,
+        "compiled": node.get("compiled") or None,
+        # What a new build would report.
+        "builds": {"version": addon_version(), "revision": firmware_revision()},
+    }
+    if project and project != FIRMWARE_PROJECT:
+        out["state"] = "foreign"
+        out["version"] = reported or None
+        return out
+    match = _REPORTED_VERSION.fullmatch(reported)
+    if not project or match is None:
+        out["version"] = reported or None
+        return out
+    out["version"], out["revision"] = match["version"], match["revision"]
+    out["state"] = "current" if match["revision"] == firmware_revision() else "outdated"
+    return out
+
+
 def build_manifest(device: Device, firmware: Path | None) -> dict:
     """What this artefact was made of, so a later question has an answer.
 
@@ -246,6 +316,9 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
         "build_id": uuid.uuid4().hex,
         "echolot_version": addon_version(),
         "echolot_revision": addon_revision(),
+        # What the image reports as its version once it runs (esphome:
+        # project:), for comparing with what a node says.
+        "firmware_version": firmware_version(),
         # What the image senses with. Absent from manifests written
         # before 0.14.0, all of which are Wi-Fi CSI builds.
         "sensor": device.config.sensor,
@@ -285,8 +358,10 @@ def build_manifest(device: Device, firmware: Path | None) -> dict:
 
 def render_yaml(device: Device) -> str:
     config = device.config
-    return _env.get_template("ld2460.yaml.j2").render(
+    return _env.get_template(_RADAR_TEMPLATE).render(
         device_name=config.name,
+        firmware_project=FIRMWARE_PROJECT,
+        firmware_version=firmware_version(),
         friendly_name=config.friendly_name or config.name,
         board=get_board(config.board),
         wifi_ssid=config.wifi_ssid,

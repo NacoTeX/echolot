@@ -269,6 +269,9 @@ def _device_view(device: devices.Device) -> dict:
     data = device.public()
     snap = links.snapshot(device.id)
     data["link"] = snap.as_dict() if snap else None
+    # What runs on the node, only while it is connected: after a flash the
+    # last answer describes the image that was replaced.
+    data["firmware_running"] = builder.running_firmware(snap.node) if snap and snap.connected else None
     room = rooms.room_for_device(device.id)
     data["room"] = {"id": room.id, "name": room.name} if room else None
     return data
