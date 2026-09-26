@@ -120,7 +120,59 @@ async def _run_mqtt_export() -> None:
         return
 
 
+#: Home Assistant's ingress gateway. Behind it, Home Assistant has
+#: already authenticated the user; the add-on has no login of its own.
+INGRESS_GATEWAY = "172.30.32.2"
+#: The container itself (the run script, a health check).
+LOCAL_PEERS = frozenset({"127.0.0.1", "::1"})
+
+
+def ingress_only() -> bool:
+    """Whether to answer nobody but the ingress gateway.
+
+    On by default when running as an add-on (the Supervisor hands every
+    add-on a token), and set explicitly by the run script. Off for tests
+    and a development server on a desk.
+    """
+    value = os.environ.get("ECHOLOT_INGRESS_ONLY")
+    if value is not None:
+        return value.lower() not in ("0", "false", "no")
+    return bool(os.environ.get("SUPERVISOR_TOKEN"))
+
+
+class IngressOnly:
+    """Refuse every peer but the ingress gateway.
+
+    The server listens on the add-on's internal network, where every
+    other add-on can reach it — and the API hands out device keys and
+    flashes firmware. Home Assistant's rule for ingress add-ons is to
+    accept connections from 172.30.32.2 only and deny all others.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and ingress_only():
+            client = scope.get("client")
+            host = (client[0] if client else "") or ""
+            if host.startswith("::ffff:"):
+                host = host[len("::ffff:"):]
+            if host != INGRESS_GATEWAY and host not in LOCAL_PEERS:
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                    return
+                body = "Echolot ist nur über Home Assistant erreichbar (Ingress).".encode("utf-8")
+                await send({"type": "http.response.start", "status": 403,
+                            "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                                        (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Echolot", lifespan=lifespan)
+app.add_middleware(IngressOnly)
 #: Where the page loads its stylesheet, scripts and images from. The
 #: version is part of the path, not a query: Home Assistant's service
 #: worker (active only over HTTPS) answers some paths from its own cache
