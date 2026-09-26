@@ -124,9 +124,14 @@ gespeichert — ein zweiter Tab, das iPad —, wird das zweite Speichern
 abgelehnt, und du entscheidest, ob neu geladen wird. Ein Raum lässt sich
 nicht so verkleinern, dass Zonen oder Möbel außerhalb lägen.
 
-**Links und rechts.** Welche Seite das Modul positiv zählt, steht nicht im
-Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die
-Gegenrichtung, beim Sensor „Links und rechts tauschen“ einschalten.
+**Links und rechts.** Laut der Einbauanleitung des UltimateSensor V2, die
+sich auf Hi-Links Handbuch beruft, zeigt bei Wandmontage das Antennenende
+nach vorn in den Raum (+Y), und +X liegt rechts, vom Radar aus gesehen.
+Prüfen lässt sich das mit zwei Gängen: geradeaus vom Sensor weg wächst Y,
+von links nach rechts wächst X. Läuft der Punkt quer in die Gegenrichtung,
+beim Sensor „Links und rechts tauschen“ einschalten. Ändert sich X beim
+Seitwärtsgehen kaum, ist das Modul um 90° gedreht eingebaut — dann
+ausschalten und das Modul richtig drehen.
 
 ## Kalibrieren
 
@@ -167,12 +172,20 @@ stehst: Die Platzierung auf dem Plan ist nach Augenmaß gezeichnet, und das
 Modul selbst verzerrt — Fehler, die mit der Entfernung wachsen. Beides
 rechnet die Ausrichtung aus Standpunkten heraus.
 
-1. **Montage:** die Höhe des Sensors über dem Boden eintragen, und in
-   welcher Haltung gemessen wird (stehend, sitzend). Hängt das Radar höher
-   als der Oberkörper, misst es womöglich die schräge Linie zu dir statt
-   des Abstands am Boden — nah am Sensor ist das bis zu einem halben Meter.
-   Ob es das tut, steht in keinem Handbuch; mit der Höhe prüft die
-   Kalibrierung beide Varianten.
+1. **Montage:** Das LD2460 kennt selbst, wie es hängt — an der Wand
+   („side“) oder an der Decke („top“) —, und speichert Höhe über dem Boden
+   und Neigung nach unten. Es rechnet sie in die Positionen ein, die es
+   meldet. Die Kalibrierseite zeigt, was das Modul meldet, und schreibt
+   Änderungen hinein: *Ins Modul schreiben* schickt die Werte, wartet, bis
+   das Modul sie zurückliest, und sagt, ob es sie übernommen hat. Hi-Link
+   empfiehlt an der Wand 2,2–2,7 m Höhe und 25–40° Neigung (Beispiel:
+   2,6 m, 30°). Weil das Modul danach andere Positionen meldet, verwirft
+   eine Änderung Ausrichtung, Sensormodell, Störquellen und Standpunkte —
+   auch wenn sie in Home Assistant geändert wurde (Entitäten „Radar Mount
+   Mode/Height/Angle“). Dazu, in welcher Haltung gemessen wird (stehend,
+   sitzend). Ob die schräge Linie zu dir dann noch eine Rolle spielt, prüft
+   die Kalibrierung mit der Höhe des Moduls und nimmt, was die Messung
+   zeigt. Mit einer Firmware vor 1.5 steht hier nur ein Feld für die Höhe.
 2. **Standpunkte:** *Standpunkte vorschlagen* legt fünf Punkte in den
    Sichtbereich — nah und fern, links und rechts, nicht auf Möbeln — und
    hält zwei weitere als **Kontrollpunkte** zurück. Stell dich auf den
@@ -393,6 +406,16 @@ einschalten“ (Funktion `06`). Das ist der Werkszustand und ändert an einem
 laufenden Modul nichts; die Quittung ist der einzige Weg, ein stilles Modul
 von einem fehlenden zu unterscheiden.
 
+Nach dem Start fragt sie die **Montage** des Moduls ab — Montageart
+(Funktion `0A`), Höhe und Neigung (`08`) —, dreimal im Abstand von 5 s,
+danach einmal pro Minute, solange es nicht geantwortet hat. Sie stehen als
+Auswahl „Radar Mount Mode“ und Zahlen „Radar Mount Height“ (m) und „Radar
+Mount Angle“ (°) bereit. Deren Wert ist immer, was das Modul zurückgelesen
+hat: Eine Änderung geht als Befehl hinaus (`09` für die Montageart, `07`
+für Höhe in cm und Neigung in 1/100° zusammen), das Modul quittiert, die
+Firmware fragt nach, und erst die Antwort erscheint. Werte außerhalb von
+0,5–5 m und 0–90° schreibt sie nicht. Beim Start schreibt sie nichts.
+
 ## Was offen ist
 
 Nur mit echter Hardware zu klären, und deshalb Einstellungen statt
@@ -404,10 +427,15 @@ Annahmen:
   Sensor **„Stille = leerer Raum“** ein. Die Diagnose-Entität „Radar Empty
   Reports“ zählt leere Meldungen — steigt sie im leeren Raum, ist die Frage
   beantwortet, und der Schalter bleibt aus.
-- **Das Vorzeichen der X-Achse** — siehe „Links und rechts“.
-- **Der Aufbau der Quittungen für `06` und `0B`.** Er stammt aus dem
-  MIT-lizenzierten [smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460),
-  weil der entsprechende Teil des Handbuchs nicht vorlag.
+- **Das Vorzeichen der X-Achse** — jetzt beschrieben (siehe „Links und
+  rechts“), aber an einem Modul nur mit den zwei Gängen zu bestätigen.
+- **Der Aufbau der Quittungen für `06` und `0B` und der Montage-Befehle
+  `07`–`0A`.** Er stammt aus dem MIT-lizenzierten
+  [smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460) und
+  dessen Einbauanleitung, weil das Handbuch selbst nicht vorlag.
+- **Was das Modul mit Montageart, Höhe und Neigung genau rechnet.** Dass es
+  sie nutzt, sagt die Anleitung; wie, nicht. Ob die Schrägkorrektur der
+  Kalibrierung danach noch nötig ist, entscheidet die Messung im Raum.
 - **Reichweite und Öffnungswinkel** des Sichtbereichs auf der Karte sind
   Planungswerte (6 m, 120°), keine gemessenen.
 - Raumkarte, Zonen und MQTT-Export sind mit simulierten Sensoren getestet,

@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.5.0
+
+**Das Modul erfährt, wie es hängt.** Das LD2460 kennt eine Montageart —
+Wand („side“) oder Decke („top“) — und speichert Montagehöhe und Neigung;
+es rechnet sie selbst in die Positionen ein, die es meldet. Echolot hat sie
+bisher weder gelesen noch gesetzt: Jedes Modul lief mit dem, was zufällig
+in ihm stand. Hinweis darauf aus der Einbauanleitung des UltimateSensor V2
+(SmartHomeShop), die Befehlsformate aus deren MIT-lizenziertem
+ESPHome-Baustein.
+
+- **Firmware:** fragt Montageart, Höhe und Neigung nach dem Start ab und
+  stellt sie als Auswahl und zwei Zahlen bereit („Radar Mount Mode“,
+  „Radar Mount Height“, „Radar Mount Angle“). Ihr Wert ist immer, was das
+  Modul zurückgelesen hat, nie der gewünschte. Änderungen gehen einzeln,
+  200 ms auseinander, hinaus; Höhe und Neigung, direkt nacheinander
+  geändert, kommen beide an. Beim Start schreibt sie nichts.
+- **Kalibrierseite:** „Das Modul meldet: Wand · 2,20 m · 30°“, dazu Wand
+  oder Decke, Höhe und Neigung und *Ins Modul schreiben*. Echolot wartet,
+  bis das Modul die Werte zurückliest, und sagt, ob es sie übernommen hat.
+  Die Höhe für die Schrägprüfung kommt vom Modul.
+- **Eine geänderte Montage im Modul verwirft, was damit gemessen wurde**
+  — Ausrichtung, Sensormodell, Störquellen, Standpunkte —, denn das Modul
+  meldet danach andere Positionen. Auch wenn die Änderung aus Home
+  Assistant kommt. Die erste Meldung eines Moduls wird nur vermerkt.
+- **Links und rechts:** laut Anleitung +Y nach vorn in den Raum, +X nach
+  rechts, vom Radar aus gesehen; die Doku beschreibt die zwei Gänge, mit
+  denen sich das am eigenen Modul prüfen lässt.
+
+**Behoben:** Die Höhenfelder bauten die Seite beim Verlassen neu auf; ein
+Tipp auf den Knopf daneben konnte dabei verloren gehen.
+
+**Umstellung:** Die neuen Entitäten gibt es erst nach einem neuen Build und
+Flash. Bis dahin bleibt es beim Höhenfeld von 1.4, und die Seite sagt,
+warum. Kennungen ändern sich nicht; die Messdefinition bleibt 4 —
+Echolots Rechnung ist gleich, das Modul liefert nur, wofür es eingestellt
+ist.
+
+**Getestet:** 367 Tests.
+- Die Befehle, Grenzen und Quittungen gegen den Protokollkern, mit dem
+  Host-Compiler übersetzt.
+- Der Baustein, von ESPHome für die `host`-Plattform gebaut, gegen ein
+  Pseudo-Terminal, auf dem der Test das Modul spielt:
+  - Abfrage nach dem Start.
+  - Kein Wert vor der Antwort des Moduls.
+  - Höhe und Neigung nacheinander.
+  - Zurücklesen nach der Quittung.
+- Gegenproben: 18 von 18 scheitern, wenn die jeweilige Regel ausgebaut ist.
+- Im Headless-Browser gegen ein simuliertes Modul:
+  - von 2,20 m/30° auf 2,60 m/25° geschrieben, zurückgelesen, verworfen;
+  - ein Modul, das nicht übernimmt, lässt alles, wie es war, und die Seite
+    sagt es.
+
+**Grenzen.** Kein echtes Modul hat diese Befehle bisher beantwortet; die
+Formate stammen aus fremdem, MIT-lizenziertem Code und einer
+Herstelleranleitung, nicht aus dem Handbuch selbst. Was das Modul mit
+Höhe und Neigung genau rechnet, ist nicht dokumentiert. Ob die
+Schrägkorrektur der Kalibrierung danach noch nötig ist, zeigt erst die
+Messung im Raum.
+
 ## 1.4.0
 
 **Messqualität, die sagt, was sie ist, und Kalibrierungen, die zum Raum
