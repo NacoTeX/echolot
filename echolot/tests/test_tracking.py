@@ -672,3 +672,19 @@ def test_a_report_just_short_of_the_slant_is_somebody_at_the_foot():
     for _ in range(7):
         result = far.report("0,25")
     assert statuses(result) == ["counted"] and result["targets"][0]["y"] == pytest.approx(math.sqrt(2.5**2 - 1.2**2), abs=1e-3)
+
+
+def test_estimate_measurement_and_report_are_kept_apart():
+    """Review P0-03: raw_x/raw_y were the smoothed sensor position under a
+    name that said otherwise. The report as given, the report corrected
+    into the room, and the estimate that counts are now separate."""
+    rig = Rig(room(calibration={"confirm_s": 1.0, "smoothing": "strong"}))
+    for _ in range(7):
+        rig.report("-15,30")
+    (target,) = rig.report("-8,30")["targets"]  # 0.7 m on, within the gate
+    assert target["reported"] == [-0.8, 3.0]
+    assert target["measured"] == [2.2, 3.0]  # the sensor at (3, 0) looking down
+    # The estimate lags behind: a quarter of the way at five reports a second.
+    assert target["sensor"] == [pytest.approx(-1.325), pytest.approx(3.0)]
+    assert (target["x"], target["y"]) == (pytest.approx(1.675), pytest.approx(3.0))
+    assert (target["raw_x"], target["raw_y"]) == tuple(target["sensor"])

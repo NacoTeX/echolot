@@ -248,7 +248,7 @@ def explain_error(err: BaseException, address: str) -> str:
 class RadarLink:
     """One node: connect, subscribe, keep the snapshot, reconnect."""
 
-    def __init__(self, device, client_factory, on_frame, on_mounting=None) -> None:
+    def __init__(self, device, client_factory, on_frame, on_mounting=None, on_line=None, on_link=None) -> None:
         self.device_id = device.id
         self.name = device.config.name
         self.address = device.ota_address()
@@ -257,6 +257,11 @@ class RadarLink:
         self._factory = client_factory
         self._on_frame = on_frame
         self._on_mounting = on_mounting
+        #: Told every frame line as it arrived, before anything is made of
+        #: it, and every connection that comes and goes — what a recording
+        #: needs to play the link back (app/recording.py).
+        self._on_line = on_line
+        self._on_link = on_link
         self._task: asyncio.Task | None = None
         self._roles: dict[int, str] = {}
         self._client = None
@@ -336,12 +341,16 @@ class RadarLink:
                 else None
             )
             logger.info("Radar %s verbunden (%s)", self.name, self.address)
+            self._link_event(True)
             client.subscribe_states(self._on_state)
             self._client = client
             await stopped.wait()
             logger.info("Radar %s getrennt", self.name)
         finally:
+            was_connected = self.snapshot.connected
             self.snapshot.connected = False
+            if was_connected:
+                self._link_event(False)
             self._client = None
             try:
                 await client.disconnect(force=True)
@@ -373,12 +382,16 @@ class RadarLink:
         value = getattr(state, "state", None)
         snap = self.snapshot
         if role == "frame":
+            text = str(value)
+            now = time.monotonic()
+            if self._on_line is not None:
+                self._on_line(self.device_id, text, now)
             try:
-                frame = parse_frame(str(value))
+                frame = parse_frame(text)
             except ValueError as err:
                 logger.debug("Radar %s: Zeile verworfen: %s", self.name, err)
                 return
-            if snap.record(frame, time.monotonic()) and self._on_frame is not None:
+            if snap.record(frame, now) and self._on_frame is not None:
                 self._on_frame(self.device_id)
         elif role == "wifi_signal":
             snap.wifi_signal = float(value) if value == value else None  # NaN -> None
@@ -397,6 +410,10 @@ class RadarLink:
         else:
             setattr(snap, role, str(value) if value is not None else None)
 
+
+    def _link_event(self, connected: bool) -> None:
+        if self._on_link is not None:
+            self._on_link(self.device_id, connected, self.snapshot.no_frame_entity, time.monotonic())
 
     def _mounting_changed(self) -> None:
         if self._on_mounting is None:
@@ -441,6 +458,8 @@ class RadarLinks:
     links: dict[str, RadarLink] = field(default_factory=dict)
     _listeners: list = field(default_factory=list)
     _mounting_listeners: list = field(default_factory=list)
+    _line_listeners: list = field(default_factory=list)
+    _link_listeners: list = field(default_factory=list)
 
     def add_listener(self, callback) -> None:
         self._listeners.append(callback)
@@ -449,6 +468,30 @@ class RadarLinks:
         """Told, with the device id, when a module's mounting as read back
         has changed — including the first time it is known."""
         self._mounting_listeners.append(callback)
+
+    def add_line_listener(self, callback) -> None:
+        """Told (device id, frame line, monotonic time) for every line as it
+        arrives — repeats and unreadable ones included."""
+        self._line_listeners.append(callback)
+
+    def add_link_listener(self, callback) -> None:
+        """Told (device id, connected, no frame entity, monotonic time) when
+        a connection is made or lost."""
+        self._link_listeners.append(callback)
+
+    def _line(self, device_id: str, text: str, now: float) -> None:
+        for callback in list(self._line_listeners):
+            try:
+                callback(device_id, text, now)
+            except Exception:  # noqa: BLE001 - a listener must not break the link
+                logger.exception("Zeilen-Listener fehlgeschlagen")
+
+    def _link(self, device_id: str, connected: bool, no_frame_entity: bool, now: float) -> None:
+        for callback in list(self._link_listeners):
+            try:
+                callback(device_id, connected, no_frame_entity, now)
+            except Exception:  # noqa: BLE001 - a listener must not break the link
+                logger.exception("Verbindungs-Listener fehlgeschlagen")
 
     def _mounting(self, device_id: str) -> None:
         for callback in list(self._mounting_listeners):
@@ -475,7 +518,7 @@ class RadarLinks:
                 await self.links.pop(device_id).stop()
         for device_id, device in wanted.items():
             link = self.links.get(device_id)
-            fresh = RadarLink(device, self.client_factory, self._frame, self._mounting)
+            fresh = RadarLink(device, self.client_factory, self._frame, self._mounting, self._line, self._link)
             if link is not None and link.identity() == fresh.identity():
                 continue
             if link is not None:

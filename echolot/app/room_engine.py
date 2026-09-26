@@ -400,10 +400,23 @@ class RoomEngine:
                     geometry.to_room(*track.reported, placement),
                     geometry.to_room(*track.origin, placement),
                 )
+            rep_x, rep_y = track.reported
+            mx, my = geometry.to_room(rep_x, rep_y, placement)
             targets.append({
                 "id": track.id,
+                # Four positions, kept apart (review P0-03):
+                #   x, y      the track's estimate in the room — what counts;
+                #   measured  the latest report, corrected, in the room;
+                #   reported  that report as the module gave it, sensor metres;
+                #   sensor    the estimate in sensor metres.
+                # Where the map draws a target in between is the browser's
+                # business, and counts for nothing.
                 "x": round(x, 3), "y": round(y, 3),
-                # Sensor coordinates of the same (smoothed) position.
+                "measured": [round(mx, 3), round(my, 3)],
+                "reported": [round(rep_x, 3), round(rep_y, 3)],
+                "sensor": [round(track.x, 3), round(track.y, 3)],
+                # Before 1.7 the only extra: the smoothed sensor position,
+                # under a name that suggested otherwise. Kept for readers of it.
                 "raw_x": round(track.x, 3), "raw_y": round(track.y, 3),
                 "status": status, "zones": zone_ids,
             })

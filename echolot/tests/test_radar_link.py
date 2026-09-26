@@ -450,3 +450,25 @@ def test_stopping_is_not_lost_when_it_meets_a_connect_that_just_finished():
         assert task in done and task.cancelled()
         assert not links.snapshot("dev").connected
     asyncio.run(run())
+
+
+def test_every_line_and_every_connection_is_passed_on_for_recording():
+    """A recording needs what the link was given, not what it made of it:
+    repeats and unreadable lines too, and the connection coming and going."""
+    async def run():
+        lines, links_seen = [], []
+        links = radar_link.RadarLinks(client_factory=FakeClient)
+        links.add_line_listener(lambda d, text, now: lines.append((d, text)))
+        links.add_link_listener(lambda d, connected, no_frame, now: links_seen.append((d, connected, no_frame)))
+        await links.sync([device()])
+        await settle()
+        client = FakeClient.instances[0]
+        for text in ("1|R|7|15,23", "1|R|7|15,23", "garbage", "1|R|8|"):
+            client.on_state(State(1, text))
+        client.on_state(State(3, -61.0))  # not a frame line
+        assert lines == [("dev", "1|R|7|15,23"), ("dev", "1|R|7|15,23"), ("dev", "garbage"), ("dev", "1|R|8|")]
+        await client.on_stop(False)
+        await settle(10)
+        assert links_seen[:3] == [("dev", True, False), ("dev", False, False), ("dev", True, False)]
+        await links.stop_all()
+    asyncio.run(run())

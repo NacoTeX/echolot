@@ -898,3 +898,61 @@ def test_a_mounting_report_needs_no_running_loop_and_its_refresh_is_held(client,
 
     asyncio.run(run())
     assert c.get(f"/api/rooms/{room['id']}").json()["calibration"]["module_mounting"]["height_m"] == 2.6
+
+
+# --- recordings (review P0-03) ----------------------------------------------------------
+
+
+def test_a_recording_through_the_api_from_start_to_playback(client):
+    import time as _time
+
+    from app import main
+
+    c, _ = client
+    device, room = room_with_sensor(c)
+    rid = room["id"]
+    base = f"/api/rooms/{rid}/recording"
+    started = c.post(base, json={"limit_s": 60, "note": "Sofa"})
+    assert started.status_code == 201, started.text
+    rec_id = started.json()["id"]
+    assert c.post(base, json={}).status_code == 409  # one at a time
+    for i in range(8):
+        main.recorder.on_line(device["id"], f"1|R|{i + 1}|-15,30", _time.monotonic())
+    assert c.post(f"{base}/marks", json={"kind": "people", "count": 1}).status_code == 201
+    assert c.post(f"{base}/marks", json={"kind": "zone", "zone_id": "nope", "inside": True}).status_code == 409
+    assert c.post(f"{base}/marks", json={"kind": "standpoint"}).status_code == 422
+    status = c.get(base).json()
+    assert status["lines"] == 8 and status["marks"] == 1 and status["remaining_s"] <= 60
+    assert c.post(f"{base}/stop").json()["state"] == "done"
+    assert c.get(base).status_code == 204
+    assert c.post(f"{base}/stop").status_code == 404
+
+    listing = c.get("/api/recordings").json()
+    assert [e["id"] for e in listing["recordings"]] == [rec_id] and listing["active"] == {}
+    assert listing["usage"]["bytes_used"] == listing["recordings"][0]["bytes"] > 0
+
+    exported = c.get(f"/api/recordings/{rec_id}/export")
+    assert exported.status_code == 200 and "attachment" in exported.headers["content-disposition"]
+    secrets = c.get(f"/api/devices/{device['id']}/credentials").json()
+    body = exported.text
+    for value in (*[v for v in secrets.values() if isinstance(v, str) and len(v) >= 6], '"netz"'):
+        assert value not in body
+
+    imported = c.post("/api/recordings/import", content=exported.content,
+                      headers={"content-type": "application/x-ndjson"})
+    assert imported.status_code == 201 and imported.json()["imported"] is True
+    assert c.post("/api/recordings/import", content=b"not a recording").status_code == 422
+
+    played = c.post(f"/api/recordings/{rec_id}/replay", json={
+        "variants": [{"label": "Wie aufgezeichnet"}, {"label": "Sofort", "base": "current", "settings": {"confirm_s": 0}}],
+        "timeline": True,
+    }).json()
+    assert [v["label"] for v in played["variants"]] == ["Wie aufgezeichnet", "Sofort"]
+    assert "timeline" in played["variants"][0] and "timeline" not in played["variants"][1]
+    assert played["variants"][0]["report"]["summary"]["lines"] == 8
+    assert played["marks"][0]["kind"] == "people"
+    assert c.post(f"/api/recordings/{rec_id}/replay", json={"variants": [{"base": "bogus"}]}).status_code == 422
+
+    assert c.delete(f"/api/recordings/{rec_id}").status_code == 204
+    assert c.get(f"/api/recordings/{rec_id}/export").status_code == 404
+    assert c.delete(f"/api/recordings/{rec_id}").status_code == 404

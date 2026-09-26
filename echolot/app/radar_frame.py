@@ -21,6 +21,7 @@ QUIET = "quiet"
 UNKNOWN = "unknown"
 
 _STATES = {"R": RECEIVING, "Q": QUIET, "U": UNKNOWN}
+_LETTERS = {state: letter for letter, state in _STATES.items()}
 
 FORMAT_VERSION = "1"
 MAX_TARGETS = 5
@@ -54,6 +55,12 @@ class RadarFrame:
         device that sees nobody.
         """
         return len(self.targets_dm) if self.state == RECEIVING else None
+
+    def as_line(self) -> str:
+        """The line this frame is read from, as the firmware writes it:
+        parse_frame(frame.as_line()) == frame."""
+        targets = ";".join(f"{x},{y}" for x, y in self.targets_dm)
+        return f"{FORMAT_VERSION}|{_LETTERS[self.state]}|{self.seq}|{targets}"
 
 
 def _int(text: str, low: int, high: int, what: str) -> int:

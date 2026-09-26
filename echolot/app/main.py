@@ -20,11 +20,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from app import alignment, builder, devices, mqtt_bridge, reachability, rooms
+from app import alignment, builder, devices, mqtt_bridge, reachability, recording, replay, rooms
 from app.board_registry import BOARDS
 from app.calibration import Captures
 from app.radar_link import MOUNT_MODES, MountingError, links
-from app.room_engine import RoomEngine
+from app.room_engine import MEASUREMENT_VERSION, RoomEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("echolot")
@@ -35,6 +35,12 @@ engine = RoomEngine(links)
 links.add_listener(engine.wake)
 captures = Captures(links)
 links.add_listener(captures.on_frame)
+recorder = recording.Recorder(links)
+links.add_line_listener(recorder.on_line)
+links.add_link_listener(recorder.on_link)
+# Every evaluation, at least twice a second: a recording stops on time
+# even while its sensor sends nothing.
+engine.add_listener(lambda _rooms, _results: recorder.tick())
 
 
 def _module_mounting(device_id: str) -> bool:
@@ -90,7 +96,9 @@ async def refresh() -> None:
     """
     device_list = devices.list_devices()
     await links.sync(device_list)
-    engine.load(rooms.list_rooms(), device_list)
+    room_list = rooms.list_rooms()
+    engine.load(room_list, device_list)
+    recorder.sync(room_list)
 
 
 @asynccontextmanager
@@ -98,6 +106,9 @@ async def lifespan(_app: FastAPI):
     interrupted = devices.mark_interrupted_jobs()
     if interrupted:
         logger.info("Unterbrochene Jobs zurückgesetzt: %s", ", ".join(interrupted))
+    cut = recording.mark_interrupted()
+    if cut:
+        logger.info("Unterbrochene Aufzeichnungen: %s", ", ".join(cut))
     await refresh()
     engine.start()
 
@@ -109,6 +120,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        recorder.stop_all("Add-on beendet")
         await engine.stop()
         await links.stop_all()
         if task:
@@ -1060,6 +1072,159 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
         raise HTTPException(status_code=404, detail="Raum nicht gefunden")
     await refresh()
     return _room_view(updated)
+
+
+# --- recordings ------------------------------------------------------------
+#
+# async throughout: the recorder is fed on the event loop by the links.
+
+
+def _recording_error(err: recording.RecordingError, status: int = 409) -> HTTPException:
+    return HTTPException(status_code=status, detail=str(err))
+
+
+@app.get("/api/recordings")
+async def api_list_recordings() -> dict:
+    return {"recordings": recording.list_recordings(), "usage": recording.usage(),
+            "active": recorder.active()}
+
+
+@app.post("/api/rooms/{room_id}/recording", status_code=201)
+async def api_start_recording(room_id: str, payload: dict | None = None) -> dict:
+    """Start recording what the room's sensor says — off until asked, and
+    it stops by itself after `limit_s` seconds."""
+    payload = payload or {}
+    room = _room_or_404(room_id)
+    device = devices.get_device(room.sensor.device_id) if room.sensor.device_id else None
+    try:
+        limit_s = float(payload.get("limit_s", recording.DEFAULT_LIMIT_S))
+        return recorder.start(room, device, limit_s=limit_s, note=str(payload.get("note") or ""),
+                              definition=MEASUREMENT_VERSION, alignment=alignment.VERSION,
+                              addon=builder.addon_version())
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=422, detail="Dauer in Sekunden angeben") from err
+    except recording.RecordingError as err:
+        raise _recording_error(err) from err
+
+
+@app.get("/api/rooms/{room_id}/recording", response_model=None)
+async def api_recording_status(room_id: str) -> dict | Response:
+    _room_or_404(room_id)
+    status = recorder.status(room_id)
+    return status if status is not None else Response(status_code=204)
+
+
+@app.post("/api/rooms/{room_id}/recording/stop")
+async def api_stop_recording(room_id: str) -> dict:
+    stopped = recorder.stop(room_id, "Beendet")
+    if stopped is None:
+        raise HTTPException(status_code=404, detail="Für diesen Raum läuft keine Aufzeichnung")
+    return stopped
+
+
+@app.post("/api/rooms/{room_id}/recording/marks", status_code=201)
+async def api_mark_recording(room_id: str, payload: dict) -> dict:
+    try:
+        mark = recording.Mark.model_validate(payload)
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    try:
+        return recorder.mark(room_id, mark)
+    except recording.RecordingError as err:
+        raise _recording_error(err) from err
+
+
+@app.delete("/api/recordings/{recording_id}", status_code=204)
+async def api_delete_recording(recording_id: str) -> None:
+    entry = recording.get(recording_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unbekannte Aufzeichnung")
+    if entry.get("state") == "recording":
+        recorder.stop(entry["room_id"], "Gelöscht")
+    recording.delete(recording_id)
+
+
+@app.get("/api/recordings/{recording_id}/export")
+async def api_export_recording(recording_id: str) -> Response:
+    """The file as it is on disk: it carries no credentials (recording.py)."""
+    entry = recording.get(recording_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unbekannte Aufzeichnung")
+    body = recording.path_of(recording_id).read_bytes()
+    stamp = time.strftime("%Y%m%d-%H%M", time.localtime(entry["started_at"]))
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", entry.get("room_name") or "raum").strip("-") or "raum"
+    return Response(body, media_type="application/x-ndjson", headers={
+        "Content-Disposition": f'attachment; filename="echolot-{name}-{stamp}.jsonl"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.post("/api/recordings/import", status_code=201)
+async def api_import_recording(request: Request) -> dict:
+    body = await request.body()
+    if len(body) > recording.MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail="Die Datei ist zu groß")
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise HTTPException(status_code=422, detail="Keine Textdatei") from err
+    try:
+        return recording.import_text(text)
+    except recording.RecordingError as err:
+        raise _recording_error(err, 422) from err
+
+
+def _variant_room(header: dict, variant: dict) -> rooms.Room:
+    base = variant.get("base", "recorded")
+    current = None
+    if base == "current":
+        current = rooms.get_room(header["room"]["id"])
+        if current is None:
+            raise ValueError("Den aufgezeichneten Raum gibt es nicht mehr")
+    elif base != "recorded":
+        raise ValueError("Grundlage: recorded oder current")
+    settings = variant.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise ValueError("settings muss ein Objekt sein")
+    return replay.room_for(header, settings, current)
+
+
+@app.post("/api/recordings/{recording_id}/replay")
+async def api_replay_recording(recording_id: str, payload: dict | None = None) -> dict:
+    """Play a recording back through the room engine, once per variant:
+    {"variants": [{"label", "base": "recorded"|"current", "settings":
+    {"confirm_s", "smoothing", "hold_s", "assume_present_s"}}], "timeline":
+    true for the first variant's evaluations, for the viewer}."""
+    payload = payload or {}
+    if recording.get(recording_id) is None:
+        raise HTTPException(status_code=404, detail="Unbekannte Aufzeichnung")
+    variants = payload.get("variants") or [{"label": "Wie aufgezeichnet", "base": "recorded"}]
+    if not isinstance(variants, list) or not 1 <= len(variants) <= 4:
+        raise HTTPException(status_code=422, detail="Eine bis vier Varianten")
+    try:
+        header, events = recording.load(recording_id)
+        prepared = [{"label": str(v.get("label") or f"Variante {i + 1}")[:60], "room": _variant_room(header, v)}
+                    for i, v in enumerate(variants)]
+    except recording.RecordingError as err:
+        raise _recording_error(err, 422) from err
+    except (ValidationError, ValueError, AttributeError) as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+
+    def work() -> dict:
+        out = {"header": {k: header.get(k) for k in ("started_at", "synthetic", "definition", "addon", "note")},
+               "marks": [e for e in events if e["type"] == "mark"],
+               "room": prepared[0]["room"].model_dump(mode="json"),
+               "variants": []}
+        for i, variant in enumerate(prepared):
+            timeline = replay.run(header, events, variant["room"])
+            item = {"label": variant["label"], "report": replay.report(header, events, timeline)}
+            if i == 0 and payload.get("timeline"):
+                item["timeline"] = replay.compact(timeline)
+            out["variants"].append(item)
+        return out
+
+    # Seconds of work for a long recording: off the loop that feeds the links.
+    return await asyncio.to_thread(work)
 
 
 # --- live ------------------------------------------------------------------
