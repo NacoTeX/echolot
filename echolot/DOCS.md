@@ -95,7 +95,7 @@ Raum zu zeigen.
 
 | Werkzeug | Taste | |
 | --- | --- | --- |
-| Auswahl | V | Antippen wählt, Ziehen verschiebt. Bei Zonen: Eckpunkte ziehen verformt, die kleinen Punkte zwischen den Ecken ziehen fügt eine Ecke hinzu, Doppelklick auf eine Ecke entfernt sie. Möbel: Griff oben dreht, Ecke unten rechts ändert die Größe. Sensor: der Griff vor ihm dreht ihn. |
+| Auswahl | V | Antippen wählt, Ziehen verschiebt. Bei Zonen: Eckpunkte ziehen verformt, die kleinen Punkte zwischen den Ecken ziehen fügt eine Ecke hinzu, Doppelklick auf eine Ecke entfernt sie. Möbel: Griff oben dreht, Ecke unten rechts ändert die Größe; X und Y im Inspektor sind die linke obere Ecke dessen, was auf dem Plan steht, auch gedreht — zwei Möbel mit gleichem X stehen an derselben Linie, und Breite oder Tiefe ändern hält diese Ecke fest. Sensor: der Griff vor ihm dreht ihn. |
 | Rechteck | R | Zone aufziehen. |
 | Freiform | P | Ecken antippen; auf die erste tippen oder Enter schließt, Esc bricht ab. |
 | Möbel | | Sofa, Bett, Tisch, Schrank, Tür, Fenster … als Orientierung. Unter *Als Zone* wird ein Möbelstück zur Erkennungs-, Ausschluss- oder Eingangszone, die ihm folgt (siehe unten). |

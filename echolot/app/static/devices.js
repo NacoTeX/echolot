@@ -255,7 +255,7 @@
         ["Radarmodul", l.link_state ? escapeHtml(states[l.link_state] || l.link_state) : "—"],
         ["Letzte Meldung", l.frame_age_s !== null && l.frame_age_s !== undefined ? `vor ${E.formatNumber(l.frame_age_s, 1)} s` : "—"],
         ["WLAN-Signal", l.wifi_signal !== null && l.wifi_signal !== undefined ? `${Math.round(l.wifi_signal)} dBm` : "—"],
-        ["Modul-Firmware", l.firmware ? escapeHtml(l.firmware) : "—"],
+        ["Radarchip-Firmware", l.firmware ? escapeHtml(l.firmware) : "—"],
         ["Adresse", escapeHtml(l.address || d.address || `${d.config.name}.local`)],
       ];
       return rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")

@@ -27,6 +27,18 @@ Everything Presence, Ein- und Ausgänge beim Aqara FP2.
   Karte; die Übersicht sagt „vermutlich noch da“.
 - **Home Assistant:** Eingänge werden keine Entitäten; die Attribute tragen
   `definition_version` 6, `entrances` und `assume_present_s`.
+- **Gedrehte Möbel stehen, wo X und Y sagen.** Der Inspektor zeigte die
+  linke obere Ecke *vor* dem Drehen; gedreht wird um die Mitte. Ein um 90°
+  gedrehtes Möbelstück stand so um (Breite − Tiefe) / 2 neben seinem X:
+  Schrank (1 m) und TV (1,47 m), beide bei X −0,15, standen 17 und 40 cm
+  vom Rand. Jetzt sind X und Y die linke obere Ecke dessen, was auf dem
+  Plan steht; Breite und Tiefe ändern hält diese Ecke fest, und beim
+  Ziehen rasten die sichtbaren Kanten auf 5 cm ein. Gespeichert wird wie
+  bisher — nichts verschiebt sich beim Update, nur die angezeigten Zahlen
+  gedrehter Möbel ändern sich.
+- **„Radarchip-Firmware“** statt „Modul-Firmware“: Das ist die Firmware
+  des HLK-LD2460 selbst, die das Modul meldet. Sie ändert sich nicht,
+  wenn der ESP32 neu geflasht wird.
 - **Zurück auf 1.5** geht erst, wenn alle Eingänge wieder gelöscht sind:
   1.5 kennt die Zonenart nicht und lädt die Räume dann nicht. Die Datei
   bleibt dabei unverändert.

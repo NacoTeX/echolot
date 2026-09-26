@@ -121,7 +121,7 @@
       ["Radar", s && s.link_state ? escapeHtml(linkState[s.link_state] || s.link_state) : "—"],
       ["Letzte Meldung", s && s.frame_age_s !== null ? `vor ${E.formatNumber(s.frame_age_s, 1)} s` : "—"],
       ["WLAN", s && s.wifi_signal !== null ? `${Math.round(s.wifi_signal)} dBm` : "—"],
-      ["Modul-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
+      ["Radarchip-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
     ];
     return `<div class="stat-lines">${rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")}</div>`;
   }
@@ -281,6 +281,14 @@
     return seconds > 0 ? `bis ${E.formatSeconds(seconds)}` : "aus";
   }
 
+  // An item's X and Y in the editor: the top-left corner of what shows on
+  // the plan, turned or not (geometry.js furnitureBox). To the millimetre,
+  // and never "-0".
+  function furnitureCorner(f) {
+    const [left, top] = window.EcholotGeometry.furnitureBox(f.x, f.y, f.w, f.h, f.angle || 0);
+    return [Math.round(left * 1000) / 1000 + 0, Math.round(top * 1000) / 1000 + 0];
+  }
+
   function field(label, inner, hint = "") {
     return `<label class="field"><span>${label}</span>${inner}${hint ? `<p class="hint">${hint}</p>` : ""}</label>`;
   }
@@ -398,9 +406,11 @@
       const item = this.plan.find(sel);
       if (liveDrag && item) {
         // Numbers follow the drag without rebuilding the form.
+        const corner = sel.kind === "furniture" ? furnitureCorner(item) : null;
         host.querySelectorAll("[data-f]").forEach((input) => {
           const v = input.dataset.f;
-          if (v in item && typeof item[v] === "number") input.value = Math.round(item[v] * 100) / 100;
+          const value = corner && (v === "x" || v === "y") ? corner[v === "x" ? 0 : 1] : item[v];
+          if (v in item && typeof value === "number") input.value = Math.round(value * 100) / 100;
         });
         return;
       }
@@ -534,11 +544,13 @@
     },
 
     furnitureForm(f) {
+      const [left, top] = furnitureCorner(f);
       return `<div class="card"><h2>${escapeHtml(Plan.FURNITURE[f.kind] ? Plan.FURNITURE[f.kind].label : "Objekt")}</h2>
         ${field("Bezeichnung", `<input data-f="name" value="${escapeHtml(f.name)}" maxlength="40">`)}
         ${field("Art", `<select data-f="kind">${Object.entries(Plan.FURNITURE).map(([k, v]) => `<option value="${k}" ${f.kind === k ? "selected" : ""}>${v.label}</option>`).join("")}</select>`)}
         <div class="row2">${field("Breite · m", num("w", f.w, { min: 0.1, step: 0.05 }))}${field("Tiefe · m", num("h", f.h, { min: 0.1, step: 0.05 }))}</div>
-        <div class="row2">${field("X · m", num("x", f.x, { step: 0.05 }))}${field("Y · m", num("y", f.y, { step: 0.05 }))}</div>
+        <div class="row2">${field("X · m", num("x", left, { step: 0.05 }))}${field("Y · m", num("y", top, { step: 0.05 }))}</div>
+        <p class="hint" style="margin:-4px 0 12px">Linke obere Ecke, so wie das Möbelstück auf dem Plan steht — auch gedreht. Zwei Möbel mit gleichem X stehen an derselben Linie.</p>
         ${field("Drehung · Grad", num("angle", f.angle, { min: -360, max: 360, step: 15 }))}
         <div class="actions" style="margin-top:6px">
           <button class="btn" data-done>Fertig</button>
@@ -581,6 +593,35 @@
               `<button type="button" data-zcolor="${i}" class="${z.color === i ? "active" : ""}" style="background:${Plan.zoneColor(i)}" aria-label="Farbe ${i + 1}"></button>`).join("")}</div></div>
             ${zs ? `<p class="hint">Jetzt: ${zs.count ? E.people(zs.count) : "frei"}${zs.occupied && !zs.count ? ` (hält noch ${E.formatSeconds(zs.hold_remaining)})` : ""}</p>` : ""}` : ""}` : ""}
       </div>`;
+    },
+
+    // X and Y are the corner of what shows on the plan (furnitureCorner).
+    // Width and depth change the item in place: that corner stays where it
+    // is, so a wardrobe against the wall stays against it. A new angle
+    // turns it about its centre, as the handle on the plan does.
+    placeFurniture(f, key, value, input, host) {
+      const G = window.EcholotGeometry;
+      const r = this.plan.room;
+      let [left, top] = G.furnitureBox(f.x, f.y, f.w, f.h, f.angle || 0);
+      if (key === "x") left = value;
+      else if (key === "y") top = value;
+      else if (key === "w") f.w = G.clamp(value, 0.1, r.width);
+      else if (key === "h") f.h = G.clamp(value, 0.1, r.height);
+      else f.angle = value;
+      if (key !== "angle") {
+        // The centre stays on the plan.
+        const [bl, bt, br, bb] = G.furnitureBox(0, 0, f.w, f.h, f.angle || 0);
+        left = G.clamp(left, -(br - bl) / 2, r.width - (br - bl) / 2);
+        top = G.clamp(top, -(bb - bt) / 2, r.height - (bb - bt) / 2);
+        const [x, y] = G.furnitureAt(left, top, f.w, f.h, f.angle || 0);
+        f.x = Math.round(x * 1000) / 1000;
+        f.y = Math.round(y * 1000) / 1000;
+      }
+      // The other fields follow; the one being typed in is left alone.
+      const corner = furnitureCorner(f);
+      host.querySelectorAll('[data-f="x"], [data-f="y"]').forEach((other) => {
+        if (other !== input) other.value = Math.round(corner[other.dataset.f === "x" ? 0 : 1] * 100) / 100;
+      });
     },
 
     bindInspector(host, sel, item) {
@@ -632,10 +673,15 @@
           else if (input.type === "number" || input.type === "range") {
             value = Number(input.value);
             if (!Number.isFinite(value)) return;
-            if (key === "x") value = window.EcholotGeometry.clamp(value, sel.kind === "furniture" ? -target.w / 2 : 0, r.width);
-            if (key === "y") value = window.EcholotGeometry.clamp(value, sel.kind === "furniture" ? -target.h / 2 : 0, r.height);
-            if (key === "w") value = window.EcholotGeometry.clamp(value, 0.1, r.width);
-            if (key === "h") value = window.EcholotGeometry.clamp(value, 0.1, r.height);
+            if (sel.kind === "furniture" && ["x", "y", "w", "h", "angle"].includes(key)) {
+              this.placeFurniture(target, key, value, input, host);
+              plan.render();
+              if (commit) plan.commit();
+              return;
+            }
+            // The sensor; furniture went to placeFurniture above.
+            if (key === "x") value = window.EcholotGeometry.clamp(value, 0, r.width);
+            if (key === "y") value = window.EcholotGeometry.clamp(value, 0, r.height);
           } else value = input.value;
           if (key === "name" && typeof value === "string" && !value.trim() && sel.kind === "zone") return;
           target[key] = value;

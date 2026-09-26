@@ -623,7 +623,10 @@ const Plan = (() => {
       if (kind === "zone") {
         this.drag = { type: "move-zone", item, start: raw, origin: item.points.map((q) => q.slice()) };
       } else {
-        this.drag = { type: "move", item, dx: raw[0] - item.x, dy: raw[1] - item.y };
+        // Furniture is held by the corner of what shows on the plan, so the
+        // grid lines up its visible edges, turned or not.
+        const [ox, oy] = kind === "furniture" ? G.furnitureBox(item.x, item.y, item.w, item.h, item.angle || 0) : [item.x, item.y];
+        this.drag = { type: "move", item, dx: raw[0] - ox, dy: raw[1] - oy };
       }
     }
 
@@ -658,8 +661,12 @@ const Plan = (() => {
         let x = raw[0] - d.dx, y = raw[1] - d.dy;
         if (this.snap) { x = round(x, SNAP); y = round(y, SNAP); }
         if (this.selection && this.selection.kind === "furniture") {
-          x = G.clamp(x, -item.w / 2, r.width - item.w / 2);
-          y = G.clamp(y, -item.h / 2, r.height - item.h / 2);
+          // x, y is the box's top-left; its centre stays on the plan.
+          const [bl, bt, br, bb] = G.furnitureBox(0, 0, item.w, item.h, item.angle || 0);
+          const bw = br - bl, bh = bb - bt;
+          x = G.clamp(x, -bw / 2, r.width - bw / 2);
+          y = G.clamp(y, -bh / 2, r.height - bh / 2);
+          [x, y] = G.furnitureAt(x, y, item.w, item.h, item.angle || 0);
         } else {
           x = G.clamp(x, 0, r.width); y = G.clamp(y, 0, r.height);
         }
