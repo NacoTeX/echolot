@@ -47,9 +47,31 @@ def _module_mounting(device_id: str) -> bool:
     return rooms.note_module_mounting(device_id, mounting) is not None
 
 
+#: Refreshes started from a callback, held until they are done: the loop
+#: keeps only a weak reference to a task, and one nobody holds can be
+#: collected before it has run.
+_background_refreshes: set = set()
+
+
+def _refresh_done(task: asyncio.Task) -> None:
+    _background_refreshes.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Neu laden nach geänderter Montage fehlgeschlagen", exc_info=task.exception())
+
+
 def _on_module_mounting(device_id: str) -> None:
-    if _module_mounting(device_id):
-        asyncio.get_running_loop().create_task(refresh())
+    if not _module_mounting(device_id):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called outside the add-on's loop (a test, a library calling back
+        # from a thread). What changed is stored; the next refresh loads it.
+        logger.debug("Montage von %s gespeichert, ohne laufende Event-Loop", device_id)
+        return
+    task = loop.create_task(refresh())
+    _background_refreshes.add(task)
+    task.add_done_callback(_refresh_done)
 
 
 links.add_mounting_listener(_on_module_mounting)

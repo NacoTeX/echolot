@@ -861,3 +861,40 @@ def test_the_device_page_says_which_firmware_the_node_runs_while_connected(clien
     # Disconnected, the last answer may describe an image since replaced.
     Stub.snapshot.connected = False
     assert view()["firmware_running"] is None
+
+
+def test_a_mounting_report_needs_no_running_loop_and_its_refresh_is_held(client, monkeypatch):
+    """The link reports a module's mounting from inside the add-on's loop.
+    Called from anywhere else, the change is still stored and nothing
+    raises; inside the loop the refresh it starts is held until done — the
+    loop keeps only a weak reference to a task."""
+    import asyncio
+
+    from app import main
+
+    c, _ = client
+    device, room = room_with_sensor(c)
+    stub = StubLink()
+    with_stub(monkeypatch, device["id"], stub)
+
+    main._on_module_mounting(device["id"])  # no loop running here
+    assert c.get(f"/api/rooms/{room['id']}").json()["calibration"]["module_mounting"]["height_m"] == 2.2
+
+    refreshed = []
+
+    async def fake_refresh():
+        await asyncio.sleep(0)
+        refreshed.append(True)
+
+    monkeypatch.setattr(main, "refresh", fake_refresh)
+    stub.snapshot.mount_height_m = 2.6
+
+    async def run():
+        main._on_module_mounting(device["id"])
+        assert len(main._background_refreshes) == 1
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert refreshed == [True] and not main._background_refreshes
+
+    asyncio.run(run())
+    assert c.get(f"/api/rooms/{room['id']}").json()["calibration"]["module_mounting"]["height_m"] == 2.6
