@@ -39,6 +39,8 @@ class FakeClient:
     instances = []
     fail_with = None
     node = None
+    #: Called as connect() finishes, inside it.
+    on_connect = None
     entities = [Info(1, "Radar Frame"), Info(2, "Radar Status"), Info(3, "WiFi Signal"), Info(4, "Radar Firmware")]
 
     def __init__(self, address, port, key, name):
@@ -52,6 +54,8 @@ class FakeClient:
         if FakeClient.fail_with:
             raise FakeClient.fail_with
         self.on_stop = on_stop
+        if FakeClient.on_connect is not None:
+            FakeClient.on_connect()
 
     async def list_entities_services(self):
         return list(FakeClient.entities), []
@@ -73,6 +77,7 @@ def reset(monkeypatch):
     FakeClient.instances = []
     FakeClient.fail_with = None
     FakeClient.node = NodeInfo()
+    FakeClient.on_connect = None
     FakeClient.entities = [Info(1, "Radar Frame"), Info(2, "Radar Status"), Info(3, "WiFi Signal"),
                            Info(4, "Radar Firmware")]
     monkeypatch.setattr(radar_link, "BACKOFF", (0.01, 0.01))
@@ -428,4 +433,20 @@ def test_a_node_that_does_not_say_is_still_linked_and_says_nothing_old():
         FakeClient.instances[1].on_state(State(1, "1|R|1|15,23"))
         assert snap.frame.targets_m == ((1.5, 2.3),)
         await links.stop_all()
+    asyncio.run(run())
+
+
+def test_stopping_is_not_lost_when_it_meets_a_connect_that_just_finished():
+    """Python 3.11's asyncio.wait_for hands back the result of a call that
+    has just finished even when a cancellation arrives with it. The link
+    then went on as if nothing had happened and waited for the connection
+    to drop — and stop(), and every refresh behind it, waited with it."""
+    async def run():
+        links = radar_link.RadarLinks(client_factory=FakeClient)
+        FakeClient.on_connect = lambda: links.links["dev"]._task.cancel()
+        await links.sync([device()])
+        task = links.links["dev"]._task
+        done, _ = await asyncio.wait({task}, timeout=2)
+        assert task in done and task.cancelled()
+        assert not links.snapshot("dev").connected
     asyncio.run(run())

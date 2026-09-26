@@ -452,8 +452,12 @@ class RoomEngine:
 
     async def _loop(self) -> None:
         while True:
+            # asyncio.timeout, not wait_for: on Python 3.11 wait_for hands
+            # back a wait that has just ended even when stop() cancels in
+            # the same moment, and the loop would go on for good.
             try:
-                await asyncio.wait_for(self._wake.wait(), IDLE_INTERVAL)
+                async with asyncio.timeout(IDLE_INTERVAL):
+                    await self._wake.wait()
             except asyncio.TimeoutError:
                 pass
             self._wake.clear()

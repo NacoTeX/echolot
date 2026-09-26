@@ -310,8 +310,14 @@ class RadarLink:
             stopped.set()
 
         try:
-            await asyncio.wait_for(client.connect(on_stop=on_stop, login=True), CONNECT_TIMEOUT)
-            entities, _services = await asyncio.wait_for(client.list_entities_services(), LIST_TIMEOUT)
+            # asyncio.timeout, not wait_for: on Python 3.11 — the add-on's —
+            # wait_for returns the result of a call that has just finished
+            # even when a cancellation arrives with it, and stop() would then
+            # wait for the connection to drop.
+            async with asyncio.timeout(CONNECT_TIMEOUT):
+                await client.connect(on_stop=on_stop, login=True)
+            async with asyncio.timeout(LIST_TIMEOUT):
+                entities, _services = await client.list_entities_services()
             self._roles = {}
             for info in entities:
                 role = ENTITY_ROLES.get(str(getattr(info, "name", "")).strip().lower())
@@ -346,7 +352,8 @@ class RadarLink:
         """Which firmware the node runs, as it says. A node that does not
         answer is still a node: the link goes on without it."""
         try:
-            info = await asyncio.wait_for(client.device_info(), LIST_TIMEOUT)
+            async with asyncio.timeout(LIST_TIMEOUT):
+                info = await client.device_info()
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - an unanswered question is no failed link
