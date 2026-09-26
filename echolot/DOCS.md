@@ -130,8 +130,10 @@ Gegenrichtung, beim Sensor „Links und rechts tauschen“ einschalten.
 
 ## Kalibrieren
 
-*Raum → Kalibrieren*, drei Reiter. Alles geschieht am lebenden Raum; nichts
-wird gespeichert, bevor du *Übernehmen* tippst.
+*Raum → Kalibrieren*, drei Reiter. Alles geschieht am lebenden Raum; die
+Kalibrierung ändert sich erst, wenn du *Übernehmen* tippst. Gemessene
+Standpunkte hebt Echolot vorher schon auf, damit ein Neuladen oder der
+Wechsel vom iPad zum Laptop nichts verliert.
 
 **Störquellen lernen.** Das Radar meldet an manchen Stellen Ziele, wo
 niemand ist: Heizkörper, Spiegel, Metallgestelle, ein Ventilator. Wähle,
@@ -152,8 +154,8 @@ Metallgestell —, nimm sie einzeln heraus.
 
 Die Stellen stehen in Koordinaten des Sensors, nicht des Raums. Sie
 bleiben also richtig, wenn der Sensor auf dem Plan verschoben oder gedreht
-wird, gelten aber nur für genau diesen Sensor. Hängt er physisch woanders,
-noch einmal lernen.
+wird, gelten aber nur für genau diesen Sensor in genau dieser Montage.
+Hängt er physisch anders, verwirft *Sensor neu montiert* sie (siehe unten).
 
 Die Aufnahme sagt nebenbei, ob das Modul im leeren Raum **leere Berichte**
 schickt oder **verstummt**. Verstummt es, schlägt sie vor, beim Sensor
@@ -172,22 +174,40 @@ rechnet die Ausrichtung aus Standpunkten heraus.
    Ob es das tut, steht in keinem Handbuch; mit der Höhe prüft die
    Kalibrierung beide Varianten.
 2. **Standpunkte:** *Standpunkte vorschlagen* legt fünf Punkte in den
-   Sichtbereich — nah und fern, links und rechts, nicht auf Möbeln. Stell
-   dich auf den markierten Punkt, tippe *Messen*; nach 3 s hört Echolot 5 s
-   zu und nimmt den Median der gemeldeten Positionen. Danach ist der
-   nächste Punkt dran. Eigene Punkte gehen mit einem Tipp auf den Plan —
-   gut sind Stellen, die du genau wiederfindest. Jeder Punkt lässt sich neu
-   messen oder entfernen.
+   Sichtbereich — nah und fern, links und rechts, nicht auf Möbeln — und
+   hält zwei weitere als **Kontrollpunkte** zurück. Stell dich auf den
+   markierten Punkt, tippe *Messen*; nach 3 s hört Echolot 5 s zu und nimmt
+   den Median der gemeldeten Positionen. Danach ist der nächste Punkt dran.
+   Eigene Punkte gehen mit einem Tipp auf den Plan — gut sind Stellen, die
+   du genau wiederfindest. Jeder Punkt lässt sich neu messen oder
+   entfernen. Gespeichert werden Sollpunkt, gemeldete Position, Streuung,
+   Anteil der Meldungen und Zeitpunkt; ein Punkt, dessen Messung über einen
+   Sensorwechsel oder eine Neumontage lief, wird nicht aufgenommen.
 3. **Bericht:** Echolot rechnet mehrere Modelle durch — nur Position und
    Richtung; dazu ein Entfernungsmaßstab; dazu ein Entfernungsversatz oder
    ein Winkelmaßstab; alles zusammen; jeweils mit und ohne Schräge — und
    nimmt das einfachste, das die Messung trägt. Mehr Korrekturen passen auf
    ein paar Punkte immer besser, auch wenn sie nur das Rauschen nachzeichnen;
    deshalb kostet jede zusätzliche Korrektur etwas (Bayes'sches
-   Informationskriterium mit einer Rauschgrenze von 6 cm). Die
-   **Genauigkeit** ist ehrlich geprüft: Jeder Punkt wird einmal
-   weggelassen und aus den anderen vorhergesagt (Kreuzprobe). *Gut* heißt
-   bis 15 cm, *brauchbar* bis 30 cm.
+   Informationskriterium mit einer Rauschgrenze von 6 cm). Der Bericht
+   nennt drei Zahlen, bewusst getrennt:
+   - **Anpassung:** RMS an den Standpunkten, aus denen gerechnet wurde.
+     Sagt wenig — mehr Korrekturen passen immer besser.
+   - **Kreuzprüfungs-RMS:** Jeder Standpunkt wird einmal weggelassen, die
+     ganze Wahl (Modell, Links/Rechts, Schräge) aus den übrigen neu
+     getroffen und der Punkt vorhergesagt. Ehrlich über das Verfahren,
+     aber aus derselben Sitzung und denselben Punkten.
+   - **Kontrollpunkte-RMS:** Punkte, die an keiner Rechnung teilhaben.
+     Nur das ist eine unabhängige Prüfung. Erst mit **zwei**
+     Kontrollpunkten heißt das Ergebnis *geprüft* und bekommt eine Stufe
+     — *gut* bis 15 cm, *brauchbar* bis 30 cm, sonst *ungenau*. Ohne sie
+     steht da *nicht unabhängig geprüft*, auch bei einem Punkt, der
+     perfekt passt.
+
+   Die Zahlen sind RMS-Werte dieser Punkte, keine Fehlergrenze und kein
+   Konfidenzintervall. Liegen die Standpunkte zu eng, auf einer Linie, in
+   derselben Richtung oder gleich weit vom Sensor, sagt der Bericht,
+   welche Korrektur sich daraus nicht bestimmen lässt.
 
 Links und rechts entscheidet ab drei Punkten die Passung selbst; ist sie
 nicht eindeutig, der eingezeichnete Platz; sonst bleibt die Einstellung,
@@ -199,9 +219,42 @@ Wand gesetzt. Mit einem Punkt wird nur die Richtung korrigiert, mit zwei
 Position und Richtung; die Korrekturen des Moduls brauchen mindestens drei,
 belastbar fünf.
 
-Übernehmen speichert Platzierung und Sensormodell; die Standpunkte bleiben
-stehen und zeigen, wie gut die neue Einstellung zu ihnen passt.
-*Zurücksetzen* nimmt die Korrekturen des Moduls wieder weg.
+**Übernehmen** rechnet auf dem Server noch einmal aus den gespeicherten
+Standpunkten und speichert Platzierung, Sensormodell, alle Standpunkte und
+den Bericht — aber nur, wenn der Raum noch der ist, für den der Vorschlag
+berechnet wurde: derselbe Sensor, dieselbe Montage, dieselben Standpunkte,
+dieselbe Höhe, dasselbe Rechenverfahren, keine andere Änderung am Raum
+dazwischen. Sonst lehnt Echolot ab, nennt, was sich geändert hat, und
+rechnet den Vorschlag neu; ein zweiter Tab kann so keinen veralteten
+Vorschlag übernehmen. Die Standpunkte bleiben stehen und zeigen, wie gut
+die neue Einstellung zu ihnen passt. *Korrekturen zurücksetzen* nimmt die
+Korrekturen des Moduls wieder weg.
+
+Ändert sich später etwas, worauf der Bericht beruht — Höhe, Sensormodell,
+Raummaße, der Sensor auf dem Plan —, steht die Ausrichtung als
+**veraltet** da, mit dem Grund. Ausrichtungen aus 1.3 haben keinen solchen
+Nachweis und heißen deshalb nicht „aktuell“.
+
+**Verlauf.** Jede übernommene Ausrichtung bleibt mit Standpunkten und
+Bericht im Verlauf, dazu der Stand davor — die letzten sechs. *Vorschau*
+zeichnet den Sensor, wie er damals stand, gestrichelt auf den Plan;
+*Zurück* stellt ihn so wieder her. Der Eintrag behält dabei seine
+Kennung, der jetzige Stand bleibt im Verlauf, Raum, Zonen und
+Home-Assistant-Entitäten bleiben, wie sie sind. Ein wiederhergestellter
+Bericht wird am Raum von heute gemessen: Wurde der Raum seither größer,
+steht er als veraltet da.
+
+**Sensor neu montiert oder gewechselt.** Wird ein anderer Sensor
+zugeordnet, gelöscht, oder tippst du *Sensor neu montiert …* (abgenommen
+und wieder aufgehängt, anders gedreht), gilt nichts mehr, was mit der
+alten Montage gemessen wurde: Störquellen, Ausrichtung, Sensormodell und
+Standpunkte werden verworfen, die Zeichnung auf dem Plan und die Höhe
+bleiben. Einträge im Verlauf aus der alten Montage lassen sich ansehen,
+aber nicht wiederherstellen. Verschiebst du den Sensor dagegen im
+Raumeditor, fragt Echolot beim Speichern: *umgehängt* verwirft wie oben,
+*nur Zeichnung korrigiert* behält alle Messungen — die gemeldeten
+Positionen sind in Sensorkoordinaten gespeichert und passen zur neuen
+Zeichnung; die Ausrichtung gilt dann als veraltet.
 
 **Filter.**
 
@@ -215,11 +268,23 @@ stehen und zeigen, wie gut die neue Einstellung zu ihnen passt.
 
 ## Wie gezählt wird
 
-Messdefinition 3 (seit 1.3). Jede neue Meldung des Sensors geht zuerst
-durch die **Zielverfolgung**: Jede gemeldete Position wird dem nächsten
+Messdefinition 4 (seit 1.4). Was eine **neue Meldung** ist, entscheidet
+die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
+Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
+sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
+höchstens 2³¹ voraus liegt, ist neu (auch über den Überlauf bei 2³²
+hinweg; übersprungene Nummern werden gezählt), eine ältere wird
+verworfen. Nach jeder neuen Verbindung beginnt die Zählung neu. Bis zu 64
+Meldungen warten in einer Schlange; die Auswertung nimmt alle der Reihe
+nach, jede zu ihrer Empfangszeit — die Zeile trägt keine Gerätezeit, die
+Empfangszeit ist also die Zeit der Messung plus Übertragung.
+
+Jede neue Meldung geht zuerst durch die **Zielverfolgung**: Ziele, die
+länger als 1,5 s nicht gemeldet wurden, sind vergessen, bevor die neue
+Meldung zugeordnet wird. Jede gemeldete Position wird dann dem nächsten
 bekannten Ziel zugeordnet (bis 0,9 m), sonst entsteht ein neues. Ein Ziel,
-das eine Meldung lang fehlt, bleibt 1,5 s gemerkt, zählt in der Zeit aber
-nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
+das eine Meldung lang fehlt, bleibt so lange gemerkt, zählt in der Zeit
+aber nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
 **Bestätigungszeit** lang gemeldet hat, außerhalb gelernter Störquellen.
 
 Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
@@ -242,10 +307,13 @@ dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
+Definition 3 (1.3) zählte die Lebenszeichen-Wiederholungen als Meldungen
+— ein Ziel wurde so schneller bestätigt, als das Radar es tatsächlich
+gemeldet hatte —, nahm je Auswertung nur die letzte Meldung, zur Zeit der
+Auswertung, und konnte ein Ziel nach Ablauf seines Gedächtnisses wieder
+aufnehmen. Definition 2 (1.1–1.2) war Definition 3 ohne Sensormodell;
 Definition 1 (Echolot 1.0) waren die Schritte 1–3 und 5 auf jede Meldung
-einzeln, mit dem Rechteck als Wänden. Definition 2 (1.1–1.2) war
-Definition 3 ohne Sensormodell; ohne Korrekturen rechnet Definition 3 bis
-aufs Bit wie sie.
+einzeln, mit dem Rechteck als Wänden.
 
 Raum und Zone gelten als belegt, solange ein Ziel darin ist, und danach
 noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar).
@@ -279,7 +347,7 @@ vorgeschlagenem Bereich) mit
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen werden keine Entitäten. Jede Entität trägt als Attribute
-die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 3),
+die Regeln, nach denen ihr Wert entstand: `definition_version` (jetzt 4),
 `confirm_s`, `smoothing`, `interference_spots` und das Sensormodell
 (`range_scale`, `range_offset_m`, `azimuth_scale`, `slant`). So lässt sich ein
 Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
@@ -348,6 +416,13 @@ Annahmen:
   50 % Trefferquote, 20 s Vertrauen in Störquellen, Störquellen ab 3 % der
   Meldungen — sind an simulierten Meldungen gewählt. Wie gut sie zu einem
   echten LD2460 passen, zeigt erst der Raum.
+- **Die Kalibrierung ist nur an simulierten Modulen geprüft.** Die
+  Rauschgrenze (6 cm) und die Stufen der Kontrollpunkte (15/30 cm) sind
+  gewählt, nicht an echten Messungen abgeleitet. Ob ein Fehler, der mit
+  der Entfernung wächst, von der Montage kommt (5° Richtungsfehler sind
+  bei 5 m schon etwa 44 cm), vom Modul oder von Reflexionen, lässt sich
+  nur mit Messungen im Raum trennen — mit Kontrollpunkten, die nicht in
+  die Rechnung eingehen.
 
 ## Geräte aus früheren Versionen
 
@@ -464,6 +539,9 @@ damit der nächste Build es neu lädt.
 - **Echte Images** für ESP32 (Xtensa) und ESP32-C5 (RISC-V) — bei jedem
   Push auf `main` und bei Pull Requests mit dem Label `firmware`, weil ein
   kalter Build 2 GB lädt.
+
+Die Seitenskripte werden auf Syntax geprüft; ein Unit-Test sieht zu, dass
+keine Ansicht ihre eigenen Methoden überschreibt.
 
 Grün in CI heißt: baut und linkt. Ob ein Modul an einem Board richtig misst,
 sagt erst die Hardware.

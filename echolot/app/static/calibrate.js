@@ -14,12 +14,16 @@
   const f2 = (v) => E.formatNumber(v, 2);
   const cm = (m) => `${Math.round(m * 100)} cm`;
 
-  // Standpoints survive leaving the page, not a reload: they are only
-  // worth something together with the placement they were measured at.
-  const standpoints = {};
-
   function spotsCount(n) {
     return n === 1 ? "1 Störquelle" : `${n} Störquellen`;
+  }
+
+  // What a standpoint's recording said about itself.
+  function measuredMeta(p) {
+    const facts = [p.source === "capture" ? "gemessen" : "übergeben"];
+    if (p.spread_m !== null && p.spread_m !== undefined) facts.push(`Streuung ${cm(p.spread_m)}`);
+    if (p.share !== null && p.share !== undefined) facts.push(`in ${Math.round(p.share * 100)} % der Meldungen`);
+    return facts.join(" · ");
   }
 
   function when(ts) {
@@ -36,6 +40,9 @@
       this.capture = null;
       this.proposal = null;
       this.pending = null; // a picked, unmeasured standpoint [x, y]
+      this.pendingRole = "fit";
+      this.remeasure = null; // id of the standpoint being measured again
+      this.preview = null; // id of the history record drawn on the plan
       this.render();
       this.resume();
     },
@@ -46,7 +53,23 @@
       this.plan = null;
     },
     room() { return state.rooms.find((r) => r.id === this.id) || null; },
-    points() { return standpoints[this.id] || (standpoints[this.id] = []); },
+    // The standpoints are kept on the server with the room: a reload, or
+    // the iPad after the laptop, finds them there.
+    points() {
+      const room = this.room();
+      const draft = room && room.calibration && room.calibration.alignment_draft;
+      return draft && draft.device_id === room.sensor.device_id ? draft.points : [];
+    },
+    // A route answered with the room as it is now.
+    takeRoom(room) {
+      const i = state.rooms.findIndex((r) => r.id === room.id);
+      if (i >= 0) state.rooms[i] = room;
+      this.roomJson = JSON.stringify(room);
+      if (this.plan) this.plan.setRoom(room);
+    },
+    async reloadRoom() {
+      try { this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}`)); } catch { await E.refresh(); }
+    },
     onData() {
       const room = this.room();
       if (!room) { this.render(); return; }
@@ -223,15 +246,25 @@
       const room = this.room();
       const saved = room ? room.sensor : {};
       return {
-        mount_height_m: this.mount !== undefined ? this.mount : saved.mount_height_m ?? null,
-        target_height_m: this.target !== undefined ? this.target : saved.target_height_m ?? 1,
+        mount_height_m: this.typedMount !== undefined ? this.typedMount : saved.mount_height_m ?? null,
+        target_height_m: this.typedTarget !== undefined ? this.typedTarget : saved.target_height_m ?? 1,
       };
     },
 
-    // The next suggested spot nobody has stood on yet.
+    // The next suggested spot nobody has stood on yet: the spots to fit
+    // first, then the control spots.
     nextSuggestion() {
       const done = this.points().map((p) => p.ref.join(","));
-      return (this.suggested || []).find((q) => !done.includes(q.join(","))) || null;
+      const fit = (this.suggested || []).find((q) => !done.includes(q.join(",")));
+      if (fit) return { point: fit, role: "fit" };
+      const check = (this.suggestedChecks || []).find((q) => !done.includes(q.join(",")));
+      return check ? { point: check, role: "check" } : null;
+    },
+
+    queueNext() {
+      const next = this.nextSuggestion();
+      this.pending = next ? next.point : null;
+      this.pendingRole = next ? next.role : "fit";
     },
 
     alignCard(room) {
@@ -251,38 +284,60 @@
             <select id="cal-target">${[[1.1, "Oberkörper im Stehen · 1,1 m"], [1.0, "Oberkörper · 1,0 m"], [0.8, "Oberkörper im Sitzen · 0,8 m"]].map(([v, l]) =>
               `<option value="${v}" ${Math.abs(m.target_height_m - v) < 0.01 ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         </div>
-        <p class="hint">Hängt das Radar höher als der Oberkörper, misst es womöglich die schräge Linie zu dir, nicht den Abstand am Boden. Mit der Höhe prüft die Kalibrierung beides und nimmt, was die Messung zeigt.</p></div>`;
+        <p class="hint">Hängt das Radar höher als der Oberkörper, misst es womöglich die schräge Linie zu dir, nicht den Abstand am Boden. Mit der Höhe prüft die Kalibrierung beides und nimmt, was die Messung zeigt.</p>
+        <div class="actions"><button class="btn small" data-remount ${measuring ? "disabled" : ""}>${icon("rotate")}Sensor neu montiert …</button></div></div>`;
 
-      const rows = points.map((p, i) => {
-        const after = pr && pr.errors_after_m ? pr.errors_after_m[i] : null;
-        const before = pr && pr.errors_before_m ? pr.errors_before_m[i] : null;
-        const meta = after !== null && after !== undefined
-          ? `daneben: ${cm(before)} → ${cm(after)}` : "gemessen";
-        return `<div class="zone-row cal-point"><span class="spot-num">${i + 1}</span>
+      // Spots to fit and control spots, each numbered in its own series;
+      // the proposal's errors come in the same two orders.
+      const fitIdx = [], checkIdx = [];
+      points.forEach((p, i) => ((p.role === "check" ? checkIdx : fitIdx).push(i)));
+      const row = (p, i, label, meta) => `<div class="zone-row cal-point ${p.role === "check" ? "check" : ""}"><span class="spot-num">${label}</span>
           <div class="grow"><div class="name">${f2(p.ref[0])} · ${f2(p.ref[1])} m</div><div class="meta">${meta}</div></div>
-          <button class="btn small ghost icon-only" data-remeasure="${i}" title="Neu messen" aria-label="Standpunkt ${i + 1} neu messen" ${measuring ? "disabled" : ""}>${icon("rotate")}</button>
-          <button class="btn small ghost icon-only" data-drop="${i}" title="Entfernen" aria-label="Standpunkt ${i + 1} entfernen" ${measuring ? "disabled" : ""}>${icon("close")}</button></div>`;
+          <button class="btn small ghost icon-only" data-remeasure="${escapeHtml(p.id)}" title="Neu messen" aria-label="Punkt ${label} neu messen" ${measuring ? "disabled" : ""}>${icon("rotate")}</button>
+          <button class="btn small ghost icon-only" data-drop="${escapeHtml(p.id)}" title="Entfernen" aria-label="Punkt ${label} entfernen" ${measuring ? "disabled" : ""}>${icon("close")}</button></div>`;
+      const fitRows = fitIdx.map((i, k) => {
+        const after = pr && pr.errors_after_m ? pr.errors_after_m[k] : undefined;
+        const before = pr && pr.errors_before_m ? pr.errors_before_m[k] : undefined;
+        const held = pr && pr.cv_errors_m ? pr.cv_errors_m[k] : undefined;
+        const meta = after !== undefined
+          ? `daneben: ${cm(before)} → ${cm(after)}${held !== undefined ? ` · ohne ihn: ${cm(held)}` : ""}` : measuredMeta(points[i]);
+        return row(points[i], i, String(k + 1), meta);
+      }).join("");
+      const checkRows = checkIdx.map((i, k) => {
+        const e = pr && pr.validation_errors_m ? pr.validation_errors_m[k] : undefined;
+        return row(points[i], i, `K${k + 1}`, e !== undefined ? `Kontrolle: ${cm(e)} daneben` : measuredMeta(points[i]));
       }).join("");
 
-      const total = Math.max((this.suggested || []).length, points.length);
+      const total = Math.max((this.suggested || []).length, fitIdx.length);
       let action = "";
       if (measuring) {
         this.hint(cap.phase === "waiting" ? "Auf den markierten Punkt stellen." : "Stehen bleiben, gern leicht hin und her wiegen.");
         action = `${this.progressHtml(cap)}<div class="actions"><button class="btn" data-cancel>Abbrechen</button></div>`;
       } else if (this.pending) {
-        const label = this.remeasure !== null && this.remeasure !== undefined ? `Standpunkt ${this.remeasure + 1} neu` : `Standpunkt ${points.length + 1}${total ? ` von ${Math.max(total, points.length + 1)}` : ""}`;
-        this.hint("Stell dich auf den markierten Punkt — genau über die Stelle, die Füße mittig — und tippe „Messen“. Ein Tipp auf den Plan wählt einen anderen Punkt.");
+        const isCheck = this.pendingRole === "check";
+        const label = this.remeasure
+          ? "Punkt neu messen"
+          : isCheck ? `Kontrollpunkt K${checkIdx.length + 1}`
+            : `Standpunkt ${fitIdx.length + 1}${total ? ` von ${Math.max(total, fitIdx.length + 1)}` : ""}`;
+        this.hint(isCheck
+          ? "Ein Kontrollpunkt fließt nicht in die Rechnung ein — er prüft sie. Stell dich genau auf den Punkt und tippe „Messen“."
+          : "Stell dich auf den markierten Punkt — genau über die Stelle, die Füße mittig — und tippe „Messen“. Ein Tipp auf den Plan wählt einen anderen Punkt.");
         action = `<div class="notice">${icon("target")}<div class="grow"><strong>${label}</strong>${f2(this.pending[0])} m · ${f2(this.pending[1])} m</div></div>
           <div class="actions"><button class="btn primary" data-measure>${icon("radar")}Messen (5 s)</button><button class="btn" data-unpick>Abbrechen</button></div>`;
       } else if (!points.length) {
         this.hint("Tippe auf dem Plan auf die Stelle, an der du gleich stehen wirst — oder lass dir Punkte vorschlagen.");
         action = `<div class="actions"><button class="btn primary" data-suggest>${icon("target")}Standpunkte vorschlagen</button></div>`;
       } else {
-        this.hint(points.length < 5 ? "Weitere Standpunkte machen das Ergebnis belastbarer — fünf, nah und fern, links und rechts." : "Tippe auf den Plan für einen weiteren Standpunkt, oder übernimm das Ergebnis.");
+        this.hint(this.pendingRole === "check"
+          ? "Tippe auf dem Plan auf die Stelle für den Kontrollpunkt — abseits der Standpunkte."
+          : fitIdx.length < 5 ? "Weitere Standpunkte machen das Ergebnis belastbarer — fünf, nah und fern, links und rechts." : "Tippe auf den Plan für einen weiteren Standpunkt, oder prüfe das Ergebnis mit Kontrollpunkten.");
+        if (fitIdx.length >= 2) {
+          action = `<div class="actions"><button class="btn" data-add-check>${icon("target")}Kontrollpunkt messen</button></div>`;
+        }
       }
 
       let report = "";
-      if (pr && points.length && !measuring) {
+      if (pr && fitIdx.length && !measuring) {
         const changes = [];
         if (pr.shift_m >= 0.01) changes.push(`${cm(pr.shift_m)} verschieben`);
         if (Math.abs(pr.turn_deg) >= 0.1) changes.push(`${E.formatNumber(pr.turn_deg, 1)}° drehen`);
@@ -292,17 +347,21 @@
         if (pr.range_offset_m) model.push(`${cm(Math.abs(pr.range_offset_m))} ${pr.range_offset_m > 0 ? "zu weit" : "zu nah"}`);
         if (pr.azimuth_scale !== 1) model.push(`Winkel ${pr.azimuth_scale < 1 ? "gestaucht" : "gedehnt"} (× ${E.formatNumber(pr.azimuth_scale, 2)})`);
         if (pr.slant) model.push(`misst die Schräge (Höhe ${E.formatNumber(m.mount_height_m, 2)} m)`);
-        const grade = { good: ["ok", "gut"], fair: ["warn", "brauchbar"], poor: ["err", "ungenau"] }[pr.quality];
-        const accuracy = pr.check_m !== null && pr.check_m !== undefined
-          ? `±${cm(pr.check_m).replace(" cm", "")} cm <small>(Kreuzprobe)</small>` : `${cm(pr.rms_m)} <small>(Restabweichung)</small>`;
+        const grade = pr.validation_status === "validated"
+          ? { good: ["ok", "geprüft: gut"], fair: ["warn", "geprüft: brauchbar"], poor: ["err", "geprüft: ungenau"] }[pr.quality]
+          : ["warn", "nicht unabhängig geprüft"];
+        const metric = (label, value, note) => `<div class="stat-line"><span>${label}${note ? `<small>${note}</small>` : ""}</span><span>${value}</span></div>`;
         report = `<div class="cal-proposal">
-            <div class="cal-grade"><span class="chip ${grade[0]}">${grade[1]}</span><span>Genauigkeit ${accuracy}</span></div>
+            <div class="cal-grade"><span class="chip ${grade[0]}">${grade[1]}</span></div>
             <p>${changes.length ? escapeHtml(changes.join(", ")) + "." : "Position und Richtung stimmen."}${pr.mode === "direction" ? " Nur die Richtung — für die Position braucht es einen zweiten Standpunkt." : ""}</p>
             ${pr.model ? `<p class="hint">Modell: ${escapeHtml(pr.model_label)}${model.length ? ` — ${escapeHtml(model.join(", "))}` : ""}.</p>` : ""}
-            <div class="stat-lines">
-              <div class="stat-line"><span>Abweichung jetzt</span><span>${cm(pr.rms_before_m)}</span></div>
-              <div class="stat-line"><span>danach</span><span><b>${cm(pr.rms_m)}</b></span></div>
+            <div class="stat-lines cal-metrics">
+              ${metric("Abweichung vorher", cm(pr.rms_before_m), "an den Standpunkten, jetzige Einstellung")}
+              ${metric("Anpassung", `<b>${cm(pr.fit_rms_m)}</b>`, "RMS an den Standpunkten, aus denen gerechnet wurde")}
+              ${metric("Kreuzprüfungs-RMS", pr.cv_rms_m !== null ? cm(pr.cv_rms_m) : "—", pr.cv_rms_m !== null ? `jeder Standpunkt weggelassen, Modell je Durchgang neu gewählt (${pr.points} Punkte)` : "ab 3 Standpunkten")}
+              ${metric("Kontrollpunkte-RMS", pr.validation_points ? cm(pr.validation_rms_m) : "—", pr.validation_points ? `${pr.validation_points} Punkt${pr.validation_points === 1 ? "" : "e"}, nicht in der Rechnung${pr.validation_points < 2 ? " — für eine Bewertung braucht es zwei" : ""}` : "keine gemessen")}
             </div>
+            ${pr.validation_status !== "validated" ? `<p class="hint">Anpassung und Kreuzprüfung beruhen auf denselben Standpunkten. Wie genau es im Raum ist, zeigen erst Kontrollpunkte, die nicht in die Rechnung eingehen — zwei reichen für eine Bewertung.</p>` : ""}
             ${(pr.warnings || []).map((w) => `<div class="notice warn">${icon("alert")}<div class="grow">${escapeHtml(w)}</div></div>`).join("")}
             <div class="actions"><button class="btn primary" data-apply ${changes.length || pr.model_changed ? "" : "disabled"}>${icon("check")}Übernehmen</button>
               <button class="btn" data-clear>Punkte verwerfen</button></div></div>`;
@@ -313,16 +372,56 @@
       if (s.range_offset_m) active.push(`Versatz ${cm(s.range_offset_m)}`);
       if (s.azimuth_scale !== 1) active.push(`Winkel × ${E.formatNumber(s.azimuth_scale, 2)}`);
       if (s.slant) active.push("Schrägkorrektur");
-      const state = cal.aligned_at ? `<div class="notice ok">${icon("check")}<div class="grow"><strong>Ausgerichtet ${escapeHtml(when(cal.aligned_at))}</strong>
-          ${cal.alignment_points} Standpunkte · ${cal.alignment_check_m !== null && cal.alignment_check_m !== undefined ? `Genauigkeit ±${Math.round(cal.alignment_check_m * 100)} cm` : `Restabweichung ${cm(cal.alignment_rms_m || 0)}`}${active.length ? `<br>${escapeHtml(active.join(" · "))}` : ""}</div>
-          ${active.length ? `<button class="btn small" data-reset-model title="Korrekturen des Sensormodells zurücksetzen">Zurücksetzen</button>` : ""}</div>` : "";
+      const rep = cal.alignment_report || {};
+      const st = room.alignment_state || { state: "none", changed: [] };
+      let summary = "";
+      if (st.state === "unknown") summary = "Mit Echolot 1.3 ausgerichtet — welche Prüfung hinter der damaligen Zahl stand, ist nicht belegt.";
+      else if (rep.validation_status === "validated") summary = `Kontrollpunkte-RMS ${cm(rep.validation_rms_m)} (${rep.validation_points} Punkte)`;
+      else if (rep.fit_rms_m !== undefined && rep.fit_rms_m !== null) summary = `Nicht unabhängig geprüft · Anpassung ${cm(rep.fit_rms_m)}${rep.cv_rms_m !== null && rep.cv_rms_m !== undefined ? ` · Kreuzprüfung ${cm(rep.cv_rms_m)}` : ""}`;
+      const stale = st.state === "stale";
+      const dropped = !cal.aligned_at && cal.invalidated_at
+        ? `<div class="notice warn">${icon("alert")}<div class="grow"><strong>Kalibrierung verworfen · ${escapeHtml(when(cal.invalidated_at))}</strong>${escapeHtml(cal.invalidated_reason || "")}: Ausrichtung, Sensormodell und Störquellen gehörten zur alten Montage. Neu ausrichten und Störquellen neu lernen.</div></div>` : "";
+      const state = cal.aligned_at ? `<div class="notice ${stale || st.state === "unknown" ? "warn" : "ok"}">${icon(stale ? "alert" : "check")}<div class="grow"><strong>${stale ? "Ausrichtung veraltet" : "Ausgerichtet"} · ${escapeHtml(when(cal.aligned_at))}</strong>
+          ${stale ? `Seitdem: ${escapeHtml(st.changed.join(", "))}. Die Zahlen beschreiben den Raum nicht mehr — neu messen.<br>` : ""}${escapeHtml(summary)}${active.length ? `<br>${escapeHtml(active.join(" · "))}
+          <div class="actions"><button class="btn small" data-reset-model title="Korrekturen des Sensormodells zurücksetzen">Korrekturen zurücksetzen</button></div>` : ""}</div></div>` : "";
 
       return `<div class="card"><h2>Sensor ausrichten</h2>
         <p class="hint">Stell dich an Stellen, die du auf dem Plan genau wiederfindest. Echolot vergleicht, wo das Radar dich sieht, mit dem markierten Punkt, und rechnet daraus Position, Richtung und Links/Rechts des Sensors — und ab drei Punkten, wie das Modul Entfernungen und Winkel verzerrt. Nur eine Person im Raum.</p>
-        ${state}${mount}
+        ${state}${dropped}${mount}
         <div class="cal-block"><h3>Standpunkte</h3>
-        ${rows ? `<div class="zone-list">${rows}</div>` : ""}
-        ${action}${report}</div></div>`;
+        ${fitRows ? `<div class="zone-list">${fitRows}</div>` : ""}
+        ${checkRows ? `<h3 class="cal-sub">Kontrollpunkte</h3><div class="zone-list">${checkRows}</div>` : ""}
+        ${action}${report}</div>${this.historyBlock(room, measuring)}</div>`;
+    },
+
+    // Every placement the sensor had from an alignment, and the drawing
+    // before the first: look at one on the plan, go back to it.
+    historyBlock(room, measuring) {
+      const cal = room.calibration || {};
+      const records = cal.alignment_history || [];
+      if (!records.length) return "";
+      const rows = records.map((r) => {
+        const current = r.id === cal.alignment_id;
+        const foreign = r.device_id !== room.sensor.device_id || r.epoch !== cal.mounting_epoch;
+        const rep = r.report || {};
+        const facts = [];
+        if (r.origin === "before") facts.push("so stand der Sensor davor");
+        else {
+          facts.push(`${rep.points || 0} Standpunkte`);
+          if (rep.validation_status === "validated") facts.push(`Kontrollpunkte-RMS ${cm(rep.validation_rms_m)}`);
+          else if (rep.fit_rms_m !== null && rep.fit_rms_m !== undefined) facts.push(`nicht unabhängig geprüft · Anpassung ${cm(rep.fit_rms_m)}`);
+        }
+        if (r.restored_at) facts.push(`wiederhergestellt ${when(r.restored_at)}`);
+        if (foreign) facts.push("frühere Montage oder anderer Sensor");
+        const previewing = this.preview === r.id;
+        return `<div class="zone-row cal-history ${current ? "current" : ""}">
+          <div class="grow"><div class="name">${r.origin === "before" ? "Vorher" : "Ausrichtung"}${current ? `<span class="chip ok">aktuell</span>` : ""}</div>
+            <div class="meta">${escapeHtml([when(r.created_at), ...facts].join(" · "))}</div>
+            <div class="actions"><button class="btn small ghost ${previewing ? "active" : ""}" data-preview="${escapeHtml(r.id)}" aria-pressed="${previewing}">Vorschau</button>
+              ${current || foreign ? "" : `<button class="btn small" data-restore="${escapeHtml(r.id)}" ${measuring ? "disabled" : ""}>Zurück</button>`}</div></div></div>`;
+      }).join("");
+      return `<div class="cal-block"><h3>Verlauf</h3><div class="zone-list">${rows}</div>
+        <p class="hint">Die Vorschau zeichnet den Sensor, wie er damals stand, gestrichelt auf den Plan. „Zurück“ stellt ihn so wieder her; der jetzige Stand bleibt im Verlauf.</p></div>`;
     },
 
     filterCard(room) {
@@ -349,31 +448,44 @@
       on("[data-forget]", () => this.forgetSpots());
       host.querySelectorAll("[data-drop-spot]").forEach((b) => b.addEventListener("click", () => this.dropSpot(Number(b.dataset.dropSpot))));
       on("[data-measure]", () => this.measure());
-      on("[data-unpick]", () => { this.pending = null; this.renderSide(); this.drawExtra(); });
+      on("[data-unpick]", () => { this.pending = null; this.pendingRole = "fit"; this.remeasure = null; this.renderSide(); this.drawExtra(); });
       on("[data-apply]", () => this.applyAlignment());
       on("[data-suggest]", () => this.suggest());
+      on("[data-add-check]", () => {
+        this.pendingRole = "check";
+        this.remeasure = null;
+        const next = (this.suggestedChecks || []).find((q) => !this.points().some((p) => p.ref.join(",") === q.join(",")));
+        this.pending = next || null;
+        this.renderSide();
+        this.drawExtra();
+      });
       on("[data-reset-model]", () => this.resetModel());
       host.querySelectorAll("[data-remeasure]").forEach((b) => b.addEventListener("click", () => {
-        const i = Number(b.dataset.remeasure);
-        this.remeasure = i;
-        this.pending = this.points()[i].ref.slice();
+        const point = this.points().find((p) => p.id === b.dataset.remeasure);
+        if (!point) return;
+        this.remeasure = point.id;
+        this.pending = point.ref.slice();
         this.renderSide();
         this.drawExtra();
       }));
+      on("[data-remount]", () => this.remount());
+      host.querySelectorAll("[data-preview]").forEach((b) => b.addEventListener("click", () => {
+        this.preview = this.preview === b.dataset.preview ? null : b.dataset.preview;
+        this.renderSide();
+        this.drawExtra();
+      }));
+      host.querySelectorAll("[data-restore]").forEach((b) => b.addEventListener("click", () => this.restore(b.dataset.restore)));
       const mount = host.querySelector("#cal-mount");
       if (mount) mount.addEventListener("change", () => {
         const v = mount.value.trim() === "" ? null : Number(mount.value.replace(",", "."));
         if (v !== null && !(v >= 0.2 && v <= 4)) { toast("Höhe zwischen 0,2 und 4 m", "err"); return; }
-        this.mount = v;
+        this.typedMount = v;
         this.saveMounting();
       });
       const target = host.querySelector("#cal-target");
-      if (target) target.addEventListener("change", () => { this.target = Number(target.value); this.saveMounting(); });
-      on("[data-clear]", () => { standpoints[this.id] = []; this.proposal = null; this.suggested = null; this.pending = null; this.renderSide(); this.drawExtra(); });
-      host.querySelectorAll("[data-drop]").forEach((b) => b.addEventListener("click", () => {
-        this.points().splice(Number(b.dataset.drop), 1);
-        this.solve();
-      }));
+      if (target) target.addEventListener("change", () => { this.typedTarget = Number(target.value); this.saveMounting(); });
+      on("[data-clear]", () => this.clearPoints());
+      host.querySelectorAll("[data-drop]").forEach((b) => b.addEventListener("click", () => this.dropPoint(b.dataset.drop)));
       const confirm = host.querySelector("#cal-confirm");
       if (confirm) {
         confirm.addEventListener("input", () => { host.querySelector("#cal-confirm-out").textContent = `${E.formatNumber(Number(confirm.value), 1)} s`; });
@@ -416,14 +528,34 @@
             const then = G.toRoom(p.raw[0], p.raw[1], pr);
             svg += `<circle class="cal-seen after" cx="${then.x.toFixed(3)}" cy="${then.y.toFixed(3)}" r="0.06"/>`;
           }
-          svg += `<g class="cal-mark"><circle cx="${p.ref[0]}" cy="${p.ref[1]}" r="0.14"/>
-            <text x="${p.ref[0]}" y="${p.ref[1]}" text-anchor="middle" dominant-baseline="central">${i + 1}</text></g>`;
+          const isCheck = p.role === "check";
+          const label = isCheck ? `K${this.points().slice(0, i + 1).filter((q) => q.role === "check").length}`
+            : String(this.points().slice(0, i + 1).filter((q) => q.role !== "check").length);
+          svg += isCheck
+            ? `<g class="cal-mark check"><rect x="${p.ref[0] - 0.14}" y="${p.ref[1] - 0.14}" width="0.28" height="0.28" rx="0.04"/>
+                <text x="${p.ref[0]}" y="${p.ref[1]}" text-anchor="middle" dominant-baseline="central">${label}</text></g>`
+            : `<g class="cal-mark"><circle cx="${p.ref[0]}" cy="${p.ref[1]}" r="0.14"/>
+                <text x="${p.ref[0]}" y="${p.ref[1]}" text-anchor="middle" dominant-baseline="central">${label}</text></g>`;
         });
         if (this.pending) {
+          const check = this.pendingRole === "check" && !this.remeasure;
+          const n = this.points().filter((q) => (q.role === "check") === check).length + 1;
           svg += `<g class="cal-mark pending"><circle cx="${this.pending[0]}" cy="${this.pending[1]}" r="0.14"/>
-            <text x="${this.pending[0]}" y="${this.pending[1]}" text-anchor="middle" dominant-baseline="central">${this.points().length + 1}</text></g>`;
+            <text x="${this.pending[0]}" y="${this.pending[1]}" text-anchor="middle" dominant-baseline="central">${this.remeasure ? "↻" : check ? `K${n}` : n}</text></g>`;
         }
         if (pr && this.points().length) svg += this.plan.sensorGhostSvg(pr);
+        const shown = this.preview && (room.calibration.alignment_history || []).find((r) => r.id === this.preview);
+        if (shown) {
+          const then = { ...room.sensor, ...shown.sensor };
+          svg += `<g class="cal-preview">${this.plan.sensorGhostSvg(then)}`;
+          for (const p of shown.standpoints || []) {
+            const seen = G.toRoom(p.raw[0], p.raw[1], then);
+            svg += `<line class="cal-error" x1="${p.ref[0]}" y1="${p.ref[1]}" x2="${seen.x.toFixed(3)}" y2="${seen.y.toFixed(3)}"/>
+              <circle class="cal-seen" cx="${seen.x.toFixed(3)}" cy="${seen.y.toFixed(3)}" r="0.05"/>
+              <circle class="cal-ref" cx="${p.ref[0]}" cy="${p.ref[1]}" r="0.09"/>`;
+          }
+          svg += "</g>";
+        }
       }
       this.plan.setExtra(svg);
     },
@@ -434,12 +566,18 @@
       try {
         this.capture = await api(`api/rooms/${encodeURIComponent(this.id)}/capture`);
       } catch { this.capture = null; }
-      // A finished standpoint has lost its marked spot with the page.
-      if (this.capture && this.capture.kind === "point" && this.capture.phase === "done") this.capture = null;
-      else if (this.capture && this.capture.kind === "empty") this.tab = "spots";
+      const cap = this.capture;
+      if (cap && cap.kind === "point") {
+        // Asking for it has kept a finished one with the standpoints; a
+        // running one knows where the person stands.
+        if (cap.phase === "done" || !cap.standpoint) this.capture = null;
+        else { this.measuring = cap.standpoint.ref; this.tab = "align"; }
+        if (cap.kept) await this.reloadRoom();
+      } else if (cap && cap.kind === "empty") this.tab = "spots";
       this.renderSide();
       this.drawExtra();
       if (this.busy()) this.poll();
+      else if (this.points().length) this.solve();
     },
 
     async startEmpty() {
@@ -476,24 +614,23 @@
       }, POLL_MS);
     },
 
-    finished() {
+    async finished() {
       const cap = this.capture;
       if (cap.kind === "point") {
         const r = cap.result;
-        const ref = this.measuring;
         this.capture = null;
         this.measuring = null;
-        if (r && r.ok && ref) {
-          const entry = { ref, raw: r.raw, warnings: r.warnings };
-          if (this.remeasure !== null && this.remeasure !== undefined) this.points()[this.remeasure] = entry;
-          else this.points().push(entry);
+        if (cap.kept) {
+          // The server has kept it with the room's standpoints.
+          await this.reloadRoom();
           this.remeasure = null;
-          this.pending = this.nextSuggestion();
-          this.solve();
+          this.queueNext();
+          await this.solve();
           if (r.warnings.length) toast(r.warnings[0]);
           return;
         }
-        toast(r ? r.error : "Messung fehlgeschlagen", "err");
+        toast(cap.keep_error || (r ? r.error : "Messung fehlgeschlagen"), "err");
+        if (cap.keep_error) await this.reloadRoom();
       }
       this.renderSide();
       this.drawExtra();
@@ -517,7 +654,7 @@
       if (!r || !r.ok) return;
       try {
         await api(`api/rooms/${encodeURIComponent(this.id)}/calibration`, { method: "PUT",
-          body: { interference: { spots: r.spots, device_id: r.device_id } } });
+          body: { interference: { spots: r.spots, device_id: r.device_id, epoch: this.capture.epoch } } });
         await api(`api/rooms/${encodeURIComponent(this.id)}/capture`, { method: "DELETE" }).catch(() => {});
         this.capture = null;
         await E.refresh();
@@ -556,17 +693,40 @@
 
     pick(p) {
       if (this.tab !== "align" || this.busy()) return;
-      if (this.points().length >= 12) { toast("Mehr als zwölf Standpunkte bringen nichts mehr."); return; }
+      const role = this.pendingRole === "check" ? "check" : "fit";
+      const same = this.points().filter((q) => q.role === role).length;
+      if (same >= (role === "check" ? 6 : 12)) { toast(role === "check" ? "Sechs Kontrollpunkte reichen." : "Mehr als zwölf Standpunkte bringen nichts mehr."); return; }
       this.remeasure = null;
       this.pending = p;
+      this.pendingRole = this.pendingRole === "check" ? "check" : "fit";
       this.renderSide();
       this.drawExtra();
     },
 
     async measure() {
       if (!this.pending) return;
+      const again = this.remeasure ? this.points().find((p) => p.id === this.remeasure) : null;
       this.measuring = this.pending;
-      await this.start({ kind: "point", delay_s: 3, duration_s: 5 });
+      await this.start({ kind: "point", delay_s: 3, duration_s: 5, standpoint: {
+        ref: this.pending, role: again ? again.role : this.pendingRole || "fit", replace_id: again ? again.id : null } });
+      if (!this.capture) this.measuring = null;
+    },
+
+    async dropPoint(id) {
+      try { this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}/alignment/points/${encodeURIComponent(id)}`, { method: "DELETE" })); }
+      catch (err) { toast(err.message, "err"); await this.reloadRoom(); }
+      await this.solve();
+    },
+
+    async clearPoints() {
+      const ok = await E.confirmDialog({ title: "Standpunkte verwerfen?", text: "Alle gemessenen Standpunkte dieses Raums werden entfernt. Die übernommene Ausrichtung bleibt.",
+        confirm: "Verwerfen", danger: true });
+      if (!ok) return;
+      try { this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}/alignment/points`, { method: "DELETE" })); }
+      catch (err) { toast(err.message, "err"); }
+      this.proposal = null; this.suggested = null; this.suggestedChecks = null; this.pending = null; this.remeasure = null;
+      this.renderSide();
+      this.drawExtra();
     },
 
     async solve() {
@@ -574,8 +734,10 @@
       if (!points.length) { this.proposal = null; this.renderSide(); this.drawExtra(); return; }
       try {
         const m = this.mounting();
+        // From the standpoints kept on the server; the answer names what it
+        // was computed for, and applying checks that.
         this.proposal = await api(`api/rooms/${encodeURIComponent(this.id)}/alignment`, { method: "POST",
-          body: { points: points.map((p) => ({ raw: p.raw, ref: p.ref })), mount_height_m: m.mount_height_m, target_height_m: m.target_height_m } });
+          body: { mount_height_m: m.mount_height_m, target_height_m: m.target_height_m } });
       } catch (err) { this.proposal = null; toast(err.message, "err"); }
       this.renderSide();
       this.drawExtra();
@@ -585,18 +747,27 @@
       const pr = this.proposal;
       if (!pr) return;
       try {
-        const m = this.mounting();
-        await api(`api/rooms/${encodeURIComponent(this.id)}/calibration`, { method: "PUT", body: { alignment: {
-          x: pr.x, y: pr.y, angle: pr.angle, mirror: pr.mirror, slant: pr.slant,
-          range_scale: pr.range_scale, range_offset_m: pr.range_offset_m, azimuth_scale: pr.azimuth_scale,
-          mount_height_m: m.mount_height_m, target_height_m: m.target_height_m,
-          rms_m: pr.rms_m, check_m: pr.check_m, model: pr.model, points: pr.points } } });
-        await E.refresh();
+        // The server computes it once more from the kept standpoints and
+        // saves it only if the room is still what `basis` says.
+        this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}/alignment/apply`, { method: "POST", body: { basis: pr.basis } }));
+        this.typedMount = undefined;
+        this.typedTarget = undefined;
         // The standpoints stay: measured raw, they now show how well the
         // new placement fits them.
         await this.solve();
-        toast(`Übernommen — ${pr.check_m !== null && pr.check_m !== undefined ? `Genauigkeit ±${Math.round(pr.check_m * 100)} cm` : `Restabweichung ${cm(pr.rms_m)}`}.`);
-      } catch (err) { toast(err.message, "err"); }
+        toast(pr.validation_status === "validated"
+          ? `Übernommen — Kontrollpunkte-RMS ${cm(pr.validation_rms_m)}.`
+          : "Übernommen — noch nicht unabhängig geprüft. Kontrollpunkte zeigen, wie genau es im Raum ist.");
+      } catch (err) {
+        toast(err.message, "err");
+        if (err.status === 409) {
+          // Computed for a room that has changed since: compute it again
+          // and let the user look before applying.
+          if (err.detail && err.detail.room) this.takeRoom(err.detail.room);
+          else await E.refresh();
+          await this.solve();
+        }
+      }
       this.onData();
       this.renderSide();
       this.drawExtra();
@@ -604,12 +775,14 @@
 
     async suggest() {
       try {
-        const r = await api(`api/rooms/${encodeURIComponent(this.id)}/alignment/suggest?count=5`);
-        this.suggested = r.points;
+        const r = await api(`api/rooms/${encodeURIComponent(this.id)}/alignment/suggest?count=7`);
+        // Five to fit, the rest kept back as control spots.
+        this.suggested = r.points.slice(0, 5);
+        this.suggestedChecks = r.points.slice(5);
       } catch (err) { toast(err.message, "err"); return; }
       if (!this.suggested.length) toast("Im geplanten Sichtbereich ist kein Platz für Standpunkte — stimmen Sensor und Wände?", "err");
       this.remeasure = null;
-      this.pending = this.nextSuggestion();
+      this.queueNext();
       this.renderSide();
       this.drawExtra();
     },
@@ -619,8 +792,8 @@
       try {
         await api(`api/rooms/${encodeURIComponent(this.id)}/calibration`, { method: "PUT", body: { mounting: m } });
         await E.refresh();
-        this.mount = undefined;
-        this.target = undefined;
+        this.typedMount = undefined;
+        this.typedTarget = undefined;
       } catch (err) { toast(err.message, "err"); }
       if (this.points().length) await this.solve();
       else { this.renderSide(); this.drawExtra(); }
@@ -636,6 +809,46 @@
       } catch (err) { toast(err.message, "err"); }
       if (this.points().length) await this.solve();
       else { this.onData(); this.renderSide(); }
+    },
+
+    async remount() {
+      const ok = await E.confirmDialog({ title: "Sensor neu montiert?",
+        text: "Abgenommen und wieder aufgehängt, anders gedreht, oder ein anderes Modul am selben Platz: Ausrichtung, Sensormodell, gelernte Störquellen und die Standpunkte gehören dann zur alten Montage und werden verworfen. Die Zeichnung auf dem Plan und die Höhe bleiben. Nur die Zeichnung korrigieren geht im Raumeditor, ohne das hier.",
+        confirm: "Verwerfen und neu beginnen", danger: true });
+      if (!ok) return;
+      const room = this.room();
+      try {
+        this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}/remount`, { method: "POST", body: { revision: room.revision } }));
+        toast("Verworfen. Jetzt Störquellen lernen und neu ausrichten.");
+      } catch (err) {
+        toast(err.message, "err");
+        await E.refresh();
+      }
+      this.capture = null; this.measuring = null;
+      this.proposal = null; this.suggested = null; this.suggestedChecks = null; this.pending = null; this.remeasure = null; this.preview = null;
+      this.renderSide();
+      this.drawExtra();
+    },
+
+    async restore(id) {
+      const room = this.room();
+      const record = (room.calibration.alignment_history || []).find((r) => r.id === id);
+      if (!record) return;
+      const ok = await E.confirmDialog({ title: "Diesen Stand wiederherstellen?",
+        text: `Der Sensor steht dann wieder wie am ${when(record.created_at)}${record.origin === "before" ? ", vor der Ausrichtung" : ""}. Der jetzige Stand bleibt im Verlauf.`,
+        confirm: "Wiederherstellen" });
+      if (!ok) return;
+      try {
+        this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}/alignment/restore`, { method: "POST", body: { id, revision: room.revision } }));
+        this.preview = null;
+        toast("Wiederhergestellt.");
+      } catch (err) {
+        toast(err.message, "err");
+        if (err.detail && err.detail.room) this.takeRoom(err.detail.room);
+        else await E.refresh();
+      }
+      if (this.points().length) await this.solve();
+      else { this.renderSide(); this.drawExtra(); }
     },
 
     // ----------------------------------------------------------- filter

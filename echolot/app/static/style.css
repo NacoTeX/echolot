@@ -318,7 +318,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .cal-mark.pending circle { stroke: var(--accent); stroke-width: .04; stroke-dasharray: .06 .04; }
 .cal-mark.suggested circle { fill: var(--surface); fill-opacity: .7; stroke: var(--muted); stroke-width: .025; stroke-dasharray: .05 .04; }
 .cal-mark.suggested text { fill: var(--muted); }
+.cal-mark.check rect { fill: var(--surface); stroke: var(--present); stroke-width: .03; }
+.cal-mark.check text { font-size: .12px; fill: var(--present); }
 .cal-mark.pending text { fill: var(--accent); }
+.cal-preview { opacity: .8; }
+.cal-preview .pl-sensor .pl-sensor-body { fill: var(--surface-3); }
+.cal-ref { fill: none; stroke: var(--muted); stroke-width: .025; stroke-dasharray: .05 .04; }
 .pl-ghost { fill: var(--target); }
 .pl-stale { opacity: .35; }
 .editing .pl-furn, .editing .pl-zone, .editing .pl-sensor { cursor: move; }
@@ -480,3 +485,11 @@ h3 .icon { color: var(--muted); margin-right: 4px; }
 .cal-point { padding: 8px 8px 8px 10px; gap: 8px; }
 .cal-point .name { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cal-point .btn.icon-only { width: 32px; min-height: 32px; }
+.cal-point.check .spot-num { border-radius: 6px; border-color: var(--present); color: var(--present); font-size: 11px; }
+.cal-sub { margin: 14px 0 8px; font-size: 14px; }
+.cal-metrics .stat-line span:first-child small { display: block; font-size: 11.5px; color: var(--faint); }
+.cal-metrics .stat-line span:last-child { white-space: nowrap; }
+.cal-history.current { box-shadow: inset 3px 0 0 var(--accent); }
+.cal-history .chip { margin-left: 8px; vertical-align: 1px; }
+.cal-history .actions { margin-top: 8px; }
+.cal-history .btn.active { background: var(--surface-3); }

@@ -70,10 +70,8 @@ class Rig:
     def report(self, targets="", step=0.2):
         self.clock.now += step
         self.seq += 1
-        self.links.snaps["dev"] = LinkSnapshot(
-            device_id="dev", connected=True,
-            frame=parse_frame(f"1|R|{self.seq}|{targets}"), frame_at=self.clock.now,
-        )
+        snap = self.links.snaps.setdefault("dev", LinkSnapshot(device_id="dev", connected=True))
+        snap.record(parse_frame(f"1|R|{self.seq}|{targets}"), self.clock.now)
         return self.engine.evaluate()[0]
 
     def tick(self, step):
@@ -313,3 +311,71 @@ def test_a_reflector_that_jitters_out_of_its_spot_for_a_moment_is_not_confirmed(
     for _ in range(10):
         result = rig.report("10,15")
         assert statuses(result) == ["interference"] and result["count"] == 0
+
+
+# --- time base (review P0-04) ---------------------------------------------------
+
+
+def test_a_target_not_reported_for_longer_than_the_ttl_is_a_new_one():
+    """Reproduced in the review: reports at t=0 and t=10 at the same spot
+    kept id and confirmation although the TTL is 1.5 s."""
+    tracker = Tracker()
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, alpha=1.0)
+    (first,) = tracker.visible()
+    assert first.confirmed
+    tracker.update([(0.0, 2.0)], 10.0, confirm_s=1.0, alpha=1.0)
+    (second,) = tracker.visible()
+    assert second.id != first.id and not second.confirmed
+
+
+def test_heartbeat_repeats_do_not_confirm_a_target():
+    """One report, then the firmware repeating its line for 1.2 s: that is
+    one report, not seven, and confirms nothing."""
+    rig = Rig()
+    assert statuses(rig.report("-15,30")) == ["pending"]
+    for _ in range(6):
+        rig.clock.now += 0.2
+        rig.links.snaps["dev"].record(parse_frame(f"1|R|{rig.seq}|-15,30"), rig.clock.now)
+        result = rig.engine.evaluate()[0]
+    assert statuses(result) == ["pending"] and result["count"] == 0
+
+
+def test_reports_arriving_between_two_evaluations_are_all_taken_at_their_times():
+    """The engine evaluates at most ten times a second; a faster module's
+    reports must not be overwritten unread."""
+    rig = Rig()
+    first = rig.report("-15,30")  # the engine follows the sensor
+    assert statuses(first) == ["pending"]
+    snap = rig.links.snaps["dev"]
+    start = rig.clock.now
+    # Somebody walks 1.5 m in a second, 30 cm per report — five reports
+    # before the engine looks again.
+    for i, x in enumerate((-12, -9, -6, -3, 0), start=1):
+        rig.seq += 1
+        snap.record(parse_frame(f"1|R|{rig.seq}|{x},30"), start + i * 0.2)
+    rig.clock.now = start + 1.0
+    result = rig.engine.evaluate()[0]
+    # Taken one by one it is one target, followed and confirmed. Taking
+    # only the latest would see a 1.5 m jump — past the gate, a new target.
+    assert statuses(result) == ["counted"]
+    assert result["targets"][0]["id"] == first["targets"][0]["id"]
+
+
+def test_a_fresh_start_takes_the_current_measurement_not_the_backlog():
+    rig = Rig()
+    snap = rig.links.snaps.setdefault("dev", LinkSnapshot(device_id="dev", connected=True))
+    for i in range(6):
+        rig.seq += 1
+        snap.record(parse_frame(f"1|R|{rig.seq}|-15,30"), rig.clock.now + i * 0.2)
+    rig.clock.now += 1.0
+    assert statuses(rig.engine.evaluate()[0]) == ["pending"]
+
+
+def test_a_new_connection_confirms_afresh():
+    rig = Rig()
+    for _ in range(7):
+        rig.report("-15,30")
+    assert rig.report("-15,30")["count"] == 1
+    rig.links.snaps["dev"].new_session()
+    rig.seq = 0
+    assert statuses(rig.report("-15,30")) == ["pending"]

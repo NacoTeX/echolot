@@ -52,7 +52,7 @@ def test_three_spots_find_position_and_direction():
     assert (result["x"], result["y"]) == pytest.approx((2.6, 0.1), abs=0.01)
     assert result["angle"] == pytest.approx(12.0, abs=0.2)
     assert result["mirror"] is False
-    assert result["rms_m"] < 0.01 < result["rms_before_m"]
+    assert result["fit_rms_m"] < 0.01 < result["rms_before_m"]
     assert all(after < before for after, before in zip(result["errors_after_m"], result["errors_before_m"]))
 
 
@@ -62,7 +62,7 @@ def test_three_spots_tell_a_mirrored_module_by_the_fit():
     assert result["mirror"] is True and result["mirror_changed"] is True
     assert result["mirror_basis"] == "fit"
     assert result["angle"] == pytest.approx(12.0, abs=0.2)
-    assert result["rms_m"] < 0.01
+    assert result["fit_rms_m"] < 0.01
 
 
 def test_scatter_of_a_real_module_still_lands_close():
@@ -165,10 +165,10 @@ def test_a_distance_scale_is_found_where_moving_and_turning_cannot_help():
     result = alignment.solve(pairs, DRAWN2, 6, 4)
     assert result["model"] in ("range", "range_offset", "range_azimuth")
     assert result["range_scale"] == pytest.approx(1.12, abs=0.03)
-    assert result["rms_m"] < 0.06
+    assert result["fit_rms_m"] < 0.06
     # The rigid fit alone leaves errors that grow with distance.
     rigid = alignment.fit_free(pairs, False)
-    assert rigid[3] > 2 * result["rms_m"]
+    assert rigid[3] > 2 * result["fit_rms_m"]
 
 
 def test_the_slant_line_is_recognised_when_the_height_is_given():
@@ -177,11 +177,11 @@ def test_the_slant_line_is_recognised_when_the_height_is_given():
     pairs = module_pairs(truth, SPREAD, noise=0.02, seed=3)
     with_height = alignment.solve(pairs, {**DRAWN2, "mount_height_m": 2.2, "target_height_m": 1.0}, 6, 4)
     assert with_height["slant"] is True
-    assert with_height["rms_m"] < 0.05
+    assert with_height["fit_rms_m"] < 0.05
     # Without the height the slant cannot be taken out; something else is
     # fitted in its place, and not as well.
     without = alignment.solve(pairs, DRAWN2, 6, 4)
-    assert without["slant"] is False and without["rms_m"] > with_height["rms_m"]
+    assert without["slant"] is False and without["fit_rms_m"] > with_height["fit_rms_m"]
 
 
 def test_an_angle_scale_is_found_with_spots_to_the_sides():
@@ -202,13 +202,83 @@ def test_noise_alone_does_not_buy_a_richer_model():
         assert result["range_scale"] == 1.0 and result["slant"] is False
 
 
-def test_the_accuracy_is_checked_on_spots_left_out():
+def test_without_control_spots_nothing_is_called_validated():
+    """Review P0-01: one spot that fits perfectly came out as "good"."""
+    turned = {**DRAWN, "angle": 12.0}  # only the direction is off: one spot fits exactly
+    one = alignment.solve(pairs_for(turned, [(2.5, 2.0)]), DRAWN, 6, 4)
+    assert one["fit_rms_m"] == 0.0
+    assert one["validation_status"] == "unvalidated" and one["quality"] is None
+    assert one["cv_rms_m"] is None
+    truth = {"x": 3.0, "y": 0.0, "angle": 3.0, "mirror": False, "range_scale": 1.08}
+    many = alignment.solve(module_pairs(truth, SPREAD, noise=0.05, seed=5), DRAWN2, 6, 4)
+    assert many["cv_rms_m"] is not None and many["quality"] is None
+    assert many["validation_status"] == "unvalidated"
+
+
+def test_the_cross_check_redoes_the_choice_and_is_no_better_than_the_fit():
     truth = {"x": 3.0, "y": 0.0, "angle": 3.0, "mirror": False, "range_scale": 1.08}
     result = alignment.solve(module_pairs(truth, SPREAD, noise=0.05, seed=5), DRAWN2, 6, 4)
-    assert result["check_m"] is not None
-    # A fair estimate: above the in-sample residual, near the noise.
-    assert result["rms_m"] <= result["check_m"] < 0.2
-    assert result["quality"] == "good"
+    assert result["fit_rms_m"] <= result["cv_rms_m"] < 0.2
+    assert len(result["cv_errors_m"]) == len(SPREAD)
+
+
+def test_each_cross_check_error_is_the_spot_predicted_by_a_calibration_without_it():
+    """Review P0-01: the cross-check is the whole calibration run again
+    without the spot — model choice included — not a refit of the model
+    chosen with it. Here leaving a spot out does change the choice."""
+    truth = {"x": 3.0, "y": 0.0, "angle": 0.0, "mirror": False, "azimuth_scale": 0.9}
+    pairs = module_pairs(truth, SPREAD[:5], noise=0.05, seed=2)
+    result = alignment.solve(pairs, DRAWN2, 6, 4)
+    models = set()
+    for i, ((px, py), (qx, qy)) in enumerate(pairs):
+        without = alignment.solve(pairs[:i] + pairs[i + 1:], DRAWN2, 6, 4)
+        models.add(without["model"])
+        placement = {k: without[k] for k in ("x", "y", "angle", "mirror", "slant", "range_scale",
+                                              "range_offset_m", "azimuth_scale")}
+        rx, ry = geometry.to_room(px, py, {**placement, "mount_height_m": None, "target_height_m": 1.0})
+        # Only the rounding of the returned proposal is between the two.
+        assert result["cv_errors_m"][i] == pytest.approx(math.hypot(rx - qx, ry - qy), abs=0.01)
+    assert models - {result["model"]}, "the case must make a fold choose differently"
+    assert result["cv_rms_m"] > result["fit_rms_m"]
+
+
+def test_control_spots_validate_and_take_no_part_in_the_fit():
+    truth = {"x": 3.0, "y": 0.0, "angle": 3.0, "mirror": False, "range_scale": 1.08}
+    pairs = module_pairs(truth, SPREAD[:6], noise=0.04, seed=7)
+    checks = module_pairs(truth, [(1.6, 2.2), (4.6, 3.1)], noise=0.04, seed=8)
+    plain = alignment.solve(pairs, DRAWN2, 6, 4)
+    checked = alignment.solve(pairs, DRAWN2, 6, 4, checks=checks)
+    # The same proposal: the control spots changed nothing in it.
+    for key in ("x", "y", "angle", "mirror", "range_scale", "model"):
+        assert checked[key] == plain[key]
+    assert checked["validation_points"] == 2 and checked["validation_status"] == "validated"
+    assert checked["validation_rms_m"] < 0.15 and checked["quality"] == "good"
+    # One control spot is not enough to call it validated.
+    one = alignment.solve(pairs, DRAWN2, 6, 4, checks=checks[:1])
+    assert one["validation_status"] == "unvalidated" and one["quality"] is None
+    assert one["validation_rms_m"] is not None
+
+
+def test_a_bad_control_spot_says_so_instead_of_passing():
+    truth = {"x": 3.0, "y": 0.0, "angle": 0.0, "mirror": False}
+    pairs = module_pairs(truth, SPREAD[:6], noise=0.02, seed=9)
+    checks = module_pairs(truth, [(1.6, 2.2), (4.6, 3.1)], noise=0.02, seed=10)
+    (raw, (qx, qy)) = checks[1]
+    checks[1] = (raw, (qx + 0.9, qy))
+    result = alignment.solve(pairs, DRAWN2, 6, 4, checks=checks)
+    assert result["validation_status"] == "validated" and result["quality"] in ("fair", "poor")
+
+
+@pytest.mark.parametrize("spots, words", [
+    ([(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 3.9)], "Linie"),
+    ([(3.0, 1.5), (3.1, 2.5), (2.9, 3.5), (3.0, 3.9)], "derselben Richtung"),
+    ([(1.0, 3.0), (3.0, 3.6), (5.0, 3.0), (2.0, 3.4)], "gleich weit"),
+])
+def test_layouts_that_cannot_tell_the_parameters_apart_are_named(spots, words):
+    truth = {"x": 3.0, "y": 0.0, "angle": 0.0, "mirror": False}
+    result = alignment.solve(module_pairs(truth, spots, noise=0.02, seed=11), DRAWN2, 6, 4)
+    assert any(words in w for w in result["warnings"]), result["warnings"]
+    assert result["layout_ok"] is False
 
 
 @pytest.mark.parametrize("index, offset", [

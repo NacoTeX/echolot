@@ -71,6 +71,15 @@ class Capture:
     unknown: int = 0
     cancelled: bool = False
     result: dict | None = None
+    #: For a standpoint: {"ref", "role", "replace"} — where the person
+    #: stands, so the result is kept even if the page that started it is
+    #: gone by then — and whether it has been kept.
+    standpoint: dict | None = None
+    kept: bool = False
+    keep_error: str | None = None
+    #: The room's mounting when it started (Calibration.mounting_epoch):
+    #: a result from before a remount is not kept for the new mounting.
+    epoch: int = 0
 
     @property
     def starts_at(self) -> float:
@@ -236,7 +245,8 @@ class Captures:
         self._clock = clock
         self._by_room: dict[str, Capture] = {}
 
-    def start(self, room, kind: str, delay_s: float | None = None, duration_s: float | None = None) -> Capture:
+    def start(self, room, kind: str, delay_s: float | None = None, duration_s: float | None = None,
+              standpoint: dict | None = None) -> Capture:
         if kind not in LIMITS:
             raise ValueError("Unbekannte Aufnahmeart")
         if not room.sensor.device_id:
@@ -255,6 +265,8 @@ class Captures:
             delay_s=delay,
             duration_s=duration,
             spots=active_interference(room) if kind == "point" else [],
+            standpoint=standpoint if kind == "point" else None,
+            epoch=room.calibration.mounting_epoch,
         )
         # A new recording replaces one still running: there is one sensor
         # and one person with the iPad.
@@ -310,4 +322,10 @@ class Captures:
             "points": [[round(x, 2), round(y, 2)] for x, y in points],
             "sensor_fresh": bool(snap and snap.fresh(now)),
             "result": capture.result,
+            "device_id": capture.device_id,
+            "epoch": capture.epoch,
+            "ended_ago_s": round(max(0.0, now - capture.ends_at), 1),
+            "standpoint": capture.standpoint,
+            "kept": capture.kept,
+            "keep_error": capture.keep_error,
         }

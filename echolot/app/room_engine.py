@@ -5,9 +5,11 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 3 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 4 (`MEASUREMENT_VERSION`):
 
-  1. Every new report goes through the room's tracker (app/tracking.py):
+  1. Every new report goes through the room's tracker (app/tracking.py),
+     each at the time it arrived and in order — a repeat of the last line
+     (the firmware's heartbeat) is no new report (radar_link):
      positions are followed from report to report and smoothed, and a
      new target is confirmed only once it has been reported for the
      room's confirmation time outside the learned interference spots.
@@ -23,8 +25,10 @@ The rules, in order — measurement definition 3 (`MEASUREMENT_VERSION`):
   6. Otherwise it counts for the room and for every detection zone that
      contains it. Zones may overlap; a target in two counts in both.
 
-Definition 2 (1.1–1.2) was the same without the sensor model; with the
-model's neutral values, definition 3 gives its answers to the bit.
+Definition 3 (1.3) counted heartbeat repeats as reports, took only the
+latest report per evaluation, at evaluation time, and could match a
+target to a report after its memory had run out. Definition 2 (1.1–1.2)
+was 3 without the sensor model.
 Definition 1 (Echolot 1.0) was rules 2–4 and 6 on the raw report, with
 the rectangle as the walls. For a room without an outline, with a
 confirmation time of 0 s, smoothing off and no interference spots,
@@ -52,7 +56,7 @@ logger = logging.getLogger("echolot.engine")
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 3
+MEASUREMENT_VERSION = 4
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -119,7 +123,10 @@ class _Follow:
     #: learned would otherwise keep counting on the reflector for good.
     setup: tuple
     tracker: Tracker
-    frame: object = None
+    #: The sensor connection the tracker follows, and the last of its
+    #: queued measurements it took (radar_link.LinkSnapshot.queue).
+    session: int = 0
+    last_index: int = 0
 
 
 class RoomEngine:
@@ -176,7 +183,7 @@ class RoomEngine:
         self._follow.pop(room.id, None)
 
     def _points(self, room, now: float) -> tuple[list | None, str | None, dict | None, object]:
-        """(sensor points or None, reason when None, sensor snapshot, frame)."""
+        """(sensor points or None, reason when None, sensor view, link snapshot)."""
         device_id = room.sensor.device_id
         if not device_id:
             return None, "no_sensor", None, None
@@ -193,18 +200,21 @@ class RoomEngine:
             return None, "stale", view, None
         frame = snap.frame
         if frame.state == RECEIVING:
-            return list(frame.targets_m), None, view, frame
+            return list(frame.targets_m), None, view, snap
         if frame.state == QUIET:
             if device.config.radar_quiet_means_empty:
-                return [], None, view, frame
+                return [], None, view, snap
             return None, "radar_quiet", view, None
         return None, "radar_unknown", view, None
 
-    def _tracker(self, room, points: list, frame, now: float) -> Tracker:
-        """The room's tracker, fed with `frame` if it has not had it yet.
+    def _tracker(self, room, snap) -> Tracker:
+        """The room's tracker, fed with every measurement it has not had yet.
 
-        The engine evaluates on a timer as well as on every report; only
-        a report that is new may move, confirm or forget a target.
+        The engine evaluates on a timer as well as on reports, and at most
+        ten times a second: it takes the new measurements queued since the
+        last round, in order, each at the time it arrived. A repeat of the
+        last line is no new measurement (radar_link.LinkSnapshot.record)
+        and moves, confirms or forgets nothing.
         """
         spots = active_interference(room)
         setup = (
@@ -213,14 +223,21 @@ class RoomEngine:
             tuple((s.x, s.y, s.r) for s in spots),
         )
         follow = self._follow.get(room.id)
-        if follow is None or follow.setup != setup:
-            follow = self._follow[room.id] = _Follow(setup, Tracker())
-        # Identity, not equality: two reports can read the same. Holding
-        # the frame keeps its id from being handed to the next one.
-        if frame is not follow.frame:
-            follow.frame = frame
+        if follow is None or follow.setup != setup or follow.session != snap.session:
+            # A fresh start takes the current measurement, not whatever is
+            # still queued from before.
+            follow = self._follow[room.id] = _Follow(setup, Tracker(), snap.session, max(0, snap.index - 1))
+        quiet_is_empty = self._devices[room.sensor.device_id].config.radar_quiet_means_empty
+        for index, received_at, frame in snap.pending(follow.last_index):
+            follow.last_index = index
+            if frame.state == RECEIVING:
+                points = list(frame.targets_m)
+            elif frame.state == QUIET and quiet_is_empty:
+                points = []
+            else:
+                continue
             follow.tracker.update(
-                points, now,
+                points, received_at,
                 confirm_s=room.calibration.confirm_s,
                 alpha=SMOOTHING_ALPHA[room.calibration.smoothing],
                 spots=spots,
@@ -228,7 +245,7 @@ class RoomEngine:
         return follow.tracker
 
     def evaluate_room(self, room, now: float) -> dict:
-        points, reason, sensor_view, frame = self._points(room, now)
+        points, reason, sensor_view, snap = self._points(room, now)
         placement = room.sensor.model_dump()
         detect = [z for z in room.zones if z.kind == "detect"]
         exclude = [z for z in room.zones if z.kind == "exclude"]
@@ -253,7 +270,7 @@ class RoomEngine:
             }
 
         targets = []
-        for track in self._tracker(room, points, frame, now).visible():
+        for track in self._tracker(room, snap).visible():
             x, y = geometry.to_room(track.x, track.y, placement)
             zone_ids: list[str] = []
             if not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):

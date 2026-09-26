@@ -692,6 +692,33 @@
       } catch (err) { toast(err.message, "err"); }
     },
 
+    // Another sensor, or the sensor moved on the plan: what was measured
+    // with it may no longer apply. A swap always drops it; a move is
+    // either a remount (drops it) or a corrected drawing (keeps it, the
+    // alignment is then marked stale) — only the user knows which.
+    // Returns what to add to the payload, or null to not save.
+    async sensorChange(room) {
+      const stored = state.rooms.find((r) => r.id === this.id);
+      if (!stored || !stored.sensor.device_id) return {};
+      const cal = stored.calibration || {};
+      const measured = cal.aligned_at || (cal.interference || []).length
+        || (cal.alignment_draft && cal.alignment_draft.points.length);
+      if (!measured) return {};
+      if (room.sensor.device_id !== stored.sensor.device_id) {
+        const ok = await E.confirmDialog({ title: "Anderen Sensor zuordnen?",
+          text: "Ausrichtung, Sensormodell, Störquellen und Standpunkte gehören zum bisherigen Sensor und werden verworfen. Danach den Raum neu kalibrieren.",
+          confirm: "Zuordnen", danger: true });
+        return ok ? {} : null;
+      }
+      const a = room.sensor, b = stored.sensor;
+      const moved = Math.abs(a.x - b.x) > 1e-6 || Math.abs(a.y - b.y) > 1e-6 || Math.abs(a.angle - b.angle) > 1e-6 || a.mirror !== b.mirror;
+      if (!moved) return {};
+      const remounted = await E.confirmDialog({ title: "Sensor umgehängt?",
+        text: "Hast du den Sensor abgenommen und anders aufgehängt? Dann gelten Ausrichtung, Störquellen und Standpunkte nicht mehr und werden verworfen. Hast du nur die Zeichnung korrigiert, bleibt alles erhalten — die Ausrichtung gilt dann als veraltet.",
+        confirm: "Umgehängt", cancel: "Nur Zeichnung korrigiert" });
+      return remounted ? { remounted: true } : {};
+    },
+
     async save() {
       if (this.saving) return;
       if (this.plan.room.outline && window.EcholotGeometry.selfIntersects(this.plan.room.outline)) {
@@ -699,10 +726,12 @@
         this.plan.select({ kind: "outline" });
         return;
       }
+      const extra = await this.sensorChange(this.plan.room);
+      if (extra === null) return;
       this.saving = true;
       this.changed();
       const room = this.plan.room;
-      const payload = { ...room, image: room.image ? { opacity: room.image.opacity } : null };
+      const payload = { ...room, image: room.image ? { opacity: room.image.opacity } : null, ...extra };
       try {
         const saved = await api(`api/rooms/${encodeURIComponent(this.id)}`, { method: "PUT", body: payload });
         const selection = this.plan.selection;

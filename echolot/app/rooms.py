@@ -10,7 +10,9 @@ otherwise silently overwrite each other; the second save is refused
 instead and the editor reloads.
 """
 
+import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -153,6 +155,93 @@ class InterferenceSpot(BaseModel):
     share: float = Field(default=0.0, ge=0, le=1)
 
 
+#: Standpoints one alignment works with: twelve to fit, six to check.
+MAX_FIT_STANDPOINTS = 12
+MAX_CHECK_STANDPOINTS = 6
+#: Applied alignments a room keeps, the current one included.
+MAX_ALIGNMENT_HISTORY = 6
+
+
+class Standpoint(BaseModel):
+    """Somebody stood at `ref` on the plan; the module reported `raw`, in
+    its own metres (the median of the recording)."""
+
+    #: Stable across edits of the list, so that removing or measuring one
+    #: again from a second tab cannot hit another.
+    id: str = Field(default_factory=lambda: new_id("p"))
+    ref: tuple[float, float]
+    raw: tuple[float, float]
+    #: "fit": the alignment is computed from it. "check": a control spot
+    #: that takes no part in that and tests the result.
+    role: Literal["fit", "check"] = "fit"
+    #: How much the reports scattered (90th percentile, metres) and the
+    #: share of reports that had the person in them.
+    spread_m: float | None = Field(default=None, ge=0, le=20)
+    share: float | None = Field(default=None, ge=0, le=1)
+    measured_at: float | None = None
+    #: "capture": recorded by Echolot. "api": handed in from outside,
+    #: nothing Echolot measured.
+    source: Literal["capture", "api"] = "api"
+    warnings: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("ref", "raw")
+    @classmethod
+    def _finite(cls, v):
+        if not all(math.isfinite(c) and abs(c) <= 50 for c in v):
+            raise ValueError("Ein Standpunkt braucht endliche Koordinaten")
+        return v
+
+
+def _check_standpoint_counts(points: list[Standpoint]) -> None:
+    fit = sum(p.role == "fit" for p in points)
+    if fit > MAX_FIT_STANDPOINTS or len(points) - fit > MAX_CHECK_STANDPOINTS:
+        raise ValueError(
+            f"Höchstens {MAX_FIT_STANDPOINTS} Standpunkte zum Anpassen und {MAX_CHECK_STANDPOINTS} Kontrollpunkte"
+        )
+
+
+class AlignmentDraft(BaseModel):
+    """Standpoints measured and not applied yet, kept so that a reload or
+    a second device does not lose them. They belong to the sensor and the
+    mounting they were measured with (see invalidate_sensor)."""
+
+    device_id: str | None = None
+    points: list[Standpoint] = Field(default_factory=list)
+    updated_at: float = 0.0
+
+    @model_validator(mode="after")
+    def _counts(self) -> "AlignmentDraft":
+        _check_standpoint_counts(self.points)
+        return self
+
+
+class AlignmentRecord(BaseModel):
+    """One placement and sensor model the room had, and what it rests on."""
+
+    id: str
+    #: "alignment": computed from standpoints and applied. "before": the
+    #: sensor as it stood when an alignment replaced it — drawn by hand,
+    #: or aligned by 1.3, which kept no record — so it can be taken back.
+    origin: Literal["alignment", "before"] = "alignment"
+    created_at: float
+    device_id: str | None = None
+    #: Which mounting of the sensor this was (Calibration.mounting_epoch).
+    epoch: int = 0
+    #: alignment.VERSION it was computed with; None for "before".
+    algorithm: int | None = None
+    #: The SENSOR_CALIBRATED fields it set.
+    sensor: dict
+    report: dict | None = None
+    basis: dict | None = None
+    standpoints: list[Standpoint] = Field(default_factory=list)
+    restored_at: float | None = None
+
+    @model_validator(mode="after")
+    def _counts(self) -> "AlignmentRecord":
+        _check_standpoint_counts(self.standpoints)
+        return self
+
+
 class Calibration(BaseModel):
     """How a room's reports are filtered before they count.
 
@@ -180,7 +269,25 @@ class Calibration(BaseModel):
     #: Which sensor model the last alignment settled on (alignment.MODELS),
     #: and its accuracy checked on spots left out, in metres.
     alignment_model: str | None = None
+    #: 1.3 only: a leave-one-out with the model chosen from all spots —
+    #: not an independent check. Kept readable, no longer written.
     alignment_check_m: float | None = None
+    #: What the last alignment reported (REPORT_KEYS), and what it was
+    #: computed for (alignment_basis): when any of that changes, the
+    #: report no longer describes the room (alignment_state).
+    alignment_report: dict | None = None
+    alignment_basis: dict | None = None
+    #: The record in alignment_history the sensor stands on now; None when
+    #: none does (never aligned, aligned by 1.3, or invalidated since).
+    alignment_id: str | None = None
+    #: Applied alignments, newest first, at most MAX_ALIGNMENT_HISTORY.
+    alignment_history: list[AlignmentRecord] = Field(default_factory=list)
+    alignment_draft: AlignmentDraft | None = None
+    #: Goes up whenever the sensor is swapped or remounted: what was
+    #: measured with an earlier mounting no longer describes this one.
+    mounting_epoch: int = 0
+    invalidated_at: float | None = None
+    invalidated_reason: str | None = None
 
 
 class Room(BaseModel):
@@ -367,8 +474,16 @@ def save_room(room_id: str, payload: dict) -> Room | None:
     The image is not taken from the payload: it is uploaded on its own
     route, and an editor holding an older copy must not undo an upload.
     Only its opacity is. The calibration likewise has its own route.
+
+    Another device in the room, or `payload["remounted"]` for the same
+    one hung up anew, invalidates what was measured with the old one
+    (invalidate_sensor). Moving or turning the sensor on the plan alone is
+    a correction of the drawing: the measurements stay, and the alignment
+    report is marked stale (alignment_state).
     Returns None when the room does not exist.
     """
+    payload = dict(payload)
+    remounted = bool(payload.pop("remounted", False))
     with _lock:
         rooms = _read()
         index = next((i for i, r in enumerate(rooms) if r["id"] == room_id), None)
@@ -389,6 +504,10 @@ def save_room(room_id: str, payload: dict) -> Room | None:
             merged["image"] = {**stored.image, "opacity": opacity}
         room = Room.model_validate(merged)
         _check_device_free(rooms, room_id, room.sensor.device_id)
+        if room.sensor.device_id != stored.sensor.device_id:
+            invalidate_sensor(room, "Sensor gewechselt")
+        elif remounted:
+            invalidate_sensor(room, "Sensor neu montiert")
         room.revision = stored.revision + 1
         room.updated_at = time.time()
         rooms[index] = room.model_dump()
@@ -402,6 +521,61 @@ SENSOR_CALIBRATED = {
     "x", "y", "angle", "mirror", "mount_height_m", "target_height_m",
     "slant", "range_scale", "range_offset_m", "azimuth_scale",
 }
+
+
+#: What an alignment report keeps: the three accuracy numbers apart, and
+#: what they rest on.
+REPORT_KEYS = (
+    "model", "points", "fit_rms_m", "cv_rms_m", "validation_rms_m", "validation_points",
+    "validation_status", "quality", "layout_ok", "rms_before_m",
+)
+
+
+def alignment_basis(room: "Room") -> dict:
+    """What an alignment was computed for."""
+    s = room.sensor
+    return {
+        "device_id": s.device_id,
+        "x": s.x, "y": s.y, "angle": s.angle, "mirror": s.mirror,
+        "mount_height_m": s.mount_height_m, "target_height_m": s.target_height_m,
+        "slant": s.slant, "range_scale": s.range_scale, "range_offset_m": s.range_offset_m,
+        "azimuth_scale": s.azimuth_scale,
+        "width": room.width, "height": room.height,
+    }
+
+
+BASIS_LABELS = {
+    "device_id": "anderer Sensor",
+    "x": "Sensor verschoben", "y": "Sensor verschoben", "angle": "Sensor gedreht",
+    "mirror": "Links/Rechts geändert",
+    "mount_height_m": "Montagehöhe geändert", "target_height_m": "Messhaltung geändert",
+    "slant": "Sensormodell geändert", "range_scale": "Sensormodell geändert",
+    "range_offset_m": "Sensormodell geändert", "azimuth_scale": "Sensormodell geändert",
+    "width": "Raummaße geändert", "height": "Raummaße geändert",
+}
+
+
+def alignment_state(room: "Room") -> dict:
+    """Whether the last alignment's report still describes this room.
+
+    "none"     never aligned;
+    "unknown"  aligned by 1.3, which kept no record of what for;
+    "current"  nothing it rests on has changed;
+    "stale"    something has — `changed` says what.
+    """
+    cal = room.calibration
+    if not cal.aligned_at:
+        return {"state": "none", "changed": []}
+    if not cal.alignment_basis:
+        return {"state": "unknown", "changed": []}
+    now = alignment_basis(room)
+    changed = []
+    for key, value in now.items():
+        before = cal.alignment_basis.get(key)
+        same = before == value if not isinstance(value, float) or before is None else abs(before - value) < 1e-6
+        if not same and BASIS_LABELS[key] not in changed:
+            changed.append(BASIS_LABELS[key])
+    return {"state": "stale" if changed else "current", "changed": changed}
 
 
 def update_calibration(room_id: str, *, sensor: dict | None = None, calibration: dict | None = None) -> Room | None:
@@ -435,6 +609,317 @@ def update_calibration(room_id: str, *, sensor: dict | None = None, calibration:
         return room
 
 
+NEUTRAL_MODEL = {"slant": False, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0}
+
+
+def invalidate_sensor(room: Room, reason: str) -> None:
+    """Another sensor, or the same one hung up anew: everything measured
+    with the old mounting goes — the learned reflections, the alignment
+    and its report, the sensor model, the standpoints not applied yet.
+    The placement drawn on the plan and the heights stay; the history
+    stays too, but its records belong to the old mounting (`epoch`) and
+    are not restored onto the new one.
+
+    Changes `room` in place; the caller saves it.
+    """
+    for key, value in NEUTRAL_MODEL.items():
+        setattr(room.sensor, key, value)
+    cal = room.calibration
+    cal.interference = []
+    cal.interference_device_id = None
+    cal.interference_learned_at = None
+    cal.aligned_at = None
+    cal.alignment_rms_m = None
+    cal.alignment_points = None
+    cal.alignment_model = None
+    cal.alignment_check_m = None
+    cal.alignment_report = None
+    cal.alignment_basis = None
+    cal.alignment_id = None
+    cal.alignment_draft = None
+    cal.mounting_epoch += 1
+    cal.invalidated_at = time.time()
+    cal.invalidated_reason = reason
+
+
+class CalibrationConflict(Exception):
+    """What a request was computed for is no longer what the room is."""
+
+    def __init__(self, message: str, changed: list[str], current: Room):
+        super().__init__(message)
+        self.changed = changed
+        self.current = current
+
+
+def standpoints_key(points) -> str:
+    """A fingerprint of standpoints: which ones, in which order, in which
+    role. Two lists with the same key give the same alignment."""
+    canon = [
+        [p["role"] if isinstance(p, dict) else p.role,
+         *[round(float(v), 4) for v in (p["raw"] if isinstance(p, dict) else p.raw)],
+         *[round(float(v), 4) for v in (p["ref"] if isinstance(p, dict) else p.ref)]]
+        for p in points
+    ]
+    return hashlib.sha256(json.dumps(canon).encode()).hexdigest()[:16]
+
+
+def draft_points(room: Room) -> list[Standpoint]:
+    """The standpoints measured with the sensor standing in the room now."""
+    draft = room.calibration.alignment_draft
+    if draft is None or draft.device_id != room.sensor.device_id:
+        return []
+    return list(draft.points)
+
+
+def binding_conflicts(room: Room, basis: dict, algorithm: int) -> list[str]:
+    """Why a proposal computed for `basis` does not fit the room as it is."""
+    changed = []
+    if basis.get("device_id") != room.sensor.device_id:
+        changed.append("anderer Sensor")
+    if basis.get("epoch") != room.calibration.mounting_epoch:
+        changed.append("Sensor neu montiert")
+    if basis.get("algorithm") != algorithm:
+        changed.append("Rechenverfahren geändert")
+    if basis.get("standpoints") != standpoints_key(draft_points(room)):
+        changed.append("Standpunkte geändert")
+    if basis.get("revision") != room.revision and not changed:
+        changed.append("Raum geändert")
+    return changed
+
+
+def stale_proposal(room: Room, changed: list[str]) -> CalibrationConflict:
+    return CalibrationConflict(
+        "Der Vorschlag passt nicht mehr zum Raum (" + ", ".join(changed) + ") — er wird neu berechnet.",
+        changed, room,
+    )
+
+
+def _find_room(rooms: list[dict], room_id: str) -> int | None:
+    return next((i for i, r in enumerate(rooms) if r["id"] == room_id), None)
+
+
+def _save_draft(room_id: str, change) -> Room | None:
+    """Change the draft without a new revision: the standpoints are the
+    calibration page's working state, not the room, and an editor open
+    elsewhere must be able to save over them. What a proposal was
+    computed from is pinned by standpoints_key instead."""
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        points = draft_points(room)
+        points = change(room, points)
+        _check_standpoint_counts(points)
+        room.calibration.alignment_draft = (
+            AlignmentDraft(device_id=room.sensor.device_id, points=points, updated_at=time.time()) if points else None
+        )
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+class GoneError(Exception):
+    """What a request refers to is no longer there."""
+
+
+def add_standpoint(room_id: str, point: Standpoint, *, device_id: str | None, epoch: int,
+                   replace_id: str | None = None) -> Room | None:
+    """Keep a measured standpoint, or put it in place of `replace_id`.
+
+    `device_id` and `epoch` are the sensor and mounting it was measured
+    with; if either is no longer the room's, the measurement is refused
+    rather than mixed in with the new one's."""
+
+    def change(room: Room, points: list[Standpoint]) -> list[Standpoint]:
+        if device_id != room.sensor.device_id:
+            raise CalibrationConflict(
+                "Gemessen mit einem anderen Sensor als dem, der jetzt im Raum steht", ["anderer Sensor"], room
+            )
+        if epoch != room.calibration.mounting_epoch:
+            raise CalibrationConflict(
+                "Gemessen, bevor der Sensor neu montiert wurde", ["Sensor neu montiert"], room
+            )
+        if replace_id is None:
+            return points + [point]
+        index = next((i for i, p in enumerate(points) if p.id == replace_id), None)
+        if index is None:
+            raise GoneError("Dieser Standpunkt wurde inzwischen entfernt")
+        return points[:index] + [point] + points[index + 1:]
+
+    return _save_draft(room_id, change)
+
+
+def drop_standpoint(room_id: str, point_id: str | None) -> Room | None:
+    """Remove one standpoint, or all of them with `point_id` None."""
+
+    def change(_room: Room, points: list[Standpoint]) -> list[Standpoint]:
+        if point_id is None:
+            return []
+        if not any(p.id == point_id for p in points):
+            raise GoneError("Dieser Standpunkt wurde inzwischen entfernt")
+        return [p for p in points if p.id != point_id]
+
+    return _save_draft(room_id, change)
+
+
+def _sensor_fields(room: Room) -> dict:
+    s = room.sensor.model_dump()
+    return {k: s[k] for k in sorted(SENSOR_CALIBRATED)}
+
+
+def _same_sensor(a: dict, b: dict) -> bool:
+    for key in SENSOR_CALIBRATED:
+        x, y = a.get(key), b.get(key)
+        numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (x, y))
+        if numbers:
+            if abs(x - y) > 1e-6:
+                return False
+        elif x != y:
+            return False
+    return True
+
+
+def _keep_current(room: Room, now: float) -> None:
+    """Before the sensor changes: make sure the state it leaves is in the
+    history, so that it can be taken back."""
+    cal = room.calibration
+    current = next((r for r in cal.alignment_history if r.id == cal.alignment_id), None)
+    if current is not None and _same_sensor(current.sensor, _sensor_fields(room)):
+        return
+    cal.alignment_history.insert(0, AlignmentRecord(
+        id=new_id("a"), origin="before", created_at=now, device_id=room.sensor.device_id,
+        epoch=cal.mounting_epoch, sensor=_sensor_fields(room), report=cal.alignment_report,
+        basis=cal.alignment_basis,
+    ))
+
+
+def _trim_history(cal: Calibration) -> None:
+    while len(cal.alignment_history) > MAX_ALIGNMENT_HISTORY:
+        oldest = next(i for i in range(len(cal.alignment_history) - 1, -1, -1)
+                      if cal.alignment_history[i].id != cal.alignment_id)
+        del cal.alignment_history[oldest]
+
+
+def _apply_report(cal: Calibration, record: AlignmentRecord) -> None:
+    report = record.report or {}
+    cal.aligned_at = record.created_at if record.origin == "alignment" else None
+    cal.alignment_rms_m = report.get("fit_rms_m")
+    cal.alignment_points = report.get("points")
+    cal.alignment_model = report.get("model")
+    cal.alignment_check_m = None
+    cal.alignment_report = {k: report.get(k) for k in REPORT_KEYS} if record.report else None
+    cal.alignment_id = record.id
+
+
+def apply_alignment(room_id: str, *, basis: dict, algorithm: int, sensor: dict, report: dict,
+                    standpoints: list[Standpoint]) -> Room | None:
+    """Keep an alignment, if the room is still what it was computed for.
+
+    The check and the write happen under one lock: a second tab, a
+    changed height or another sensor between computing and applying
+    raises CalibrationConflict instead of saving a proposal for a room
+    that no longer exists. The state it replaces goes into the history.
+    """
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        changed = binding_conflicts(room, basis, algorithm)
+        if changed:
+            raise stale_proposal(room, changed)
+        now = time.time()
+        _keep_current(room, now)
+        unknown = set(sensor) - SENSOR_CALIBRATED
+        if unknown:
+            raise ValueError(f"Nicht einstellbar: {', '.join(sorted(unknown))}")
+        data = room.model_dump()
+        data["sensor"].update(sensor)
+        room = Room.model_validate(data)
+        record = AlignmentRecord(
+            id=new_id("a"), origin="alignment", created_at=now, device_id=room.sensor.device_id,
+            epoch=room.calibration.mounting_epoch, algorithm=algorithm, sensor=_sensor_fields(room),
+            report={k: report.get(k) for k in REPORT_KEYS}, basis=alignment_basis(room),
+            standpoints=standpoints,
+        )
+        cal = room.calibration
+        cal.alignment_history.insert(0, record)
+        _apply_report(cal, record)
+        cal.alignment_basis = record.basis
+        _trim_history(cal)
+        room.revision += 1
+        room.updated_at = now
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+def restore_alignment(room_id: str, record_id: str, *, revision: int | None) -> Room | None:
+    """Put the sensor back as a record in the history had it.
+
+    Only for the same sensor and mounting: a record from before a swap or
+    a remount describes another mounting. The record keeps its id; the
+    state it replaces is kept as well, so a restore can be taken back.
+    """
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        if revision != room.revision:
+            raise CalibrationConflict("Der Raum wurde inzwischen geändert — die Liste ist neu geladen.",
+                                      ["Raum geändert"], room)
+        cal = room.calibration
+        record = next((r for r in cal.alignment_history if r.id == record_id), None)
+        if record is None:
+            raise GoneError("Diese Ausrichtung gibt es nicht mehr")
+        if record.device_id != room.sensor.device_id or record.epoch != cal.mounting_epoch:
+            raise CalibrationConflict(
+                "Diese Ausrichtung gehört zu einem anderen Sensor oder einer früheren Montage.",
+                ["anderer Sensor" if record.device_id != room.sensor.device_id else "Sensor neu montiert"], room,
+            )
+        now = time.time()
+        _keep_current(room, now)
+        data = room.model_dump()
+        data["sensor"].update({k: v for k, v in record.sensor.items() if k in SENSOR_CALIBRATED})
+        room = Room.model_validate(data)
+        cal = room.calibration
+        record = next(r for r in cal.alignment_history if r.id == record_id)
+        record.restored_at = now
+        _apply_report(cal, record)
+        # What the record was computed for, not the room now: if the room
+        # has changed since, the report is stale and says so.
+        cal.alignment_basis = record.basis
+        _trim_history(cal)
+        room.revision += 1
+        room.updated_at = now
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+def remount_sensor(room_id: str, *, revision: int | None) -> Room | None:
+    """The sensor was taken down and hung up again: see invalidate_sensor."""
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        if revision != room.revision:
+            raise CalibrationConflict("Der Raum wurde inzwischen geändert.", ["Raum geändert"], room)
+        invalidate_sensor(room, "Sensor neu montiert")
+        room.revision += 1
+        room.updated_at = time.time()
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
 def delete_room(room_id: str) -> bool:
     with _lock:
         rooms = _read()
@@ -455,7 +940,11 @@ def release_device(device_id: str) -> None:
         for room in rooms:
             sensor = room.get("sensor") or {}
             if sensor.get("device_id") == device_id:
-                sensor["device_id"] = None
+                model = Room.model_validate(room)
+                model.sensor.device_id = None
+                invalidate_sensor(model, "Sensor gelöscht")
+                room.clear()
+                room.update(model.model_dump())
                 room["revision"] = int(room.get("revision", 0)) + 1
                 changed = True
         if changed:

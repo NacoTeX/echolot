@@ -414,6 +414,7 @@ def _room_or_404(room_id: str) -> rooms.Room:
 
 def _room_view(room: rooms.Room) -> dict:
     data = room.model_dump()
+    data["alignment_state"] = rooms.alignment_state(room)
     if room.image:
         data["image"] = {
             "url": f"api/rooms/{room.id}/image?v={room.image.get('version', 0)}",
@@ -524,20 +525,78 @@ def api_room_image(room_id: str) -> Response:
 # a worker thread next to it.
 
 
+def _calibration_conflict(conflict: rooms.CalibrationConflict) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"message": str(conflict), "changed": conflict.changed, "room": _room_view(conflict.current)},
+    )
+
+
+def _standpoint_request(value) -> dict:
+    """Where the person stands for a standpoint recording: {ref, role,
+    replace_id}."""
+    if not isinstance(value, dict):
+        raise ValueError("„standpoint“ muss ein Objekt sein")
+    try:
+        ref = [float(v) for v in value["ref"]]
+    except (KeyError, TypeError, ValueError) as err:
+        raise ValueError("Der Standpunkt braucht ref [x, y]") from err
+    if len(ref) != 2 or not all(map(math.isfinite, ref)):
+        raise ValueError("Der Standpunkt braucht ref [x, y]")
+    role = value.get("role", "fit")
+    if role not in ("fit", "check"):
+        raise ValueError("Ein Standpunkt ist zum Anpassen (fit) oder zur Kontrolle (check)")
+    replace_id = value.get("replace_id")
+    if replace_id is not None and not isinstance(replace_id, str):
+        raise ValueError("replace_id muss die Kennung eines Standpunkts sein")
+    return {"ref": ref, "role": role, "replace_id": replace_id}
+
+
 @app.post("/api/rooms/{room_id}/capture", status_code=201)
 async def api_start_capture(room_id: str, payload: dict) -> dict:
-    """Start listening: `kind` "empty" (learn reflections) or "point"."""
+    """Start listening: `kind` "empty" (learn reflections) or "point".
+
+    A "point" names its `standpoint` {ref, role, replace_id}; its result
+    is then kept with the room's standpoints as soon as it is in, by
+    whichever request sees it first — a reload in between loses nothing.
+    """
     room = _room_or_404(room_id)
     if room.sensor.device_id and devices.get_device(room.sensor.device_id) is None:
         raise HTTPException(status_code=422, detail="Der zugeordnete Sensor existiert nicht mehr")
     try:
+        standpoint = _standpoint_request(payload["standpoint"]) if payload.get("standpoint") is not None else None
         capture = captures.start(
             room, str(payload.get("kind")),
-            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"),
+            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"), standpoint=standpoint,
         )
     except (TypeError, ValueError) as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
     return captures.view(capture)
+
+
+def _keep_standpoint(capture, view: dict) -> None:
+    """A finished standpoint recording goes to the room's standpoints, once."""
+    if capture.kind != "point" or capture.standpoint is None or capture.kept or capture.keep_error:
+        return
+    result = capture.result
+    if not result or not result.get("ok"):
+        return
+    # Marked first: nothing between here and the write awaits, and a
+    # second request must not keep it twice.
+    capture.kept = True
+    wanted = capture.standpoint
+    try:
+        point = rooms.Standpoint(
+            ref=tuple(wanted["ref"]), raw=tuple(result["raw"]), role=wanted["role"],
+            spread_m=result.get("spread_m"), share=result.get("share"),
+            measured_at=time.time() - view["ended_ago_s"], source="capture",
+            warnings=list(result.get("warnings") or [])[:5],
+        )
+        rooms.add_standpoint(capture.room_id, point, device_id=capture.device_id, epoch=capture.epoch,
+                             replace_id=wanted.get("replace_id"))
+    except (rooms.CalibrationConflict, rooms.GoneError, ValidationError, ValueError) as err:
+        capture.kept = False
+        capture.keep_error = str(err)
 
 
 @app.get("/api/rooms/{room_id}/capture", response_model=None)
@@ -547,7 +606,11 @@ async def api_get_capture(room_id: str) -> dict | Response:
     capture = captures.get(room_id)
     if capture is None:
         return Response(status_code=204)
-    return captures.view(capture)
+    view = captures.view(capture)
+    if view["phase"] == "done":
+        _keep_standpoint(capture, view)
+        view = captures.view(capture)
+    return view
 
 
 @app.delete("/api/rooms/{room_id}/capture", status_code=204)
@@ -556,12 +619,16 @@ async def api_cancel_capture(room_id: str) -> None:
         raise HTTPException(status_code=404, detail="Für diesen Raum läuft keine Aufnahme")
 
 
-def _pairs(payload: dict) -> list:
+def _pairs(payload: dict) -> tuple[list, list]:
+    """(spots to fit, control spots). A control spot has `role` "check"
+    and takes no part in the fit."""
     points = payload.get("points")
-    if not isinstance(points, list) or not 1 <= len(points) <= 12:
-        raise ValueError("1 bis 12 Standpunkte")
-    pairs = []
+    if not isinstance(points, list) or not points:
+        raise ValueError("Mindestens ein Standpunkt ist nötig")
+    pairs, checks = [], []
     for point in points:
+        if not isinstance(point, dict):
+            raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]")
         try:
             raw = [float(v) for v in point["raw"]]
             ref = [float(v) for v in point["ref"]]
@@ -569,27 +636,186 @@ def _pairs(payload: dict) -> list:
             raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]") from err
         if len(raw) != 2 or len(ref) != 2 or not all(map(math.isfinite, raw + ref)):
             raise ValueError("Jeder Standpunkt braucht raw [x, y] und ref [x, y]")
-        pairs.append((tuple(raw), tuple(ref)))
-    return pairs
+        role = point.get("role", "fit")
+        if role not in ("fit", "check"):
+            raise ValueError("Ein Standpunkt ist zum Anpassen (fit) oder zur Kontrolle (check)")
+        (checks if role == "check" else pairs).append((tuple(raw), tuple(ref)))
+    if not 1 <= len(pairs) <= rooms.MAX_FIT_STANDPOINTS or len(checks) > rooms.MAX_CHECK_STANDPOINTS:
+        raise ValueError("1 bis 12 Standpunkte zum Anpassen und höchstens 6 Kontrollpunkte")
+    return pairs, checks
+
+
+def _kept_pairs(points: list) -> tuple[list, list]:
+    pairs = [(tuple(p.raw), tuple(p.ref)) for p in points if p.role == "fit"]
+    checks = [(tuple(p.raw), tuple(p.ref)) for p in points if p.role == "check"]
+    if not pairs:
+        raise ValueError("Mindestens ein Standpunkt zum Anpassen ist nötig")
+    return pairs, checks
+
+
+def _solve_for(room: rooms.Room, pairs: list, checks: list, key: str, heights: dict) -> dict:
+    sensor = rooms.SensorPlacement.model_validate({
+        **room.sensor.model_dump(),
+        **{k: heights[k] for k in ("mount_height_m", "target_height_m") if k in heights},
+    })
+    result = alignment.solve(pairs, sensor.model_dump(), room.width, room.height, checks=checks)
+    # What this was computed for. Applying checks it against the room.
+    result["basis"] = {
+        "revision": room.revision,
+        "device_id": room.sensor.device_id,
+        "epoch": room.calibration.mounting_epoch,
+        "algorithm": alignment.VERSION,
+        "standpoints": key,
+        "mount_height_m": sensor.mount_height_m,
+        "target_height_m": sensor.target_height_m,
+    }
+    return result
 
 
 @app.post("/api/rooms/{room_id}/alignment")
 def api_solve_alignment(room_id: str, payload: dict) -> dict:
-    """What the standpoints say about the sensor's placement. Saves nothing."""
+    """What the standpoints say about the sensor's placement. Saves nothing.
+
+    The room's kept standpoints, or `points` given here. The heights as
+    the page has them, saved or not yet: they decide whether the slant
+    line can be tried at all. The answer carries its `basis`.
+    """
     room = _room_or_404(room_id)
     try:
-        pairs = _pairs(payload)
-        # The heights as the page has them, saved or not yet: they decide
-        # whether the slant line can be tried at all.
-        sensor = rooms.SensorPlacement.model_validate({
-            **room.sensor.model_dump(),
-            **{k: payload[k] for k in ("mount_height_m", "target_height_m") if k in payload},
-        })
+        if "points" in payload:
+            pairs, checks = _pairs(payload)
+            key = rooms.standpoints_key([
+                {"role": p.get("role", "fit"), "raw": p["raw"], "ref": p["ref"]} for p in payload["points"]
+            ])
+        else:
+            kept = rooms.draft_points(room)
+            pairs, checks = _kept_pairs(kept)
+            key = rooms.standpoints_key(kept)
+        return _solve_for(room, pairs, checks, key, payload)
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
-    return alignment.solve(pairs, sensor.model_dump(), room.width, room.height)
+
+
+@app.post("/api/rooms/{room_id}/alignment/apply")
+async def api_apply_alignment(room_id: str, payload: dict) -> dict:
+    """Keep the proposal computed for `basis`, as the solve route returned it.
+
+    Computed once more here from the kept standpoints — what is saved is
+    what the server computes, with every standpoint and its report, not
+    what a page sends — and saved only if the room is still what it was
+    computed for. Anything else is 409 with what changed.
+    """
+    room = _room_or_404(room_id)
+    basis = payload.get("basis")
+    if not isinstance(basis, dict):
+        raise HTTPException(status_code=422, detail="Übernehmen braucht den Stand, für den der Vorschlag berechnet wurde (basis)")
+    changed = rooms.binding_conflicts(room, basis, alignment.VERSION)
+    if changed:
+        raise _calibration_conflict(rooms.stale_proposal(room, changed))
+    kept = rooms.draft_points(room)
+    try:
+        pairs, checks = _kept_pairs(kept)
+        result = await asyncio.to_thread(
+            _solve_for, room, pairs, checks, rooms.standpoints_key(kept), basis,
+        )
+        fields = {k: result[k] for k in ("x", "y", "angle", "mirror", "slant", "range_scale",
+                                         "range_offset_m", "azimuth_scale")}
+        fields.update({k: result["basis"][k] for k in ("mount_height_m", "target_height_m")})
+        updated = rooms.apply_alignment(room_id, basis=basis, algorithm=alignment.VERSION, sensor=fields,
+                                        report=result, standpoints=kept)
+    except rooms.CalibrationConflict as conflict:
+        raise _calibration_conflict(conflict) from conflict
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    await refresh()
+    return _room_view(updated)
+
+
+@app.post("/api/rooms/{room_id}/alignment/points", status_code=201)
+async def api_add_standpoint(room_id: str, payload: dict) -> dict:
+    """A standpoint measured outside Echolot, handed in: {ref, raw, role,
+    spread_m, share, replace_id}. Kept as source "api"."""
+    room = _room_or_404(room_id)
+    try:
+        point = rooms.Standpoint.model_validate({
+            **{k: payload[k] for k in ("ref", "raw", "role", "spread_m", "share") if k in payload},
+            "measured_at": time.time(), "source": "api",
+        })
+        updated = rooms.add_standpoint(room_id, point, device_id=room.sensor.device_id,
+                                       epoch=room.calibration.mounting_epoch, replace_id=payload.get("replace_id"))
+    except rooms.CalibrationConflict as conflict:
+        raise _calibration_conflict(conflict) from conflict
+    except rooms.GoneError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    return _room_view(updated)
+
+
+@app.delete("/api/rooms/{room_id}/alignment/points/{point_id}")
+async def api_drop_standpoint(room_id: str, point_id: str) -> dict:
+    _room_or_404(room_id)
+    try:
+        updated = rooms.drop_standpoint(room_id, point_id)
+    except rooms.GoneError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    return _room_view(updated)
+
+
+@app.delete("/api/rooms/{room_id}/alignment/points")
+async def api_clear_standpoints(room_id: str) -> dict:
+    _room_or_404(room_id)
+    updated = rooms.drop_standpoint(room_id, None)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    return _room_view(updated)
+
+
+@app.post("/api/rooms/{room_id}/alignment/restore")
+async def api_restore_alignment(room_id: str, payload: dict) -> dict:
+    """Put the sensor back as `id` in the alignment history had it —
+    `revision` is the room the list was read from."""
+    _room_or_404(room_id)
+    try:
+        updated = rooms.restore_alignment(room_id, str(payload.get("id")), revision=payload.get("revision"))
+    except rooms.GoneError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except rooms.CalibrationConflict as conflict:
+        raise _calibration_conflict(conflict) from conflict
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    await refresh()
+    return _room_view(updated)
+
+
+@app.post("/api/rooms/{room_id}/remount")
+async def api_remount_sensor(room_id: str, payload: dict) -> dict:
+    """The sensor was taken down and hung up again (or turned by hand):
+    what was measured with the old mounting no longer applies."""
+    _room_or_404(room_id)
+    captures.cancel(room_id)
+    try:
+        updated = rooms.remount_sensor(room_id, revision=payload.get("revision"))
+    except rooms.CalibrationConflict as conflict:
+        raise _calibration_conflict(conflict) from conflict
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Raum nicht gefunden")
+    await refresh()
+    return _room_view(updated)
 
 
 @app.get("/api/rooms/{room_id}/alignment/suggest")
@@ -601,46 +827,32 @@ def api_suggest_standpoints(room_id: str, count: int = 5) -> dict:
 
 @app.put("/api/rooms/{room_id}/calibration")
 async def api_apply_calibration(room_id: str, payload: dict) -> dict:
-    """Keep a calibration result.
+    """Keep a calibration setting.
 
-    Any of: `filter` {confirm_s, smoothing}; `alignment` {x, y, angle,
-    mirror, and the sensor model: slant, range_scale, range_offset_m,
-    azimuth_scale, mount_height_m, target_height_m; rms_m, check_m,
-    model, points}; `mounting` {mount_height_m, target_height_m};
-    `reset_model` true; `interference` {spots, device_id}, or null to
-    forget the learned spots.
+    Any of: `filter` {confirm_s, smoothing}; `mounting` {mount_height_m,
+    target_height_m}; `reset_model` true; `interference` {spots,
+    device_id, epoch}, or null to forget the learned spots. An alignment
+    is applied on its own route (alignment/apply), bound to what it was
+    computed for.
     """
     room = _room_or_404(room_id)
     sensor: dict = {}
     calibration: dict = {}
-    for key in ("filter", "alignment", "interference", "mounting"):
+    if "alignment" in payload:
+        raise HTTPException(status_code=422, detail="Eine Ausrichtung wird über „alignment/apply“ übernommen")
+    for key in ("filter", "interference", "mounting"):
         if key in payload and payload[key] is not None and not isinstance(payload[key], dict):
             raise HTTPException(status_code=422, detail=f"„{key}“ muss ein Objekt sein")
     if "filter" in payload:
         wanted = payload["filter"] or {}
         calibration.update({k: wanted[k] for k in ("confirm_s", "smoothing") if k in wanted})
-    if "alignment" in payload:
-        found = payload["alignment"] or {}
-        try:
-            sensor = {k: found[k] for k in ("x", "y", "angle", "mirror")}
-        except KeyError as err:
-            raise HTTPException(status_code=422, detail="Die Ausrichtung braucht x, y, angle und mirror") from err
-        # The sensor model comes with the placement it was fitted with.
-        sensor.update({k: found[k] for k in rooms.SENSOR_CALIBRATED - set(sensor) if k in found})
-        calibration.update({
-            "aligned_at": time.time(),
-            "alignment_rms_m": found.get("rms_m"),
-            "alignment_points": found.get("points"),
-            "alignment_model": found.get("model"),
-            "alignment_check_m": found.get("check_m"),
-        })
     if "mounting" in payload:
         # Heights alone, before any standpoint is measured.
         wanted = payload["mounting"] or {}
         sensor.update({k: wanted[k] for k in ("mount_height_m", "target_height_m") if k in wanted})
     if payload.get("reset_model"):
         # Back to the module's positions as they are; placement stays.
-        sensor.update({"slant": False, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0})
+        sensor.update(dict(rooms.NEUTRAL_MODEL))
         calibration.update({"alignment_model": None, "alignment_check_m": None})
     if "interference" in payload:
         learned = payload["interference"]
@@ -651,6 +863,11 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
                 raise HTTPException(
                     status_code=409,
                     detail="Die Störquellen wurden mit einem anderen Sensor aufgenommen als dem, der jetzt im Raum steht",
+                )
+            if learned.get("epoch") is not None and learned.get("epoch") != room.calibration.mounting_epoch:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Die Störquellen wurden aufgenommen, bevor der Sensor neu montiert wurde",
                 )
             spots = learned.get("spots") or []
             stored = room.calibration

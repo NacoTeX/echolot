@@ -1,5 +1,112 @@
 # Changelog
 
+## 1.4.0
+
+**Messqualität, die sagt, was sie ist, und Kalibrierungen, die zum Raum
+passen.** Umsetzung der ersten Gruppe aus einem Review von 1.3 (P0-01,
+P0-02, P0-04); jeder Befund zuerst am Code nachvollzogen, dann als Test
+festgehalten.
+
+**Richtigstellung zu 1.3.** Dort stand, Fehler, die mit der Entfernung
+wachsen, „kommen aus dem Modul“. Das war zu eindeutig: Schon eine falsch
+eingezeichnete Blickrichtung erzeugt solche Fehler — 5° sind bei 5 m etwa
+44 cm. Montage, Modulverzerrung, Reflexionen und Modellfehler trennen erst
+Messungen, und dafür sind die Kontrollpunkte unten da.
+
+**Zeitbasis (Messdefinition 4).**
+
+- Die Firmware wiederholt ihre letzte Zeile jede Sekunde als Lebenszeichen,
+  mit derselben Folgenummer. 1.3 zählte jede Wiederholung als Meldung; ein
+  Ziel wurde dadurch schneller bestätigt, als das Radar es gemeldet hatte.
+  Jetzt gelten Folgeregeln je Verbindung: gleiche Nummer und gleicher
+  Inhalt ist nur ein Lebenszeichen, eine ältere Nummer wird verworfen, der
+  Überlauf bei 2³² ist neu, übersprungene Nummern werden gezählt, eine
+  neue Verbindung beginnt von vorn.
+- Neue Meldungen warten in einer begrenzten Schlange (64) und werden alle
+  der Reihe nach ausgewertet, jede zu ihrer Empfangszeit — vorher sah die
+  Auswertung nur die jeweils letzte. Die Zeile trägt keine Gerätezeit; es
+  ist die Empfangszeit, und so heißt sie auch.
+- Ein Ziel, dessen Gedächtnis (1,5 s) abgelaufen war, konnte vor dem
+  Aufräumen wieder zugeordnet werden und kam samt Bestätigung zurück.
+  Jetzt wird vorher vergessen.
+- Diagnose je Verbindung: Wiederholungen, verworfene, übersprungene und
+  verdrängte Meldungen, Alter der letzten Messung.
+
+**Kalibrierungsqualität (P0-01).** 1.3 zeigte eine Zahl mit „±“ und eine
+Stufe. Ein einziger, perfekt passender Standpunkt hieß „gut“, und die
+Kreuzprobe behielt das Modell, das mit allen Punkten gewählt war. Jetzt
+drei Zahlen, getrennt benannt:
+
+- **Anpassung** — RMS an den Punkten, aus denen gerechnet wurde.
+- **Kreuzprüfungs-RMS** — jeder Punkt weggelassen, die ganze Wahl (Modell,
+  Links/Rechts, Schräge) aus den übrigen neu getroffen.
+- **Kontrollpunkte-RMS** — Punkte, die an keiner Rechnung teilhaben. Nur
+  mit zwei davon heißt das Ergebnis *geprüft* und bekommt eine Stufe,
+  sonst *nicht unabhängig geprüft*. *Standpunkte vorschlagen* legt dafür
+  zwei Kontrollpunkte zurück.
+- Kein „±“ mehr: Es sind RMS-Werte, keine Fehlergrenze.
+- Punktanordnungen, aus denen sich eine Korrektur nicht bestimmen lässt
+  (zu eng, auf einer Linie, eine Richtung, eine Entfernung), werden
+  benannt.
+- Ändert sich, worauf ein Bericht beruht (Höhe, Sensormodell, Maße,
+  Position auf dem Plan), heißt die Ausrichtung *veraltet*, mit Grund.
+
+**Speichern und Zurücknehmen (P0-02).**
+
+- **Gebundene Vorschläge:** Ein Vorschlag nennt, wofür er berechnet wurde —
+  Raumstand, Sensor, Montage, Höhe, Standpunkte, Rechenverfahren. Übernehmen
+  rechnet auf dem Server noch einmal aus den gespeicherten Standpunkten und
+  speichert nur, wenn sich nichts davon geändert hat; sonst 409 mit dem
+  Grund, und die Seite rechnet neu. Ein zweiter Tab übernimmt keinen
+  veralteten Vorschlag mehr. Werte, die eine Seite schickt, werden nicht
+  mehr übernommen.
+- **Standpunkte auf dem Server:** mit Sollpunkt, gemeldeter Position,
+  Streuung, Anteil, Zeitpunkt und Herkunft. Neuladen — auch mitten in einer
+  Messung — verliert nichts. Mit jeder übernommenen Ausrichtung werden
+  Standpunkte und Bericht gespeichert, nicht nur ihre Anzahl.
+- **Verlauf:** die letzten sechs Ausrichtungen und der Stand davor, mit
+  Vorschau auf dem Plan und *Zurück*. Ein Eintrag behält seine Kennung;
+  Raum, Zonen und Home-Assistant-Entitäten bleiben unberührt.
+- **Sensor neu montiert oder gewechselt:** verwirft Störquellen,
+  Ausrichtung, Sensormodell und Standpunkte der alten Montage. Wer den
+  Sensor im Raumeditor verschiebt, wird gefragt: *umgehängt* verwirft, *nur
+  Zeichnung korrigiert* behält alles und markiert die Ausrichtung als
+  veraltet.
+
+**Behoben:** Nach dem Eintragen einer Montagehöhe ließ sich die
+Kalibrierseite nicht mehr öffnen, bis die Seite neu geladen wurde — die
+Höhe überschrieb eine gleichnamige Methode der Ansicht.
+
+**Umstellung.** Räume aus 1.3 laden unverändert; ihre Ausrichtung heißt
+„ohne Nachweis“, weil 1.3 nicht festhielt, wofür sie berechnet war. Keine
+Kennung ändert sich. Die Messdefinition steigt auf 4 und steht so an jeder
+Home-Assistant-Entität. Für Aufrufer der HTTP-Schnittstelle: Ausrichtungen
+werden über `POST …/alignment/apply` mit der Bindung des Vorschlags
+übernommen, `PUT …/calibration` nimmt keine Platzierung mehr an.
+
+**Getestet:** 347 Tests. Für jede neue Regel einmal der Fix ausgebaut, und
+ein Test muss scheitern: Zeitbasis 7 von 7, Kalibrierungsqualität 19 von
+19, Speichern und Zurücknehmen 25 von 25. Sechs davon fing die erste
+Fassung der Tests nicht (1, 2 und 3); diese Tests sind nachgeschärft. Im
+Headless-Browser gegen simulierte Module:
+
+- Kalibrierung mit Kontrollpunkten, drei Läufe: Eine Person bei
+  (3,0 | 4,0) erschien vorher 99 cm daneben, danach 1–4 cm.
+  Kontrollpunkte-RMS 2–4 cm, *geprüft: gut*.
+- Neuladen während einer Messung.
+- Ein veralteter Vorschlag aus einem zweiten Tab wird abgelehnt.
+- Verlauf mit Vorschau und Zurück.
+- Editor-Rückfrage und Neumontage.
+- Handy-Breite ohne Querscrollen.
+
+**Grenzen.** Alles hier ist an simulierten Modulen geprüft, nicht an einem
+echten LD2460; Messungen im Raum stehen als Abnahme aus. Die Stufen der
+Kontrollpunkte (15/30 cm) und die Rauschgrenze (6 cm) sind gewählt, nicht
+gemessen. Zwei Kontrollpunkte sind eine Stichprobe, keine Garantie für den
+ganzen Raum. Die Zeile hat weiterhin keine Gerätezeit. Aufnahme und Replay
+echter Messungen, die Behandlung ungültiger Schräggeometrie und der
+Freiform-Umriss als Grenze der Ausrichtung folgen in eigenen Schritten.
+
 ## 1.3.0
 
 **Die Kalibrierung rechnet jetzt mit einem Modell des Sensors.** Gemeldet:

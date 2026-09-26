@@ -60,6 +60,14 @@ def room(**extra):
     return Room.model_validate(data)
 
 
+def feed(links, text, at, connected=True, device_id="dev"):
+    """A frame line through the same door the live link uses."""
+    snap = links.snaps.get(device_id) or LinkSnapshot(device_id=device_id)
+    snap.connected = connected
+    snap.record(parse_frame(text), at)
+    links.snaps[device_id] = snap
+
+
 @pytest.fixture
 def rig():
     clock, links = Clock(), Links()
@@ -67,8 +75,7 @@ def rig():
     engine.load([room()], [device()])
 
     def frame(text, connected=True, age=0.0):
-        links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=connected,
-                                         frame=parse_frame(text), frame_at=clock.now - age)
+        feed(links, text, clock.now - age, connected=connected)
         return engine.evaluate()[0]
 
     return engine, clock, links, frame
@@ -207,15 +214,13 @@ def test_with_walls_the_cut_out_corner_does_not_count():
     engine.load([room(outline=walls)], [device()])
     # Sensor at (3, 0) looking down: (-20 dm, 36 dm) -> (1.0, 3.6), 0.6 m
     # into the cut-out; (-20, 32) -> (1.0, 3.2), against its wall.
-    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
-                                     frame=parse_frame("1|R|1|-20,36;-20,32"), frame_at=clock.now)
+    feed(links, "1|R|1|-20,36;-20,32", clock.now)
     result = engine.evaluate()[0]
     assert [t["status"] for t in result["targets"]] == ["outside", "counted"]
     assert result["count"] == 1
     # The same report in the plain rectangle counts both.
     engine.load([room()], [device()])
-    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
-                                     frame=parse_frame("1|R|2|-20,36;-20,32"), frame_at=clock.now)
+    feed(links, "1|R|2|-20,36;-20,32", clock.now)
     assert engine.evaluate()[0]["count"] == 2
 
 
@@ -231,11 +236,9 @@ def test_somebody_beside_the_sofa_counts_in_its_zone_within_the_margin():
     engine.load([room(furniture=[sofa], zones=[zone])], [device()])
     # Sensor at (3, 0) looking down: (-7 dm, 36 dm) -> (2.3, 3.6), 0.2 m
     # past the sofa's back edge at 3.4: inside a 0.3 m margin, outside none.
-    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
-                                     frame=parse_frame("1|R|1|-7,36"), frame_at=clock.now)
+    feed(links, "1|R|1|-7,36", clock.now)
     result = engine.evaluate()[0]
     assert result["zones"][0]["count"] == 1
     engine.load([room(furniture=[sofa], zones=[{**zone, "margin_m": 0.0}])], [device()])
-    links.snaps["dev"] = LinkSnapshot(device_id="dev", connected=True,
-                                     frame=parse_frame("1|R|2|-7,36"), frame_at=clock.now)
+    feed(links, "1|R|2|-7,36", clock.now)
     assert engine.evaluate()[0]["zones"][0]["count"] == 0

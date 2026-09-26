@@ -1,5 +1,5 @@
 name: Echolot
-version: "1.3.0"
+version: "1.4.0"
 slug: echolot
 description: >-
   Room presence with HLK-LD2460 radar: build the firmware, flash it from the

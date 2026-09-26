@@ -22,10 +22,12 @@ More terms always fit a few spots better, and a model fitted to its own
 noise is worse than none. So each candidate model is scored by the
 Bayesian information criterion, with a noise floor: a residual below what
 a person standing still and a module's scatter produce is not evidence
-for anything. The simplest model the spots support wins. How well it
-really does is then checked the honest way: each spot left out in turn,
-predicted from the others (leave-one-out) — the number the page reports
-as accuracy.
+for anything. The simplest model the spots support wins.
+
+How well it does is three different numbers, kept apart (see solve): the
+fit to its own spots, a cross-check that redoes the whole choice without
+each spot, and control spots that took no part at all. Only the last is
+an independent check.
 
   one spot     only the direction; the position stays as drawn
   two spots    position and direction (rigid fit, Kabsch)
@@ -47,6 +49,12 @@ MIN_SPREAD_M = 1.0
 #: plus a person not standing exactly on the mark. Residuals below this
 #: are not evidence for a richer model.
 NOISE_M = 0.06
+
+#: The alignment procedure. A proposal computed by one version is not
+#: applied by another: 1 was 1.3 (the model chosen once, a conditional
+#: leave-one-out as its accuracy), 2 redoes the choice per fold and takes
+#: control spots.
+VERSION = 2
 
 #: Candidate sensor models, simplest first: the terms each one fits on
 #: top of the placement.
@@ -245,33 +253,213 @@ def _fit(pairs, base: dict, name: str, terms, mirror: bool, slant: bool, start=N
     return _Fit(name, terms, mirror, slant, params, cost, 2 * len(pairs))
 
 
-def _loo(pairs, base: dict, best: _Fit) -> list[float] | None:
-    """Leave-one-out: how far each spot is from where a fit to the others
-    puts it. A spot marked in the wrong place stands out here; in the fit
-    to all spots, least squares spreads its error over the others."""
-    n = len(pairs)
-    if 2 * (n - 1) - best.k < 1:
-        return None
-    errs = []
-    for i in range(n):
-        rest = pairs[:i] + pairs[i + 1:]
-        fit = _fit(rest, base, best.name, best.terms, best.mirror, best.slant, start=list(best.params))
-        (px, py), (qx, qy) = pairs[i]
-        rx, ry = geometry.to_room(px, py, fit.placement(base))
-        errs.append(math.hypot(rx - qx, ry - qy))
-    return errs
-
-
 # --- the proposal -------------------------------------------------------------
 
+MIRROR_UNSURE = (
+    "Ob links und rechts getauscht sind, lässt sich aus diesen Standpunkten "
+    "nicht sicher sagen. Die Einstellung bleibt, wie sie ist. Ein weiterer "
+    "Standpunkt abseits der Linie zwischen den bisherigen klärt es."
+)
 
-def solve(pairs, placement: dict, width: float, height: float) -> dict:
-    """A proposal for the placement and the sensor model, with what it
-    would change and how accurate it is expected to be.
 
-    `pairs` is [((raw_x, raw_y), (room_x, room_y)), ...]: the module's
-    median report in sensor metres, and the spot marked on the plan.
-    `placement` is the sensor as stored, including mount_height_m and
+def _select(pairs, current: dict, width: float, height: float) -> dict:
+    """The whole choice from these spots alone: placement, mirror, slant
+    and sensor model. Run once on all spots, and again in every fold of
+    the cross-check, so the check sees the choice made without the spot
+    it predicts."""
+    base = {"mount_height_m": current["mount_height_m"], "target_height_m": current["target_height_m"]}
+    warnings: list[str] = []
+    mirror_basis = "kept"
+    model_name = None
+    candidates: list[dict] = []
+    n = len(pairs)
+    if n < 3:
+        # Too few spots for anything but the placement: keep the sensor
+        # model as it is and fit where the sensor is and how it looks.
+        proposal = dict(current)
+        corrected = [(geometry.correct(px, py, current), q) for (px, py), q in pairs]
+        if n == 1:
+            mode = "direction"
+            proposal["angle"], _ = fit_direction(corrected, current["x"], current["y"], current["mirror"])
+            (cx, cy), (qx, qy) = corrected[0]
+            mismatch = abs(math.hypot(cx, cy) - math.hypot(qx - current["x"], qy - current["y"]))
+            if mismatch > 0.4:
+                warnings.append(
+                    f"Der gemessene Abstand zum Sensor weicht um {mismatch * 100:.0f} cm vom Plan ab. "
+                    "Steht der Sensor auf dem Plan am richtigen Platz? Ein zweiter Standpunkt "
+                    "korrigiert auch die Position."
+                )
+        else:
+            mode = "full"
+            fits = {m: fit_free(corrected, m) for m in (False, True)}
+            d_plain = math.hypot(fits[False][0] - current["x"], fits[False][1] - current["y"])
+            d_mirror = math.hypot(fits[True][0] - current["x"], fits[True][1] - current["y"])
+            mirror = current["mirror"]
+            if abs(d_plain - d_mirror) > 0.3:
+                mirror = d_mirror < d_plain
+                mirror_basis = "position"
+            else:
+                warnings.append(MIRROR_UNSURE)
+            x, y, angle, _ = fits[mirror]
+            proposal.update(x=x, y=y, angle=angle, mirror=mirror)
+        return {"proposal": proposal, "mode": mode, "mirror_basis": mirror_basis, "model": None,
+                "terms": (), "candidates": [], "warnings": warnings}
+
+    mode = "full"
+    slants = (False, True) if current["mount_height_m"] is not None else (False,)
+    fits: list[_Fit] = []
+    for name, terms in MODELS:
+        if 2 * n - (3 + len(terms)) < 2:
+            continue
+        for mirror in (False, True):
+            for slant in slants:
+                fits.append(_fit(pairs, base, name, terms, mirror, slant))
+    # Mirror first: the best of each side, and whether the difference is
+    # evidence or noise.
+    best_side = {m: min((f for f in fits if f.mirror == m), key=lambda f: f.bic) for m in (False, True)}
+    gap = best_side[not current["mirror"]].bic - best_side[current["mirror"]].bic
+    if abs(gap) >= 6:
+        mirror = best_side[True].bic < best_side[False].bic
+        mirror_basis = "fit"
+    else:
+        d = {m: math.hypot(best_side[m].params[0] - current["x"], best_side[m].params[1] - current["y"])
+             for m in (False, True)}
+        if abs(d[False] - d[True]) > 0.3:
+            mirror = d[True] < d[False]
+            mirror_basis = "position"
+        else:
+            mirror = current["mirror"]
+            warnings.append(MIRROR_UNSURE)
+    side = sorted((f for f in fits if f.mirror == mirror), key=lambda f: f.bic)
+    candidates = [
+        {"model": f.name, "slant": f.slant, "fit_rms_m": round(math.sqrt(f.cost / n), 3), "score": round(f.bic, 1)}
+        for f in side
+    ]
+    inside = [f for f in side if _outside(f.params[0], f.params[1], width, height) <= MAX_OUTSIDE_M]
+    if not inside:
+        outside = _outside(side[0].params[0], side[0].params[1], width, height)
+        warnings.append(
+            f"Die Standpunkte ergäben einen Sensor {outside:.1f} m außerhalb des Raums. "
+            "Das passt nicht — die Position bleibt, nur die Richtung wird angepasst. "
+            "Stimmen Raummaße und markierte Punkte?"
+        )
+        mode = "direction"
+        mirror, mirror_basis = current["mirror"], "kept"
+        best = _fit(pairs, base, "placement", (), mirror, False, fixed_xy=(current["x"], current["y"]))
+    else:
+        best = inside[0]
+        x, y = best.params[0], best.params[1]
+        if _outside(x, y, width, height) > 0:
+            # On the wall, then everything else fitted again around it.
+            cx, cy = min(max(x, 0.0), width), min(max(y, 0.0), height)
+            best = _fit(pairs, base, best.name, best.terms, best.mirror, best.slant,
+                        start=list(best.params), fixed_xy=(cx, cy))
+    proposal = best.placement(current)
+    for term in best.terms:
+        low, high = BOUNDS[term]
+        if abs(proposal[term] - low) < 1e-6 or abs(proposal[term] - high) < 1e-6:
+            warnings.append(
+                "Eine Korrektur stößt an ihre Grenze — das Modul verhält sich anders als "
+                "erwartet, oder ein Standpunkt ist falsch markiert. Punkte prüfen."
+            )
+            break
+    return {"proposal": proposal, "mode": mode, "mirror_basis": mirror_basis, "model": best.name,
+            "terms": best.terms, "candidates": candidates, "warnings": warnings}
+
+
+def _held_out_errors(pairs, current: dict, chosen: dict) -> list[float] | None:
+    """Each spot predicted by the *chosen* model fitted to the others.
+
+    Only for finding a spot marked in the wrong place — not an accuracy:
+    the model was chosen with every spot, the one left out included (the
+    cross-check in solve() redoes the choice). A flexible model can
+    swallow a bad spot when the choice is redone, and this still shows it.
+    """
+    n = len(pairs)
+    if chosen["model"] is None or chosen["mode"] != "full":
+        return None
+    terms = chosen["terms"]
+    if 2 * (n - 1) - (3 + len(terms)) < 1:
+        return None
+    base = {"mount_height_m": current["mount_height_m"], "target_height_m": current["target_height_m"]}
+    prop = chosen["proposal"]
+    start = [prop["x"], prop["y"], prop["angle"]] + [prop[t] for t in terms]
+    out = []
+    for i in range(n):
+        fit = _fit(pairs[:i] + pairs[i + 1:], base, chosen["model"], terms, prop["mirror"], prop["slant"], start=start)
+        (px, py), (qx, qy) = pairs[i]
+        rx, ry = geometry.to_room(px, py, fit.placement(base))
+        out.append(math.hypot(rx - qx, ry - qy))
+    return out
+
+
+def _rms(values: list[float]) -> float | None:
+    return round(math.sqrt(sum(v * v for v in values) / len(values)), 3) if values else None
+
+
+def _layout_warnings(pairs, current: dict) -> list[str]:
+    """Spot layouts that cannot tell the parameters apart."""
+    refs = [q for _, q in pairs]
+    n = len(refs)
+    out = []
+    if n >= 2:
+        spread = max(math.hypot(a[0] - b[0], a[1] - b[1]) for a in refs for b in refs)
+        if spread < MIN_SPREAD_M:
+            out.append(
+                "Die Standpunkte liegen keinen Meter auseinander — die Richtung wird dadurch "
+                "ungenau. Weiter auseinander stehen hilft."
+            )
+    if n >= 3:
+        mx = sum(q[0] for q in refs) / n
+        my = sum(q[1] for q in refs) / n
+        sxx = sum((q[0] - mx) ** 2 for q in refs) / n
+        syy = sum((q[1] - my) ** 2 for q in refs) / n
+        sxy = sum((q[0] - mx) * (q[1] - my) for q in refs) / n
+        half = (sxx + syy) / 2
+        root = math.sqrt(((sxx - syy) / 2) ** 2 + sxy * sxy)
+        if half + root > 0 and (half - root) / (half + root) < 0.03:
+            out.append(
+                "Die Standpunkte liegen fast auf einer Linie. Links/Rechts und die "
+                "Winkelkorrektur lassen sich so nicht bestimmen — ein Punkt abseits der Linie fehlt."
+            )
+        a = math.radians(current["angle"])
+        offs, dists = [], []
+        for qx, qy in refs:
+            dx, dy = qx - current["x"], qy - current["y"]
+            offs.append(math.degrees(math.atan2(dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a))))
+            dists.append(math.hypot(dx, dy))
+        if max(offs) - min(offs) < 20:
+            out.append(
+                "Alle Standpunkte liegen in fast derselben Richtung vom Sensor. Ob das Modul "
+                "Winkel verzerrt, zeigt sich erst mit Punkten links und rechts."
+            )
+        if max(dists) - min(dists) < 1.0:
+            out.append(
+                "Alle Standpunkte sind etwa gleich weit vom Sensor entfernt. Einen "
+                "Entfernungsfehler zeigen erst Punkte nah und fern."
+            )
+    return out
+
+
+def solve(pairs, placement: dict, width: float, height: float, checks=()) -> dict:
+    """A proposal for the placement and the sensor model, with three
+    different numbers for how well it does — kept apart on purpose:
+
+      fit_rms_m         how closely it fits the spots it was fitted to.
+                        Says little: more terms always fit better.
+      cv_rms_m          cross-check: every spot left out once, and the
+                        whole choice — model, mirror, slant — made again
+                        from the others, then the spot predicted. Honest
+                        about the method; still the same session, the
+                        same spots.
+      validation_rms_m  control spots (`checks`) that took no part in any
+                        of it. Only this is an independent check; only
+                        with at least two of them is the result called
+                        validated and given a grade.
+
+    `pairs` and `checks` are [((raw_x, raw_y), (room_x, room_y)), ...]:
+    the module's median report in sensor metres, and the spot marked on
+    the plan. `placement` is the sensor as stored, with mount_height_m and
     target_height_m; without a height the slant is not considered.
     Nothing is saved here.
     """
@@ -284,132 +472,18 @@ def solve(pairs, placement: dict, width: float, height: float) -> dict:
         "target_height_m": float(placement.get("target_height_m", 1.0)),
         **{k: placement.get(k, v) for k, v in NEUTRAL.items()},
     }
-    base = {"mount_height_m": current["mount_height_m"], "target_height_m": current["target_height_m"]}
-    warnings: list[str] = []
-    mirror_basis = "kept"
-    model_name = None
-    candidates: list[dict] = []
-    loo = None
-    loo_errors = None
     n = len(pairs)
-
-    if n < 3:
-        # Too few spots for anything but the placement: keep the sensor
-        # model as it is and fit where the sensor is and how it looks.
-        proposal = dict(current)
-        if n == 1:
-            mode = "direction"
-            angle, _ = fit_direction(
-                [(geometry.correct(px, py, current), q) for (px, py), q in pairs],
-                current["x"], current["y"], current["mirror"])
-            proposal["angle"] = angle
-            (px, py), (qx, qy) = pairs[0]
-            mismatch = abs(math.hypot(*geometry.correct(px, py, current)) - math.hypot(qx - current["x"], qy - current["y"]))
-            if mismatch > 0.4:
-                warnings.append(
-                    f"Der gemessene Abstand zum Sensor weicht um {mismatch * 100:.0f} cm vom Plan ab. "
-                    "Steht der Sensor auf dem Plan am richtigen Platz? Ein zweiter Standpunkt "
-                    "korrigiert auch die Position."
-                )
-        else:
-            mode = "full"
-            corrected = [(geometry.correct(px, py, current), q) for (px, py), q in pairs]
-            fits = {m: fit_free(corrected, m) for m in (False, True)}
-            d_plain = math.hypot(fits[False][0] - current["x"], fits[False][1] - current["y"])
-            d_mirror = math.hypot(fits[True][0] - current["x"], fits[True][1] - current["y"])
-            mirror = current["mirror"]
-            if abs(d_plain - d_mirror) > 0.3:
-                mirror = d_mirror < d_plain
-                mirror_basis = "position"
-            else:
-                warnings.append(
-                    "Ob links und rechts getauscht sind, lässt sich aus diesen Standpunkten "
-                    "nicht sicher sagen. Die Einstellung bleibt, wie sie ist. Ein weiterer "
-                    "Standpunkt abseits der Linie zwischen den bisherigen klärt es."
-                )
-            x, y, angle, _ = fits[mirror]
-            proposal.update(x=x, y=y, angle=angle, mirror=mirror)
-    else:
-        mode = "full"
-        slants = (False, True) if current["mount_height_m"] is not None else (False,)
-        fits: list[_Fit] = []
-        for name, terms in MODELS:
-            if 2 * n - (3 + len(terms)) < 2:
-                continue
-            for mirror in (False, True):
-                for slant in slants:
-                    fits.append(_fit(pairs, base, name, terms, mirror, slant))
-        # Mirror first: the best of each side, and whether the difference
-        # is evidence or noise.
-        best_side = {m: min((f for f in fits if f.mirror == m), key=lambda f: f.bic) for m in (False, True)}
-        gap = best_side[not current["mirror"]].bic - best_side[current["mirror"]].bic
-        if abs(gap) >= 6:
-            mirror = best_side[True].bic < best_side[False].bic
-            mirror_basis = "fit"
-        else:
-            d = {m: math.hypot(best_side[m].params[0] - current["x"], best_side[m].params[1] - current["y"])
-                 for m in (False, True)}
-            if abs(d[False] - d[True]) > 0.3:
-                mirror = d[True] < d[False]
-                mirror_basis = "position"
-            else:
-                mirror = current["mirror"]
-                warnings.append(
-                    "Ob links und rechts getauscht sind, lässt sich aus diesen Standpunkten "
-                    "nicht sicher sagen. Die Einstellung bleibt, wie sie ist. Ein weiterer "
-                    "Standpunkt abseits der Linie zwischen den bisherigen klärt es."
-                )
-        side = sorted((f for f in fits if f.mirror == mirror), key=lambda f: f.bic)
-        candidates = [
-            {"model": f.name, "slant": f.slant, "rms_m": round(math.sqrt(f.cost / n), 3), "score": round(f.bic, 1)}
-            for f in side
-        ]
-        inside = [f for f in side if _outside(f.params[0], f.params[1], width, height) <= MAX_OUTSIDE_M]
-        if not inside:
-            outside = _outside(side[0].params[0], side[0].params[1], width, height)
-            warnings.append(
-                f"Die Standpunkte ergäben einen Sensor {outside:.1f} m außerhalb des Raums. "
-                "Das passt nicht — die Position bleibt, nur die Richtung wird angepasst. "
-                "Stimmen Raummaße und markierte Punkte?"
-            )
-            mode = "direction"
-            mirror, mirror_basis = current["mirror"], "kept"
-            best = _fit(pairs, base, "placement", (), mirror, False, fixed_xy=(current["x"], current["y"]))
-        else:
-            best = inside[0]
-            x, y = best.params[0], best.params[1]
-            if _outside(x, y, width, height) > 0:
-                # On the wall, then everything else fitted again around it.
-                cx, cy = min(max(x, 0.0), width), min(max(y, 0.0), height)
-                best = _fit(pairs, base, best.name, best.terms, best.mirror, best.slant,
-                            start=list(best.params), fixed_xy=(cx, cy))
-        model_name = best.name
-        proposal = best.placement(current)
-        for term in best.terms:
-            low, high = BOUNDS[term]
-            if abs(proposal[term] - low) < 1e-6 or abs(proposal[term] - high) < 1e-6:
-                warnings.append(
-                    "Eine Korrektur stößt an ihre Grenze — das Modul verhält sich anders als "
-                    "erwartet, oder ein Standpunkt ist falsch markiert. Punkte prüfen."
-                )
-                break
-        if mode == "full":
-            loo_errors = _loo(pairs, base, best)
-            if loo_errors is not None:
-                loo = math.sqrt(sum(e * e for e in loo_errors) / n)
-        if n < 5:
-            warnings.append(
-                "Für Entfernungs- und Winkelkorrekturen braucht es mehr Standpunkte: fünf, "
-                "verteilt nah und fern, links und rechts."
-            )
-
-    if n >= 2:
-        spread = max(math.hypot(a[1][0] - b[1][0], a[1][1] - b[1][1]) for a in pairs for b in pairs)
-        if spread < MIN_SPREAD_M:
-            warnings.append(
-                "Die Standpunkte liegen keinen Meter auseinander — die Richtung wird dadurch "
-                "ungenau. Weiter auseinander stehen hilft."
-            )
+    chosen = _select(pairs, current, width, height)
+    held_out = _held_out_errors(pairs, current, chosen)
+    proposal = chosen["proposal"]
+    warnings = list(chosen["warnings"])
+    if chosen["model"] is not None and n < 5:
+        warnings.append(
+            "Für Entfernungs- und Winkelkorrekturen braucht es mehr Standpunkte: fünf, "
+            "verteilt nah und fern, links und rechts."
+        )
+    layout = _layout_warnings(pairs, current)
+    warnings += layout
 
     proposal["angle"] = round(_normalize(proposal["angle"]), 1)
     proposal["x"], proposal["y"] = round(proposal["x"], 3), round(proposal["y"], 3)
@@ -418,48 +492,72 @@ def solve(pairs, placement: dict, width: float, height: float) -> dict:
     proposal["range_offset_m"] = round(float(proposal["range_offset_m"]), 3)
     before = errors(pairs, current)
     after = errors(pairs, proposal)
-    rms_after = math.sqrt(sum(e * e for e in after) / n)
-    # A spot marked in the wrong place, found two ways, because each alone
-    # misses cases: in the fit to all spots a richer model can swallow
-    # the error; left out, a spot can fall where the others say little.
+
+    # Cross-check with the whole choice redone per fold.
+    cv_errors = None
+    if n >= 3:
+        cv_errors = []
+        for i in range(n):
+            fold = _select(pairs[:i] + pairs[i + 1:], current, width, height)["proposal"]
+            (px, py), (qx, qy) = pairs[i]
+            rx, ry = geometry.to_room(px, py, fold)
+            cv_errors.append(math.hypot(rx - qx, ry - qy))
+
+    # A spot marked in the wrong place, looked for three ways, because each
+    # alone misses cases: in the fit to all spots a richer model can
+    # swallow the error; left out with the choice redone, it can be
+    # swallowed again; left out under the chosen model, a spot can fall
+    # where the others say little.
     def stands_out(values, i):
         others = sorted(v for j, v in enumerate(values) if j != i)
         typical = others[len(others) // 2] if others else 0.0
         return values[i] > 0.4 and values[i] > 3 * max(typical, NOISE_M)
 
     for i in range(n if n >= 3 else 0):
-        by_fit = stands_out(after, i)
-        by_check = loo_errors is not None and stands_out(loo_errors, i)
-        if by_fit or by_check:
-            e = loo_errors[i] if by_check else after[i]
+        flagged = [v for v in (after, cv_errors, held_out) if v is not None and stands_out(v, i)]
+        if flagged:
+            e = max(v[i] for v in flagged)
             warnings.append(
                 f"Standpunkt {i + 1} passt nicht zu den anderen ({e * 100:.0f} cm daneben). "
                 "Falsch markiert oder bewegt? Neu messen oder entfernen — er verzerrt sonst das Ergebnis."
             )
-    check = loo if loo is not None else rms_after
-    quality = "good" if check <= 0.15 else "fair" if check <= 0.3 else "poor"
+
+    validation = errors(list(checks), proposal) if checks else []
+    validated = len(validation) >= 2
+    validation_rms = _rms(validation)
+    quality = None
+    if validated:
+        quality = "good" if validation_rms <= 0.15 else "fair" if validation_rms <= 0.3 else "poor"
+
     return {
         "x": proposal["x"], "y": proposal["y"], "angle": proposal["angle"], "mirror": bool(proposal["mirror"]),
         "slant": bool(proposal["slant"]),
         "range_scale": proposal["range_scale"],
         "range_offset_m": proposal["range_offset_m"],
         "azimuth_scale": proposal["azimuth_scale"],
-        "model": model_name,
-        "model_label": MODEL_LABELS.get(model_name) if model_name else None,
-        "mode": mode,
-        "mirror_basis": mirror_basis,
+        "model": chosen["model"],
+        "model_label": MODEL_LABELS.get(chosen["model"]) if chosen["model"] else None,
+        "mode": chosen["mode"],
+        "mirror_basis": chosen["mirror_basis"],
         "points": n,
         "errors_before_m": [round(v, 3) for v in before],
         "errors_after_m": [round(v, 3) for v in after],
-        "rms_before_m": round(math.sqrt(sum(e * e for e in before) / n), 3),
-        "rms_m": round(rms_after, 3),
-        "check_m": round(loo, 3) if loo is not None else None,
+        "rms_before_m": _rms(before),
+        "fit_rms_m": _rms(after),
+        "cv_rms_m": _rms(cv_errors) if cv_errors is not None else None,
+        "cv_errors_m": [round(v, 3) for v in cv_errors] if cv_errors is not None else None,
+        "validation_points": len(validation),
+        "validation_rms_m": validation_rms,
+        "validation_errors_m": [round(v, 3) for v in validation],
+        "validation_status": "validated" if validated else "unvalidated",
         "quality": quality,
-        "candidates": candidates,
+        "layout_ok": not layout,
+        "candidates": chosen["candidates"],
         "shift_m": round(math.hypot(proposal["x"] - current["x"], proposal["y"] - current["y"]), 3),
         "turn_deg": round(_normalize(proposal["angle"] - current["angle"]), 1),
         "mirror_changed": bool(proposal["mirror"]) != current["mirror"],
-        "model_changed": any(abs(float(proposal[k]) - float(current[k])) > 1e-6 for k in ("range_scale", "range_offset_m", "azimuth_scale"))
+        "model_changed": any(abs(float(proposal[k]) - float(current[k])) > 1e-6
+                             for k in ("range_scale", "range_offset_m", "azimuth_scale"))
         or bool(proposal["slant"]) != bool(current["slant"]),
         "warnings": warnings,
     }

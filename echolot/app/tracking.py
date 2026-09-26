@@ -108,7 +108,13 @@ class Tracker:
         return sorted((t for t in self.tracks if t.seen), key=lambda t: t.id)
 
     def update(self, points, now: float, *, confirm_s: float, alpha: float, spots=()) -> None:
-        """Take one report: `points` in sensor coordinates (metres)."""
+        """Take one report: `points` in sensor coordinates (metres), `now`
+        the time it arrived."""
+        # Forget what has not been reported for longer than the TTL before
+        # anything is matched: a target last seen ten seconds ago is not
+        # the same one as a report at the same spot now, and must not come
+        # back already confirmed.
+        self.tracks = [t for t in self.tracks if now - t.last_seen <= TRACK_TTL_S]
         # Nearest pairs first, each target and each point used once.
         centrality = [max(0.0, _centrality(px, py, spots)) for px, py in points]
         pairs = []
