@@ -56,7 +56,7 @@ def harness(tmp_path_factory):
         while True:
             reply = proc.stdout.readline().rstrip("\n")
             out.append(reply)
-            if not line.startswith("feed") or reply.startswith("end "):
+            if not line.startswith(("feed", "mounting ")) or reply.startswith("end "):
                 return out
 
     yield ask
@@ -249,3 +249,61 @@ def test_classify(harness, args, expected):
 def test_malformed_lines_are_refused(line):
     with pytest.raises(ValueError):
         parse_frame(line)
+
+
+# --- installation mode, height and angle ------------------------------------
+#
+# Byte layouts from smarthomeshop/ld2460 (see the header): set height and
+# angle is function 0x07 with height in cm and angle in 1/100 degree, both
+# little-endian; 0x08 reads them back; 0x09 sets the mode, 0x0A reads it.
+
+
+@pytest.mark.parametrize("mode, expected", [
+    (1, "fdfcfbfa090c000104030201"),
+    (2, "fdfcfbfa090c000204030201"),
+    (0, "<empty>"),
+    (3, "<empty>"),
+])
+def test_the_mode_command(harness, mode, expected):
+    assert harness(f"setmode {mode}") == [expected]
+
+
+def test_the_mounting_command_for_2_60_m_and_25_degrees(harness):
+    # 260 = 0x0104, 2500 = 0x09c4
+    assert harness("setmounting 260 2500") == ["fdfcfbfa070f000401c40904030201"]
+
+
+@pytest.mark.parametrize("height, angle", [(49, 2500), (501, 2500), (260, 9001)])
+def test_values_outside_the_limits_are_not_written(harness, height, angle):
+    assert harness(f"setmounting {height} {angle}") == ["<empty>"]
+
+
+def mounting(ask, hexbytes):
+    lines = ask(f"mounting {hexbytes}")
+    return lines[:-1]
+
+
+def test_what_the_module_reads_back_is_what_is_known(harness):
+    harness("reset")
+    harness("mounting-reset")
+    # Mode "side", then 2.60 m and 25.00 degrees.
+    assert mounting(harness, "fdfcfbfa0a0c000104030201") == ["mode mode=side known=0 h=0 a=0"]
+    assert mounting(harness, "fdfcfbfa080f000401c40904030201") == ["params mode=side known=1 h=260 a=2500"]
+
+
+def test_a_set_acknowledgement_changes_nothing_until_read_back(harness):
+    harness("reset")
+    harness("mounting-reset")
+    assert mounting(harness, "fdfcfbfa090c001204030201") == ["set-ok mode=unknown known=0 h=0 a=0"]
+    assert mounting(harness, "fdfcfbfa090c000204030201") == ["set-failed mode=unknown known=0 h=0 a=0"]
+    assert mounting(harness, "fdfcfbfa070c000104030201") == ["set-ok mode=unknown known=0 h=0 a=0"]
+    assert mounting(harness, "fdfcfbfa070c000004030201") == ["set-failed mode=unknown known=0 h=0 a=0"]
+
+
+def test_the_version_answer_names_the_mode_and_a_strange_mode_is_ignored(harness):
+    harness("reset")
+    harness("mounting-reset")
+    assert mounting(harness, "fdfcfbfa0b10000219060102" + "04030201") == ["mode mode=top known=0 h=0 a=0"]
+    assert mounting(harness, "fdfcfbfa0a0c000704030201") == ["none mode=top known=0 h=0 a=0"]
+    # Too short to hold height and angle.
+    assert mounting(harness, "fdfcfbfa080d00040104030201") == ["none mode=top known=0 h=0 a=0"]
