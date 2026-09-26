@@ -287,3 +287,95 @@ def test_listeners_hear_of_new_measurements_only():
         assert links.snapshot("dev").duplicates == 1
         await links.stop_all()
     asyncio.run(run())
+
+
+# --- the module's own mounting ----------------------------------------------
+
+MOUNT_ENTITIES = [Info(1, "Radar Frame"), Info(5, "Radar Mount Mode"), Info(6, "Radar Mount Height"),
+                  Info(7, "Radar Mount Angle")]
+
+
+class CommandClient(FakeClient):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.commands = []
+
+    def select_command(self, key, state):
+        self.commands.append(("select", key, state))
+
+    def number_command(self, key, state):
+        self.commands.append(("number", key, state))
+
+
+def test_the_mounting_is_what_the_module_read_back_and_listeners_hear_once(monkeypatch):
+    monkeypatch.setattr(radar_link, "MOUNTING_SETTLE_S", 0.05)
+
+    async def run():
+        FakeClient.entities = MOUNT_ENTITIES
+        heard = []
+        links = radar_link.RadarLinks(client_factory=CommandClient)
+        links.add_mounting_listener(heard.append)
+        await links.sync([device()])
+        await settle()
+        snap = links.snapshot("dev")
+        assert snap.mounting_entities and snap.mounting() is None
+        client = FakeClient.instances[0]
+        client.on_state(State(5, "side"))
+        client.on_state(State(6, 2.6000001))
+        assert snap.mounting() is None  # the angle is still missing
+        client.on_state(State(7, 25.0))
+        assert snap.mounting() == {"mode": "side", "height_m": 2.6, "angle_deg": 25.0}
+        await asyncio.sleep(0.15)
+        assert heard == ["dev"]
+        # Height and angle arrive one by one after a change: heard once.
+        client.on_state(State(6, 2.4))
+        client.on_state(State(7, 30.0))
+        await asyncio.sleep(0.15)
+        assert heard == ["dev", "dev"]
+        # A repeat of the same values is nothing new.
+        client.on_state(State(7, 30.0))
+        await asyncio.sleep(0.15)
+        assert heard == ["dev", "dev"]
+        # An unknown mode or a missing number is not a mounting.
+        client.on_state(State(5, "diagonal"))
+        assert snap.mounting() is None
+        await links.stop_all()
+    asyncio.run(run())
+
+
+def test_writing_sends_only_what_differs_and_needs_the_entities():
+    async def run():
+        FakeClient.entities = MOUNT_ENTITIES
+        links = radar_link.RadarLinks(client_factory=CommandClient)
+        await links.sync([device()])
+        await settle()
+        client = FakeClient.instances[0]
+        for state in (State(5, "side"), State(6, 2.6), State(7, 25.0)):
+            client.on_state(state)
+        links.link("dev").write_mounting("side", 2.4, 25.0)
+        assert client.commands == [("number", 6, 2.4)]
+        client.commands.clear()
+        links.link("dev").write_mounting("top", 2.4, 30.0)
+        assert client.commands == [("select", 5, "top"), ("number", 6, 2.4), ("number", 7, 30.0)]
+        await links.stop_all()
+        # Not connected any more.
+        with pytest.raises(radar_link.MountingError):
+            links_off = radar_link.RadarLink(device(), CommandClient, None)
+            links_off.write_mounting("side", 2.6, 25.0)
+
+        # A firmware without the entities.
+        FakeClient.entities = [Info(1, "Radar Frame")]
+        old = radar_link.RadarLinks(client_factory=CommandClient)
+        await old.sync([device()])
+        await settle()
+        with pytest.raises(radar_link.MountingError, match="neu bauen"):
+            old.link("dev").write_mounting("side", 2.6, 25.0)
+        await old.stop_all()
+    asyncio.run(run())
+
+
+def test_a_new_connection_forgets_the_mounting_until_the_module_says_it_again():
+    snap = radar_link.LinkSnapshot(device_id="dev")
+    snap.mount_mode, snap.mount_height_m, snap.mount_angle_deg = "side", 2.6, 25.0
+    snap.new_session()
+    assert snap.mounting() is None

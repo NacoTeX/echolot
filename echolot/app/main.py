@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from app import alignment, builder, devices, mqtt_bridge, reachability, rooms
 from app.board_registry import BOARDS
 from app.calibration import Captures
-from app.radar_link import links
+from app.radar_link import MOUNT_MODES, MountingError, links
 from app.room_engine import RoomEngine
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +35,24 @@ engine = RoomEngine(links)
 links.add_listener(engine.wake)
 captures = Captures(links)
 links.add_listener(captures.on_frame)
+
+
+def _module_mounting(device_id: str) -> bool:
+    """A module's mounting, as read back, into its room. True if the room
+    changed (first report, or a change that drops what was measured)."""
+    snap = links.snapshot(device_id)
+    mounting = snap.mounting() if snap else None
+    if mounting is None:
+        return False
+    return rooms.note_module_mounting(device_id, mounting) is not None
+
+
+def _on_module_mounting(device_id: str) -> None:
+    if _module_mounting(device_id):
+        asyncio.get_running_loop().create_task(refresh())
+
+
+links.add_mounting_listener(_on_module_mounting)
 
 
 def mqtt_wanted() -> bool:
@@ -223,6 +241,56 @@ async def api_create_device(payload: dict) -> dict:
 @app.get("/api/devices/{device_id}")
 def api_get_device(device_id: str) -> dict:
     return _device_view(_device_or_404(device_id))
+
+
+#: How long the mounting route waits for the module to read a change back.
+MOUNTING_CONFIRM_S = 6.0
+
+
+@app.put("/api/devices/{device_id}/mounting")
+async def api_set_module_mounting(device_id: str, payload: dict) -> dict:
+    """Write the module's own mounting — {mode: "side"|"top", height_m,
+    angle_deg} — and wait for it to read the change back.
+
+    `confirmed` says whether it did: the answer carries the mounting the
+    module reports, not the one asked for. A change the module confirms
+    drops what the room measured with the old one (rooms.note_module_mounting).
+    """
+    device = _device_or_404(device_id)
+    try:
+        mode = str(payload.get("mode"))
+        height = float(payload.get("height_m"))
+        angle = float(payload.get("angle_deg"))
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=422, detail="Montage braucht mode, height_m und angle_deg") from err
+    if mode not in MOUNT_MODES:
+        raise HTTPException(status_code=422, detail="Montage ist „side“ (Wand) oder „top“ (Decke)")
+    if not (0.5 <= height <= 5.0 and 0.0 <= angle <= 90.0 and math.isfinite(height) and math.isfinite(angle)):
+        raise HTTPException(status_code=422, detail="Höhe 0,5–5 m und Neigung 0–90°")
+    link = links.link(device.id)
+    if link is None:
+        raise HTTPException(status_code=409, detail="Der Sensor ist gerade nicht verbunden.")
+    wanted = {"mode": mode, "height_m": round(height, 2), "angle_deg": round(angle, 2)}
+    # What the room was measured with, on record before it changes — or
+    # the change would pass for the module's first word and drop nothing.
+    _module_mounting(device.id)
+    try:
+        link.write_mounting(mode, wanted["height_m"], wanted["angle_deg"])
+    except MountingError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    deadline = time.monotonic() + MOUNTING_CONFIRM_S
+    confirmed = False
+    while time.monotonic() < deadline:
+        now = link.snapshot.mounting()
+        if now is not None and rooms._same_mounting(now, wanted):
+            confirmed = True
+            break
+        await asyncio.sleep(0.2)
+    # Not waiting for the listener's settle time: the room is brought in
+    # line with the module before the answer, so the page shows both.
+    if _module_mounting(device.id):
+        await refresh()
+    return {"confirmed": confirmed, "mounting": link.snapshot.mounting(), "wanted": wanted}
 
 
 @app.patch("/api/devices/{device_id}")
@@ -415,6 +483,13 @@ def _room_or_404(room_id: str) -> rooms.Room:
 def _room_view(room: rooms.Room) -> dict:
     data = room.model_dump()
     data["alignment_state"] = rooms.alignment_state(room)
+    snap = links.snapshot(room.sensor.device_id)
+    # How the module says it is mounted, live: what it reads back now.
+    data["module"] = {
+        "connected": bool(snap and snap.connected),
+        "entities": bool(snap and snap.mounting_entities),
+        "mounting": snap.mounting() if snap else None,
+    }
     if room.image:
         data["image"] = {
             "url": f"api/rooms/{room.id}/image?v={room.image.get('version', 0)}",

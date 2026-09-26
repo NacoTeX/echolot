@@ -311,3 +311,48 @@ def test_a_restored_record_is_judged_against_the_room_as_it_is():
     back = rooms.restore_alignment(room.id, first.calibration.alignment_id, revision=wider.revision)
     assert back.sensor.x == 2.5
     assert rooms.alignment_state(back) == {"state": "stale", "changed": ["Raummaße geändert"]}
+
+
+# --- the module's own mounting ----------------------------------------------
+
+
+def test_the_first_word_from_the_module_is_only_noted():
+    room = with_standpoints()
+    align(room.id, 2.8)
+    before = rooms.get_room(room.id)
+    changed = rooms.note_module_mounting("dev-1", {"mode": "side", "height_m": 2.6, "angle_deg": 25.0})
+    assert changed is not None
+    assert changed.calibration.module_mounting == {"mode": "side", "height_m": 2.6, "angle_deg": 25.0}
+    # Nothing measured is dropped: it was measured with this mounting. And
+    # nothing an open editor holds has changed, so no new revision.
+    assert changed.calibration.alignment_id == before.calibration.alignment_id
+    assert changed.calibration.mounting_epoch == 0
+    assert changed.revision == before.revision and changed.sensor == before.sensor
+    # The same again is no news.
+    assert rooms.note_module_mounting("dev-1", {"mode": "side", "height_m": 2.6, "angle_deg": 25.004}) is None
+
+
+def test_a_changed_mounting_in_the_module_drops_what_was_measured():
+    room = with_standpoints()
+    rooms.update_calibration(room.id, calibration={"interference": [{"x": 1, "y": 1, "r": 0.3}],
+                                                   "interference_device_id": "dev-1"})
+    rooms.note_module_mounting("dev-1", {"mode": "side", "height_m": 2.6, "angle_deg": 25.0})
+    align(room.id, 2.8)
+    before = rooms.get_room(room.id)
+    changed = rooms.note_module_mounting("dev-1", {"mode": "side", "height_m": 2.4, "angle_deg": 30.0})
+    cal = changed.calibration
+    assert cal.invalidated_reason == "Montage im Modul geändert" and cal.mounting_epoch == 1
+    assert cal.interference == [] and cal.alignment_id is None and cal.alignment_draft is None
+    assert cal.module_mounting == {"mode": "side", "height_m": 2.4, "angle_deg": 30.0}
+    assert changed.sensor.mount_height_m == 2.4
+    assert changed.revision == before.revision + 1
+    # Another room's module is none of this room's business.
+    assert rooms.note_module_mounting("dev-9", {"mode": "side", "height_m": 2.4, "angle_deg": 30.0}) is None
+
+
+def test_a_swapped_sensor_starts_with_no_word_from_its_module():
+    room = with_standpoints()
+    rooms.note_module_mounting("dev-1", {"mode": "side", "height_m": 2.6, "angle_deg": 25.0})
+    room = rooms.get_room(room.id)
+    swapped = rooms.save_room(room.id, payload(room, sensor={**room.sensor.model_dump(), "device_id": "dev-2"}))
+    assert swapped.calibration.module_mounting is None

@@ -41,6 +41,7 @@
       this.proposal = null;
       this.pending = null; // a picked, unmeasured standpoint [x, y]
       this.pendingRole = "fit";
+      this.moduleForm = null; // mounting typed in, not yet written to the module
       this.remeasure = null; // id of the standpoint being measured again
       this.preview = null; // id of the history record drawn on the plan
       this.render();
@@ -241,12 +242,15 @@
       return `<div class="card"><h2>Störquellen lernen</h2>${body}</div>`;
     },
 
-    // Heights as the page has them: typed in, or as saved.
+    // Heights as the page has them: from the module when it says how it
+    // hangs on a wall, else typed in, or as saved.
     mounting() {
       const room = this.room();
       const saved = room ? room.sensor : {};
+      const mm = room && room.module && room.module.entities ? room.module.mounting : null;
       return {
-        mount_height_m: this.typedMount !== undefined ? this.typedMount : saved.mount_height_m ?? null,
+        mount_height_m: mm && mm.mode === "side" ? mm.height_m
+          : this.typedMount !== undefined ? this.typedMount : saved.mount_height_m ?? null,
         target_height_m: this.typedTarget !== undefined ? this.typedTarget : saved.target_height_m ?? 1,
       };
     },
@@ -276,16 +280,46 @@
       const cal = room.calibration || {};
       const s = room.sensor;
 
-      const mount = `<div class="cal-block"><h3>Montage</h3>
-        <div>
-          <label class="field"><span>Höhe des Sensors über dem Boden · m</span>
-            <input type="number" id="cal-mount" min="0.2" max="4" step="0.05" inputmode="decimal" placeholder="z. B. 2,0" value="${m.mount_height_m ?? ""}"></label>
-          <label class="field"><span>Gemessen wird</span>
+      const targetField = `<label class="field"><span>Gemessen wird</span>
             <select id="cal-target">${[[1.1, "Oberkörper im Stehen · 1,1 m"], [1.0, "Oberkörper · 1,0 m"], [0.8, "Oberkörper im Sitzen · 0,8 m"]].map(([v, l]) =>
-              `<option value="${v}" ${Math.abs(m.target_height_m - v) < 0.01 ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        </div>
-        <p class="hint">Hängt das Radar höher als der Oberkörper, misst es womöglich die schräge Linie zu dir, nicht den Abstand am Boden. Mit der Höhe prüft die Kalibrierung beides und nimmt, was die Messung zeigt.</p>
-        <div class="actions"><button class="btn small" data-remount ${measuring ? "disabled" : ""}>${icon("rotate")}Sensor neu montiert …</button></div></div>`;
+              `<option value="${v}" ${Math.abs(m.target_height_m - v) < 0.01 ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
+      const remount = `<button class="btn small" data-remount ${measuring ? "disabled" : ""}>${icon("rotate")}Sensor neu montiert …</button>`;
+      const mod = room.module || {};
+      let mount;
+      if (mod.entities) {
+        // The module keeps its own mounting and computes its positions
+        // with it: shown as it reads it back, changed by writing to it.
+        const mm = mod.mounting;
+        const f = this.moduleForm || (mm ? { ...mm } : { mode: "side", height_m: m.mount_height_m ?? 2.6, angle_deg: 30 });
+        const same = mm && mm.mode === f.mode && Math.abs(mm.height_m - f.height_m) < 0.005 && Math.abs(mm.angle_deg - f.angle_deg) < 0.005;
+        const said = mm
+          ? `<div class="notice ok">${icon("check")}<div class="grow"><strong>Das Modul meldet</strong>${mm.mode === "side" ? "Wand" : "Decke"} · ${f2(mm.height_m)} m · ${E.formatNumber(mm.angle_deg, 1)}° Neigung</div></div>`
+          : `<div class="notice warn">${icon("alert")}<div class="grow">${mod.connected ? "Das Modul hat seine Montage noch nicht gemeldet." : "Der Sensor ist nicht verbunden — was das Modul eingestellt hat, ist gerade nicht lesbar."}</div></div>`;
+        mount = `<div class="cal-block"><h3>Montage</h3>${said}
+          <div class="field"><span>Montageart</span><div class="segmented" id="cal-mode">
+            <button type="button" data-mode="side" class="${f.mode === "side" ? "active" : ""}">Wand</button>
+            <button type="button" data-mode="top" class="${f.mode === "top" ? "active" : ""}">Decke</button></div></div>
+          <div class="row2">
+            <label class="field"><span>Höhe über dem Boden · m</span>
+              <input type="number" id="cal-mheight" min="0.5" max="5" step="0.01" inputmode="decimal" value="${f.height_m}"></label>
+            <label class="field"><span>Neigung nach unten · °</span>
+              <input type="number" id="cal-mangle" min="0" max="90" step="0.5" inputmode="decimal" value="${f.angle_deg}"></label>
+          </div>
+          <p class="hint">Das Modul rechnet Montageart, Höhe und Neigung selbst in die Positionen ein, die es meldet. Hi-Link empfiehlt an der Wand 2,2–2,7 m Höhe und 25–40° Neigung. Wer sie ändert, ändert, was das Modul meldet: Ausrichtung und Störquellen werden dann verworfen.</p>
+          <div class="actions"><button class="btn primary" data-write-mount ${same || !mod.connected || measuring ? "disabled" : ""}>${icon("check")}Ins Modul schreiben</button></div>
+          ${targetField}
+          <div class="actions">${remount}</div></div>`;
+      } else {
+        mount = `<div class="cal-block"><h3>Montage</h3>
+          ${mod.connected ? `<div class="notice warn">${icon("alert")}<div class="grow">Die Firmware auf dem Sensor kennt die Montage des Moduls noch nicht. Neu bauen und flashen — dann lassen sich Montageart, Höhe und Neigung hier ins Modul schreiben.</div></div>` : ""}
+          <div>
+            <label class="field"><span>Höhe des Sensors über dem Boden · m</span>
+              <input type="number" id="cal-mount" min="0.2" max="4" step="0.05" inputmode="decimal" placeholder="z. B. 2,0" value="${m.mount_height_m ?? ""}"></label>
+            ${targetField}
+          </div>
+          <p class="hint">Hängt das Radar höher als der Oberkörper, misst es womöglich die schräge Linie zu dir, nicht den Abstand am Boden. Mit der Höhe prüft die Kalibrierung beides und nimmt, was die Messung zeigt.</p>
+          <div class="actions">${remount}</div></div>`;
+      }
 
       // Spots to fit and control spots, each numbered in its own series;
       // the proposal's errors come in the same two orders.
@@ -469,6 +503,33 @@
         this.drawExtra();
       }));
       on("[data-remount]", () => this.remount());
+      const form = () => {
+        const room = this.room();
+        const mm = room.module && room.module.mounting;
+        return this.moduleForm || (mm ? { ...mm } : { mode: "side", height_m: this.mounting().mount_height_m ?? 2.6, angle_deg: 30 });
+      };
+      host.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
+        this.moduleForm = { ...form(), mode: b.dataset.mode };
+        this.renderSide();
+      }));
+      // Typing changes only the form and whether there is something to
+      // write. No re-render: it would pull the field out from under a
+      // blur, and with it the tap on the button that caused the blur.
+      for (const [id, key] of [["#cal-mheight", "height_m"], ["#cal-mangle", "angle_deg"]]) {
+        const input = host.querySelector(id);
+        if (input) input.addEventListener("input", () => {
+          const v = Number(input.value.replace(",", "."));
+          if (!Number.isFinite(v)) return;
+          this.moduleForm = { ...form(), [key]: v };
+          const room = this.room();
+          const mm = room.module && room.module.mounting;
+          const f = this.moduleForm;
+          const same = mm && mm.mode === f.mode && Math.abs(mm.height_m - f.height_m) < 0.005 && Math.abs(mm.angle_deg - f.angle_deg) < 0.005;
+          const button = host.querySelector("[data-write-mount]");
+          if (button) button.disabled = !!same || !(room.module && room.module.connected) || !!this.busy();
+        });
+      }
+      on("[data-write-mount]", () => this.writeModuleMounting(form()));
       host.querySelectorAll("[data-preview]").forEach((b) => b.addEventListener("click", () => {
         this.preview = this.preview === b.dataset.preview ? null : b.dataset.preview;
         this.renderSide();
@@ -828,6 +889,37 @@
       this.proposal = null; this.suggested = null; this.suggestedChecks = null; this.pending = null; this.remeasure = null; this.preview = null;
       this.renderSide();
       this.drawExtra();
+    },
+
+    async writeModuleMounting(f) {
+      const room = this.room();
+      const cal = room.calibration || {};
+      const measured = cal.aligned_at || (cal.interference || []).length || this.points().length;
+      if (!(f.height_m >= 0.5 && f.height_m <= 5 && f.angle_deg >= 0 && f.angle_deg <= 90)) {
+        toast("Höhe 0,5–5 m und Neigung 0–90°", "err");
+        return;
+      }
+      if (measured) {
+        const ok = await E.confirmDialog({ title: "Montage im Modul ändern?",
+          text: "Das Modul meldet danach andere Positionen. Ausrichtung, Sensormodell, Störquellen und Standpunkte passen dann nicht mehr und werden verworfen — danach neu lernen und ausrichten.",
+          confirm: "Schreiben und verwerfen", danger: true });
+        if (!ok) return;
+      }
+      const btn = this.el.querySelector("[data-write-mount]");
+      if (btn) btn.disabled = true;
+      try {
+        const r = await api(`api/devices/${encodeURIComponent(room.sensor.device_id)}/mounting`, { method: "PUT",
+          body: { mode: f.mode, height_m: f.height_m, angle_deg: f.angle_deg } });
+        if (r.confirmed) toast("Das Modul hat die Montage übernommen.");
+        else toast(r.mounting
+          ? `Das Modul hat die Änderung nicht bestätigt — es meldet weiter ${r.mounting.mode === "side" ? "Wand" : "Decke"}, ${f2(r.mounting.height_m)} m, ${E.formatNumber(r.mounting.angle_deg, 1)}°.`
+          : "Das Modul hat die Änderung nicht bestätigt.", "err");
+        this.moduleForm = null;
+      } catch (err) { toast(err.message, "err"); }
+      await E.refresh();
+      this.proposal = null; this.suggested = null; this.suggestedChecks = null; this.pending = null; this.remeasure = null;
+      if (this.points().length) await this.solve();
+      else { this.renderSide(); this.drawExtra(); }
     },
 
     async restore(id) {
