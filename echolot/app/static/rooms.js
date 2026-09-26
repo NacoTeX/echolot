@@ -159,6 +159,7 @@
             <div class="plan-stage" id="stage"><div class="plan-overlay" id="overlay" hidden></div></div>
             <div class="plan-legend">
               <span><i class="lg-dot"></i>erkanntes Ziel</span>
+              <span><i class="lg-dot lg-held"></i>kurz nicht gemeldet, zählt noch</span>
               <span><i class="lg-pending"></i>noch nicht bestätigt</span>
               <span><i class="lg-ring"></i>zählt nicht (außerhalb / ausgeschlossen / Störquelle)</span>
               <span><i class="lg-zone"></i>Zone</span>

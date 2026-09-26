@@ -253,6 +253,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   font-size: 12px; color: var(--muted); }
 .plan-legend i { display: inline-block; vertical-align: middle; margin-right: 6px; }
 .lg-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--target); }
+.lg-dot.lg-held { opacity: .45; }
 .lg-ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--faint); }
 .lg-fov { width: 18px; border-top: 2px dashed var(--faint); }
 .lg-pending { width: 10px; height: 10px; border-radius: 50%; border: 2px dashed var(--target); }
@@ -300,6 +301,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 @keyframes pulse { 0% { opacity: .5; transform: scale(.6); } 100% { opacity: 0; transform: scale(2.1); } }
 .pl-target.pending .dot { fill: var(--surface); stroke: var(--target); stroke-width: .035; stroke-dasharray: .05 .035; }
 .pl-target.interference .dot { fill: var(--surface); stroke: var(--present); stroke-width: .03; }
+/* Confirmed, but not in the latest report: still counted, drawn faded. */
+.pl-target.held .dot { opacity: .45; }
+.pl-target.held .halo { opacity: .07; }
+.pl-target.held .pulse { display: none; }
 .pl-target.pending .halo, .pl-target.pending .pulse,
 .pl-target.interference .halo, .pl-target.interference .pulse { display: none; }
 .pl-spot circle { fill: var(--present); fill-opacity: .08; stroke: var(--present); stroke-opacity: .7;

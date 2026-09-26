@@ -483,6 +483,7 @@ const Plan = (() => {
           excluded: "in einer Ausschlusszone — zählt nicht",
           pending: "noch nicht bestätigt — zählt, wenn es bleibt",
           interference: "an einer bekannten Störquelle — zählt nicht",
+          held: "gerade nicht gemeldet — zählt noch, wo es zuletzt war",
         }[t.status] || "erkanntes Ziel";
         el.setAttribute("aria-label", title);
         next.push(el);
