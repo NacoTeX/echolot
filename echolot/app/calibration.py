@@ -151,7 +151,7 @@ def analyze_empty(capture: Capture) -> dict:
     tracker = Tracker()
     paths: dict[int, list] = {}
     for index, (at, targets) in enumerate(capture.reports):
-        tracker.update(list(targets), at, confirm_s=0, alpha=1.0)
+        tracker.update(list(targets), at, confirm_s=0, tau=0.0)
         for track in tracker.visible():
             paths.setdefault(track.id, []).append((index, track.x, track.y))
     still: list[tuple[int, float, float]] = []

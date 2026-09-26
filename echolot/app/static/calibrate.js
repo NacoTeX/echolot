@@ -468,7 +468,7 @@
           <p class="hint">Ein neues Ziel zählt erst, wenn das Radar es so lange meldet. Reflexionen, die kurz aufblitzen, erreichen das nie. Auf der Karte sind sie bis dahin hohl gezeichnet. 0 s zählt jede Meldung sofort, wie Echolot 1.0.</p></label>
         <div class="field"><span>Glättung</span><div class="segmented" id="cal-smooth">
           ${[["off", "Aus"], ["normal", "Normal"], ["strong", "Stark"]].map(([k, v]) => `<button type="button" data-smooth="${k}" class="${cal.smoothing === k ? "active" : ""}">${v}</button>`).join("")}</div>
-          <p class="hint">Mittelt die Position über die letzten Meldungen. Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas später.</p></div>
+          <p class="hint">Mittelt die Position über etwa die letzte Drittelsekunde (normal) oder Dreiviertelsekunde (stark), gleich wie oft das Modul meldet. Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas später.</p></div>
         ${version ? `<p class="hint">Messdefinition ${version}. Home Assistant bekommt Version und Filter als Attribute jeder Entität.</p>` : ""}
       </div>`;
     },

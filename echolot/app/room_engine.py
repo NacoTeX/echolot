@@ -10,7 +10,8 @@ The rules, in order — measurement definition 7 (`MEASUREMENT_VERSION`):
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
      (the firmware's heartbeat) is no new report (radar_link):
-     positions are followed from report to report and smoothed, and a
+     positions are followed from report to report and smoothed with a
+     time constant (tracking.SMOOTHING_TAU), and a
      new target is confirmed only once it has been reported for the
      room's confirmation time outside the learned interference spots.
   2. Each target of the latest report is corrected by the sensor model
@@ -40,7 +41,9 @@ until a target first reported away from the entrances counts again. Without entr
 nothing of this applies. The person count stays what was measured.
 
 Definition 6 (1.6) put a report the sensor model cannot place at the
-sensor's foot and counted it there. Definition 5 (1.5) had no entrances.
+sensor's foot and counted it there, and smoothed by a fixed share per
+report — the same at five reports a second, five times slower at two
+than at ten. Definition 5 (1.5) had no entrances.
 Definition 4 (1.4) counted only the targets of the latest report: one
 dropped report took a person out of the count and put them back.
 Definition 3 (1.3) counted heartbeat repeats as reports, took only the
@@ -68,7 +71,7 @@ from dataclasses import dataclass, field
 from app import geometry
 from app.radar_frame import QUIET, RECEIVING
 from app.rooms import active_interference
-from app.tracking import SMOOTHING_ALPHA, Tracker
+from app.tracking import SMOOTHING_TAU, Tracker
 
 logger = logging.getLogger("echolot.engine")
 
@@ -331,7 +334,7 @@ class RoomEngine:
             follow.tracker.update(
                 points, received_at,
                 confirm_s=room.calibration.confirm_s,
-                alpha=SMOOTHING_ALPHA[room.calibration.smoothing],
+                tau=SMOOTHING_TAU[room.calibration.smoothing],
                 spots=spots,
             )
         return follow.tracker

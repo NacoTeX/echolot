@@ -299,10 +299,14 @@ Zeichnung; die Ausrichtung gilt dann als veraltet.
 - **Bestätigungszeit** (0–5 s, Standard 1 s): Ein neues Ziel zählt erst,
   wenn das Radar es so lange meldet, und zwar in mindestens der Hälfte der
   Meldungen. 0 s zählt jede Meldung sofort.
-- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel die
-  Hälfte (normal) oder ein Viertel (stark) des Wegs zur neuen Position.
-  Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden
-  Person etwas später.
+- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel ein
+  Stück zur neuen Position, umso mehr, je länger die letzte zurückliegt —
+  mit einer Zeitkonstante von 0,29 s (normal) oder 0,70 s (stark). So
+  dauert die Glättung gleich lang, ob das Modul zwei- oder zehnmal in der
+  Sekunde meldet; bei fünf Meldungen je Sekunde ist das die Hälfte
+  (normal) oder ein Viertel (stark) des Wegs, wie vor 1.7. Ruhigere Punkte
+  an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas
+  später.
 
 ## Wie gezählt wird
 
