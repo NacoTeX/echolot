@@ -5,6 +5,7 @@ reflector learned in the empty room does not count, a person does — and
 with the filters off the answers are exactly those of definition 1.
 """
 
+import math
 import random
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ from app.radar_frame import parse_frame  # noqa: E402
 from app.radar_link import LinkSnapshot  # noqa: E402
 from app.room_engine import MEASUREMENT_VERSION, RoomEngine  # noqa: E402
 from app.rooms import InterferenceSpot, Room  # noqa: E402
-from app.tracking import Tracker  # noqa: E402
+from app.tracking import SMOOTHING_TAU, Tracker  # noqa: E402
 
 
 class Clock:
@@ -213,20 +214,64 @@ def test_spots_learned_with_another_sensor_do_not_apply():
 
 
 def test_smoothing_moves_a_target_part_of_the_way():
+    """At five reports a second, "normal" moves a target half of the way,
+    as the fixed share before definition 7 did; "strong" a quarter."""
+    normal, strong = SMOOTHING_TAU["normal"], SMOOTHING_TAU["strong"]
     tracker = Tracker()
-    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, alpha=0.5)
-    tracker.update([(0.4, 2.0)], 0.2, confirm_s=0, alpha=0.5)
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=normal)
+    tracker.update([(0.4, 2.0)], 0.2, confirm_s=0, tau=normal)
     (track,) = tracker.visible()
     assert track.x == pytest.approx(0.2)
-    tracker.update([(0.4, 2.0)], 0.4, confirm_s=0, alpha=0.5)
+    tracker.update([(0.4, 2.0)], 0.4, confirm_s=0, tau=normal)
     assert tracker.visible()[0].x == pytest.approx(0.3)
+    slow = Tracker()
+    slow.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=strong)
+    slow.update([(0.4, 2.0)], 0.2, confirm_s=0, tau=strong)
+    assert slow.visible()[0].x == pytest.approx(0.1)
+
+
+def step_response(rate, tau):
+    """Seconds from the first report of a target 0.5 m farther on until
+    it has come 90 % of the way, the module reporting `rate` times a
+    second."""
+    tracker = Tracker()
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=tau)
+    for i in range(1, 60):
+        now = i / rate
+        tracker.update([(0.5, 2.0)], now, confirm_s=0, tau=tau)
+        if tracker.visible()[0].x >= 0.45:
+            return now - 1 / rate
+    return None
+
+
+def test_the_smoothing_takes_the_same_time_however_often_the_module_reports():
+    """A fixed share per report took 1.5 s to catch up at two reports a
+    second and 0.3 s at ten. With a time constant it is the same time, but
+    for the step between two reports."""
+    for setting, (low, high) in (("normal", (0.4, 0.8)), ("strong", (1.2, 1.8))):
+        times = {rate: step_response(rate, SMOOTHING_TAU[setting]) for rate in (2, 5, 10)}
+        assert all(low <= t <= high for t in times.values()), (setting, times)
+        assert max(times.values()) - min(times.values()) <= 0.5, (setting, times)
+    # Off is off: every report as it is.
+    assert step_response(10, SMOOTHING_TAU["off"]) == pytest.approx(0.0)
+
+
+def test_reports_arriving_together_still_move_a_target():
+    """A burst after a stall arrives with one receive time; the second
+    report must not be lost to a gap of zero."""
+    tracker = Tracker()
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=SMOOTHING_TAU["normal"])
+    tracker.update([(0.4, 2.0)], 1.0, confirm_s=0, tau=SMOOTHING_TAU["normal"])
+    before = tracker.visible()[0].x
+    tracker.update([(0.4, 2.0)], 1.0, confirm_s=0, tau=SMOOTHING_TAU["normal"])
+    assert tracker.visible()[0].x > before + 0.001
 
 
 def test_two_people_keep_their_own_targets_when_the_module_swaps_the_order():
     tracker = Tracker()
-    tracker.update([(-1.0, 2.0), (1.0, 2.0)], 0.0, confirm_s=0, alpha=1.0)
+    tracker.update([(-1.0, 2.0), (1.0, 2.0)], 0.0, confirm_s=0, tau=0.0)
     ids = {round(t.x): t.id for t in tracker.visible()}
-    tracker.update([(1.1, 2.0), (-1.1, 2.0)], 0.2, confirm_s=0, alpha=1.0)
+    tracker.update([(1.1, 2.0), (-1.1, 2.0)], 0.2, confirm_s=0, tau=0.0)
     assert {round(t.x): t.id for t in tracker.visible()} == ids
 
 
@@ -358,10 +403,10 @@ def test_a_target_not_reported_for_longer_than_the_ttl_is_a_new_one():
     """Reproduced in the review: reports at t=0 and t=10 at the same spot
     kept id and confirmation although the TTL is 1.5 s."""
     tracker = Tracker()
-    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, alpha=1.0)
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=0.0)
     (first,) = tracker.visible()
     assert first.confirmed
-    tracker.update([(0.0, 2.0)], 10.0, confirm_s=1.0, alpha=1.0)
+    tracker.update([(0.0, 2.0)], 10.0, confirm_s=1.0, tau=0.0)
     (second,) = tracker.visible()
     assert second.id != first.id and not second.confirmed
 
@@ -596,3 +641,50 @@ def test_an_entrance_is_no_detection_zone():
     at_door = seated(rig, at="25,15")
     assert at_door["targets"][0]["zones"] == [] and at_door["count"] == 1
     assert [z["id"] for z in at_door["zones"]] == ["sofa"]
+
+
+# --- reports the sensor model has no place for --------------------------------------
+
+def slanted():
+    return room(sensor={"device_id": "dev", "x": 3, "y": 0, "angle": 0,
+                        "slant": True, "mount_height_m": 2.2, "target_height_m": 1.0})
+
+
+def test_a_report_the_slant_cannot_explain_counts_nowhere():
+    """1.2 m between module and body: a slant line of 0.8 m has no place on
+    the floor. It used to count at the sensor's foot."""
+    rig = Rig(slanted())
+    for _ in range(7):
+        result = rig.report("0,8")
+    assert statuses(result) == ["invalid"] and result["count"] == 0 and not result["occupied"]
+
+
+def test_a_report_just_short_of_the_slant_is_somebody_at_the_foot():
+    """Within the tolerance a report is a person right below the sensor,
+    placed at its foot, as before."""
+    rig = Rig(slanted())
+    for _ in range(7):
+        result = rig.report("0,11")
+    assert statuses(result) == ["counted"] and result["count"] == 1
+    assert (result["targets"][0]["x"], result["targets"][0]["y"]) == (3.0, 0.0)
+    # And one farther out is placed by the slant as it always was.
+    far = Rig(slanted())
+    for _ in range(7):
+        result = far.report("0,25")
+    assert statuses(result) == ["counted"] and result["targets"][0]["y"] == pytest.approx(math.sqrt(2.5**2 - 1.2**2), abs=1e-3)
+
+
+def test_estimate_measurement_and_report_are_kept_apart():
+    """Review P0-03: raw_x/raw_y were the smoothed sensor position under a
+    name that said otherwise. The report as given, the report corrected
+    into the room, and the estimate that counts are now separate."""
+    rig = Rig(room(calibration={"confirm_s": 1.0, "smoothing": "strong"}))
+    for _ in range(7):
+        rig.report("-15,30")
+    (target,) = rig.report("-8,30")["targets"]  # 0.7 m on, within the gate
+    assert target["reported"] == [-0.8, 3.0]
+    assert target["measured"] == [2.2, 3.0]  # the sensor at (3, 0) looking down
+    # The estimate lags behind: a quarter of the way at five reports a second.
+    assert target["sensor"] == [pytest.approx(-1.325), pytest.approx(3.0)]
+    assert (target["x"], target["y"]) == (pytest.approx(1.675), pytest.approx(3.0))
+    assert (target["raw_x"], target["raw_y"]) == tuple(target["sensor"])

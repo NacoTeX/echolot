@@ -75,6 +75,8 @@ Zahl je Raum; auf dem Handy wird sie zur Leiste unten.
   sobald das Radar sie die Bestätigungszeit lang gemeldet hat.
 - **Hohle Punkte** — Ziele, die nicht zählen: hinter der Wand, in einer
   Ausschlusszone oder (orange umrandet) an einer gelernten Störquelle.
+  Gestrichelt hohl: Meldungen *ohne Ort*, die das Sensormodell nirgends im
+  Raum unterbringen kann (siehe „Wie gezählt wird“).
 - **Orange Kreise mit Kreuz** — gelernte Störquellen.
 - **Zonen** — leuchten auf, sobald jemand darin ist, mit der Zahl in der
   Ecke. Rechts stehen sie mit Zustand und Abwesenheits-Countdown.
@@ -90,6 +92,26 @@ Ist jemand verschwunden, ohne durch einen Eingang zu gehen, steht rechts
 Hat ein Raum keine aktuelle Messung, sagt die Karte warum — kein Sensor
 zugeordnet, keine Verbindung, Radar antwortet nicht — statt einen leeren
 Raum zu zeigen.
+
+**Aufzeichnen.** *Raum → Aufzeichnen* hält fest, was der Sensor meldet —
+jede Zeile, wie sie ankam, und jeden Verbindungswechsel —, zwischen 10 s
+und 60 min. Keine Schlüssel, kein WLAN in der Datei. Während der Aufnahme
+lassen sich Marken setzen: wie viele Personen im Raum sind, ob jemand in
+einer Zone ist, wo jemand steht (Punkt auf dem Plan antippen, mit
+Genauigkeit) und freie Notizen. Eine Aufzeichnung lässt sich danach
+
+- **auswerten** — dieselben Meldungen laufen noch einmal durch die
+  Auswertung, auf einer virtuellen Uhr und damit Schritt für Schritt
+  gleich. Mit Marken vergleicht der Bericht Personen, Zonen und
+  Standpunkte mit dem, was markiert war; ohne Marken zeigt er nur, was
+  gezählt wurde.
+- **vergleichen** — dieselbe Aufzeichnung mit anderen Filtern (etwa
+  längerer Bestätigungszeit) oder mit dem Raum, wie er jetzt ist.
+- **abspielen** — auf der Karte, bis 16-fach, mit Sprung zu jeder Marke.
+- **exportieren, importieren, löschen.** Insgesamt bis 100 MB und 50
+  Aufzeichnungen.
+
+So lässt sich eine Einstellung an echten Meldungen prüfen, bevor sie gilt.
 
 **Raum einrichten.** Werkzeugleiste über der Karte, Inspektor rechts:
 
@@ -152,15 +174,13 @@ nicht so verkleinern, dass Zonen oder Möbel außerhalb lägen.
 **Links und rechts.** Laut der Einbauanleitung des UltimateSensor V2, die
 sich auf Hi-Links Handbuch beruft, zeigt bei Wandmontage das Antennenende
 nach vorn in den Raum (+Y), und +X liegt rechts, vom Radar aus gesehen.
-Prüfen lässt sich das mit zwei Gängen: geradeaus vom Sensor weg wächst Y,
-von links nach rechts wächst X. Läuft der Punkt quer in die Gegenrichtung,
-beim Sensor „Links und rechts tauschen“ einschalten. Ändert sich X beim
-Seitwärtsgehen kaum, ist das Modul um 90° gedreht eingebaut — dann
-ausschalten und das Modul richtig drehen.
+Belegt ist das erst am eigenen Modul: *Kalibrieren → Achsen* prüft es mit
+zwei kurzen Gängen (siehe „Kalibrieren“) und sagt, ob „Links und rechts
+tauschen“ an gehört.
 
 ## Kalibrieren
 
-*Raum → Kalibrieren*, drei Reiter. Alles geschieht am lebenden Raum; die
+*Raum → Kalibrieren*, vier Reiter. Alles geschieht am lebenden Raum; die
 Kalibrierung ändert sich erst, wenn du *Übernehmen* tippst. Gemessene
 Standpunkte hebt Echolot vorher schon auf, damit ein Neuladen oder der
 Wechsel vom iPad zum Laptop nichts verliert.
@@ -294,19 +314,69 @@ Raumeditor, fragt Echolot beim Speichern: *umgehängt* verwirft wie oben,
 Positionen sind in Sensorkoordinaten gespeichert und passen zur neuen
 Zeichnung; die Ausrichtung gilt dann als veraltet.
 
+**Achsen.** Welche Seite des Moduls links ist, steht in keinem Handbuch,
+und ein Sensor, der auf dem Plan in die falsche Richtung blickt, fällt oft
+erst bei der Ausrichtung auf. Echolot zeichnet dafür zwei kurze Wege auf den
+Plan, beide vom Sensor aus gedacht: **1 — vom Sensor weg**, **2 — quer vor
+ihm vorbei**, jeweils von A nach B, gut 2 m lang und mindestens 30 cm von
+den Wänden. Führt ein Weg durch ein Möbelstück, sagt die Seite es; ein Tipp
+auf den Plan legt beide Wege an eine andere Stelle (nicht zu nah am Sensor,
+nicht außerhalb seines Blickfelds). Allein im Raum auf A stellen, *Gehen*
+tippen, nach dem Countdown kurz stehen bleiben, zügig und geradeaus nach B
+gehen und dort stehen bleiben, bis die Zeit um ist (8 s).
+
+Aus dem, was das Modul dabei gesehen hat, folgt:
+
+- **Links und rechts.** Mit dem Weg quer vor dem Sensor dreht nur eine der
+  beiden Einstellungen die gemessene Bewegung in die gezeichnete Richtung.
+  Vorgeschlagen wird sie nur, wenn sie höchstens 45° daneben liegt und die
+  andere mindestens 90°.
+- **Die Blickrichtung auf dem Plan.** Der Weg vom Sensor weg zeigt, wie weit
+  der Sensor auf dem Plan anders blickt als im Raum; ab 20° schlägt Echolot
+  eine neue Richtung vor, auf 5° gerundet. Links/Rechts und Richtung werden
+  zusammen bestimmt, weil bei gedrehtem Plan auch der Weg vom Sensor weg
+  seitlich läuft.
+- **Nichts**, wenn der Weg vom Sensor weg nicht als Entfernen gesehen wurde
+  — der Sensor steht dann auf dem Plan an einer anderen Wand oder blickt
+  ganz woandershin — oder der Weg quer zu keiner Einstellung eindeutig
+  passt. Die Seite sagt, was zu prüfen ist.
+
+Auf dem Plan erscheinen die gezeichneten Wege, rot gestrichelt, wo das Modul
+den Gang mit der jetzigen Einstellung sieht, und orange, wo es ihn nach
+*Übernehmen* sähe. *Übernehmen* setzt „Links und rechts tauschen“ und die
+Richtung; stimmt schon alles, heißt der Knopf *Als geprüft vermerken*. Der
+Server rechnet dabei aus den Gängen neu und nur für den Raum, wie er beim
+Auswerten war; eine bestehende Ausrichtung gilt danach als veraltet.
+Gänge mit einem anderen Sensor oder vor einer Neumontage gelten nicht.
+
+Den Gang findet Echolot unter allem, was das Modul meldet, mit einer
+eigenen Zielverfolgung: Jedes Ziel behält seine Spur, länger gesehene Ziele
+werden zuerst zugeordnet, keine Spur greift weiter als 30 cm, und Stücke
+einer Spur, die das Modul kurz verloren hatte, werden dort angesetzt, wohin
+die Person unterwegs war. Der Gang ist die Spur, die so weit vom Sensor
+begann und endete, wie A und B auf dem Plan liegen — das gilt, wie auch
+immer die Achsen stehen, und schließt ein Spiegelbild in Wand oder Scheibe
+aus, das weiter weg erscheint. Weicht das mehr als 1,5 m ab, gibt es kein
+Ergebnis. Liegt ein Modul auf der Seite, misst es quer die Höhe und meldet
+beim Quergang kaum Bewegung; auch das sagt die Seite.
+
 **Filter.**
 
 - **Bestätigungszeit** (0–5 s, Standard 1 s): Ein neues Ziel zählt erst,
   wenn das Radar es so lange meldet, und zwar in mindestens der Hälfte der
   Meldungen. 0 s zählt jede Meldung sofort.
-- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel die
-  Hälfte (normal) oder ein Viertel (stark) des Wegs zur neuen Position.
-  Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden
-  Person etwas später.
+- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel ein
+  Stück zur neuen Position, umso mehr, je länger die letzte zurückliegt —
+  mit einer Zeitkonstante von 0,29 s (normal) oder 0,70 s (stark). So
+  dauert die Glättung gleich lang, ob das Modul zwei- oder zehnmal in der
+  Sekunde meldet; bei fünf Meldungen je Sekunde ist das die Hälfte
+  (normal) oder ein Viertel (stark) des Wegs, wie vor 1.7. Ruhigere Punkte
+  an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas
+  später.
 
 ## Wie gezählt wird
 
-Messdefinition 6 (seit 1.6). Was eine **neue Meldung** ist, entscheidet
+Messdefinition 7 (seit 1.7). Was eine **neue Meldung** ist, entscheidet
 die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
 Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
 sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
@@ -329,7 +399,12 @@ Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
 
 1. Umrechnung vom Sensor in den Raum: erst das Sensormodell aus der
    Ausrichtung — Entfernungsmaßstab und -versatz, Winkelmaßstab,
-   Schrägstrecke —, dann Position, Blickrichtung, Spiegelung.
+   Schrägstrecke —, dann Position, Blickrichtung, Spiegelung. Kann das
+   Modell eine Meldung nicht unterbringen — misst das Modul die Schräge,
+   und die gemeldete Entfernung ist mehr als 20 cm kürzer als der
+   Höhenunterschied zwischen Modul und Körper —, hat sie **keinen Ort**:
+   Sie zählt nirgends, auch nicht am Fuß des Sensors, wo die Rechnung sie
+   hinlegen würde.
 2. Liegt es weiter als die **Randtoleranz** (Standard 30 cm) außerhalb der
    Wände, zählt es nicht. Radar sieht durch Trockenbau. Die Wände sind der
    Umriss des Raums, wenn er einen hat, sonst sein Rechteck; bei einem
@@ -353,7 +428,9 @@ dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
-Definition 5 (1.5) kannte keine Eingänge. Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
+Definition 6 (1.6) setzte solche Meldungen an den Fuß des Sensors und
+zählte sie dort, und glättete je Meldung um einen festen Anteil statt mit
+einer Zeitkonstante. Definition 5 (1.5) kannte keine Eingänge. Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
 ausgefallene Meldung nahm eine Person aus der Zählung und gab sie mit der
 nächsten zurück. Definition 3 (1.3) zählte die Lebenszeichen-Wiederholungen als Meldungen
 — ein Ziel wurde so schneller bestätigt, als das Radar es tatsächlich
@@ -407,7 +484,7 @@ und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen und Eingänge werden keine Entitäten. *Anwesenheit* des
 Raums schließt die Annahme an Eingängen ein, *Personen* nicht. Jede Entität
 trägt als Attribute die Regeln, nach denen ihr Wert entstand:
-`definition_version` (jetzt 6), `confirm_s`, `smoothing`, `entrances`,
+`definition_version` (jetzt 7), `confirm_s`, `smoothing`, `entrances`,
 `assume_present_s`, `interference_spots` und das Sensormodell
 (`range_scale`, `range_offset_m`, `azimuth_scale`, `slant`). So lässt sich ein
 Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
@@ -416,6 +493,35 @@ verschwinden aus Home Assistant; die Löschung steht in einer Warteschlange
 auf der Platte, bis der Broker sie bestätigt hat, und übersteht auch einen
 Neustart. Von dort exportieren Home Assistants eigene Brücken — HomeKit,
 Matter, Google, Alexa — die Entitäten weiter.
+
+**Ein Raum im Dashboard.** Auf der Raumseite zeigt *Im Dashboard*, wie der
+Raum live in ein Home-Assistant-Dashboard kommt — Plan, Personen, Zonen,
+wie in Echolot:
+
+1. Die Karte `echolot-room-card.js` herunterladen und als
+   `/config/www/echolot-room-card.js` ablegen (etwa mit dem File-editor-
+   oder Samba-Add-on). Einmal für alle Räume.
+2. Einstellungen → Dashboards → ⋮ → Ressourcen: `/local/echolot-room-card.js`
+   als *JavaScript-Modul* eintragen, die Seite neu laden.
+3. Im Dashboard eine Karte *Manuell* hinzufügen, mit dem YAML von der
+   Raumseite:
+
+   ```yaml
+   type: custom:echolot-room-card
+   addon: local_echolot   # das Kürzel des Add-ons, von der Raumseite
+   room: r1a2b3c4d        # die Raum-ID, von der Raumseite
+   title: Wohnzimmer      # optional
+   ```
+
+Home Assistant lässt den Browser nur über Ingress an ein Add-on, und nur mit
+einer Sitzung, die ein **Administrator** beim Supervisor öffnen darf. Die
+Karte tut, was Home Assistants eigene Add-on-Seite tut: Sie öffnet die
+Sitzung, bestätigt sie jede Minute und zeigt die Seite `embed?room=…` des
+Add-ons in einem Rahmen; mehrere Karten teilen sich eine Sitzung. Andere
+Benutzer sehen einen Hinweis statt des Plans — für sie sind die
+MQTT-Entitäten da. Was die Karte zeigt, zeichnet das Add-on; ein Update
+des Add-ons aktualisiert sie also mit, die Datei in `/config/www` bleibt
+dieselbe. Hell und dunkel folgen Home Assistant.
 
 ## Die Verbindung zu den Sensoren
 
@@ -474,8 +580,16 @@ Annahmen:
   Sensor **„Stille = leerer Raum“** ein. Die Diagnose-Entität „Radar Empty
   Reports“ zählt leere Meldungen — steigt sie im leeren Raum, ist die Frage
   beantwortet, und der Schalter bleibt aus.
-- **Das Vorzeichen der X-Achse** — jetzt beschrieben (siehe „Links und
-  rechts“), aber an einem Modul nur mit den zwei Gängen zu bestätigen.
+- **Das Vorzeichen der X-Achse** — beschrieben (siehe „Links und
+  rechts“), an einem echten Modul aber erst mit den zwei Gängen unter
+  *Kalibrieren → Achsen* bestätigt. Die Auswertung der Gänge ist an
+  simulierten Meldungen mit Reflexionen, Blitzen, Aussetzern und
+  Spiegelbildern geprüft (0,3 m Zuordnung, 1 s Gedächtnis, 1,5 m
+  Entfernungsabweichung); wie gut das zu einem echten LD2460 passt, zeigt
+  erst der Raum.
+- **Die Dashboard-Karte** ist gegen eine Nachbildung von Home Assistant
+  geprüft, die Ingress-Sitzungen wie der Supervisor behandelt, noch nicht
+  in einem echten Home Assistant.
 - **Der Aufbau der Quittungen für `06` und `0B` und der Montage-Befehle
   `07`–`0A`.** Er stammt aus dem MIT-lizenzierten
   [smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460) und
@@ -544,6 +658,15 @@ Firmware vom Add-on aus an den Sensor — funktioniert aus jedem Browser,
 auch vom iPad. Adresse leer lassen heißt `<knotenname>.local`; wo mDNS nicht
 durchkommt, die IP eintragen. Lehnt der Sensor das OTA-Passwort ab, ist
 seine Firmware älter als dieses Passwort: einmal per USB flashen.
+
+**Welche Firmware läuft.** Die Sensorseite zeigt, solange der Sensor
+verbunden ist, was er selbst meldet: die *Echolot-Firmware* als Add-on-Version und Stand
+(`1.7.0 · a1b2c3d4`, ein Fingerabdruck von Baustein und Vorlage), die
+ESPHome-Version mit Bauzeit und die *Radarchip-Firmware* des LD2460.
+Stimmt der Stand mit dem überein, was dieses Add-on baut, steht dort
+*aktuell*, sonst *älterer Stand* — neu bauen und aufspielen. Meldet der
+Sensor keinen Stand (vor 1.7 gebaut), steht dort *unbekannt*; eine fremde
+Firmware zeigt ihren Projektnamen.
 
 **Einstellungen ändern.** Alles außer dem Namen steckt in der Firmware.
 Nach dem Speichern zeigt der Sensor „Einstellungen nicht geflasht“, bis neu

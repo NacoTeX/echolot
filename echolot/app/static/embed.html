@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de" class="embed">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Echolot · Raum</title>
+  <!-- One room, live, inside the dashboard card (app/dashboard.py). -->
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body class="embed">
+  <main class="embed-card">
+    <div class="embed-head">
+      <div class="embed-title"><span id="embed-name">Echolot</span><span class="embed-dims" id="embed-dims"></span></div>
+      <span id="embed-chip" class="chip">…</span>
+    </div>
+    <div class="plan-stage embed-stage" id="embed-stage"></div>
+    <p class="embed-note" id="embed-note" hidden></p>
+  </main>
+  <script src="static/embed.js"></script>
+  <script src="static/geometry.js"></script>
+  <script src="static/plan.js"></script>
+  <script>EcholotEmbed.start();</script>
+</body>
+</html>

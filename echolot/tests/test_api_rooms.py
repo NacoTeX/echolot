@@ -339,7 +339,7 @@ def test_live_names_the_measurement_definition(client):
     c, _ = client
     _, room = room_with_sensor(c)
     live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
-    assert live["filter"]["definition_version"] == 6
+    assert live["filter"]["definition_version"] == 7
 
 
 def test_taking_single_spots_away_keeps_the_learning_date(client):
@@ -375,7 +375,6 @@ def test_walls_are_saved_through_the_editor_route(client):
 
 
 def test_the_sensor_model_is_fitted_applied_and_reset_through_the_routes(client):
-    import math
 
     c, _ = client
     _, room = room_with_sensor(c)
@@ -834,3 +833,180 @@ def test_calling_the_room_empty_runs_on_the_engine_s_loop():
     import inspect
     from app import main
     assert inspect.iscoroutinefunction(main.api_clear_presence)
+
+
+def test_the_device_page_says_which_firmware_the_node_runs_while_connected(client, monkeypatch):
+    from app import builder
+    from app.radar_link import LinkSnapshot
+
+    c, _ = client
+    device = new_device(c)
+
+    class Stub:
+        snapshot = LinkSnapshot(device_id=device["id"], connected=True)
+
+    with_stub(monkeypatch, device["id"], Stub)
+
+    def view():
+        return next(d for d in c.get("/api/devices").json() if d["id"] == device["id"])
+
+    Stub.snapshot.node = {"project": builder.FIRMWARE_PROJECT, "version": "1.6.0 (00000000)",
+                          "esphome": "2026.6.5", "compiled": "Sep 26 2026, 20:30:12"}
+    running = view()["firmware_running"]
+    assert running["state"] == "outdated" and running["version"] == "1.6.0"
+    assert running["builds"] == {"version": builder.addon_version(), "revision": builder.firmware_revision()}
+    Stub.snapshot.node = {**Stub.snapshot.node, "version": builder.firmware_version()}
+    assert view()["firmware_running"]["state"] == "current"
+    # Disconnected, the last answer may describe an image since replaced.
+    Stub.snapshot.connected = False
+    assert view()["firmware_running"] is None
+
+
+def test_a_mounting_report_needs_no_running_loop_and_its_refresh_is_held(client, monkeypatch):
+    """The link reports a module's mounting from inside the add-on's loop.
+    Called from anywhere else, the change is still stored and nothing
+    raises; inside the loop the refresh it starts is held until done — the
+    loop keeps only a weak reference to a task."""
+    import asyncio
+
+    from app import main
+
+    c, _ = client
+    device, room = room_with_sensor(c)
+    stub = StubLink()
+    with_stub(monkeypatch, device["id"], stub)
+
+    main._on_module_mounting(device["id"])  # no loop running here
+    assert c.get(f"/api/rooms/{room['id']}").json()["calibration"]["module_mounting"]["height_m"] == 2.2
+
+    refreshed = []
+
+    async def fake_refresh():
+        await asyncio.sleep(0)
+        refreshed.append(True)
+
+    monkeypatch.setattr(main, "refresh", fake_refresh)
+    stub.snapshot.mount_height_m = 2.6
+
+    async def run():
+        main._on_module_mounting(device["id"])
+        assert len(main._background_refreshes) == 1
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert refreshed == [True] and not main._background_refreshes
+
+    asyncio.run(run())
+    assert c.get(f"/api/rooms/{room['id']}").json()["calibration"]["module_mounting"]["height_m"] == 2.6
+
+
+# --- recordings (review P0-03) ----------------------------------------------------------
+
+
+def test_a_recording_through_the_api_from_start_to_playback(client):
+    import time as _time
+
+    from app import main
+
+    c, _ = client
+    device, room = room_with_sensor(c)
+    rid = room["id"]
+    base = f"/api/rooms/{rid}/recording"
+    started = c.post(base, json={"limit_s": 60, "note": "Sofa"})
+    assert started.status_code == 201, started.text
+    rec_id = started.json()["id"]
+    assert c.post(base, json={}).status_code == 409  # one at a time
+    for i in range(8):
+        main.recorder.on_line(device["id"], f"1|R|{i + 1}|-15,30", _time.monotonic())
+    assert c.post(f"{base}/marks", json={"kind": "people", "count": 1}).status_code == 201
+    assert c.post(f"{base}/marks", json={"kind": "zone", "zone_id": "nope", "inside": True}).status_code == 409
+    assert c.post(f"{base}/marks", json={"kind": "standpoint"}).status_code == 422
+    status = c.get(base).json()
+    assert status["lines"] == 8 and status["marks"] == 1 and status["remaining_s"] <= 60
+    assert c.post(f"{base}/stop").json()["state"] == "done"
+    assert c.get(base).status_code == 204
+    assert c.post(f"{base}/stop").status_code == 404
+
+    listing = c.get("/api/recordings").json()
+    assert [e["id"] for e in listing["recordings"]] == [rec_id] and listing["active"] == {}
+    assert listing["usage"]["bytes_used"] == listing["recordings"][0]["bytes"] > 0
+
+    exported = c.get(f"/api/recordings/{rec_id}/export")
+    assert exported.status_code == 200 and "attachment" in exported.headers["content-disposition"]
+    secrets = c.get(f"/api/devices/{device['id']}/credentials").json()
+    body = exported.text
+    for value in (*[v for v in secrets.values() if isinstance(v, str) and len(v) >= 6], '"netz"'):
+        assert value not in body
+
+    imported = c.post("/api/recordings/import", content=exported.content,
+                      headers={"content-type": "application/x-ndjson"})
+    assert imported.status_code == 201 and imported.json()["imported"] is True
+    assert c.post("/api/recordings/import", content=b"not a recording").status_code == 422
+
+    played = c.post(f"/api/recordings/{rec_id}/replay", json={
+        "variants": [{"label": "Wie aufgezeichnet"}, {"label": "Sofort", "base": "current", "settings": {"confirm_s": 0}}],
+        "timeline": True,
+    }).json()
+    assert [v["label"] for v in played["variants"]] == ["Wie aufgezeichnet", "Sofort"]
+    assert "timeline" in played["variants"][0] and "timeline" not in played["variants"][1]
+    assert played["variants"][0]["report"]["summary"]["lines"] == 8
+    assert played["marks"][0]["kind"] == "people"
+    assert c.post(f"/api/recordings/{rec_id}/replay", json={"variants": [{"base": "bogus"}]}).status_code == 422
+
+    assert c.delete(f"/api/recordings/{rec_id}").status_code == 204
+    assert c.get(f"/api/recordings/{rec_id}/export").status_code == 404
+    assert c.delete(f"/api/recordings/{rec_id}").status_code == 404
+
+
+def test_the_axes_are_checked_by_two_walks_and_taken_on_request(client):
+    c, _ = client
+    device, room = room_with_sensor(c)  # 6 x 4, sensor at (3, 0) looking down
+    rid = room["id"]
+    walk = {"kind": "walk", "delay_s": 0, "duration_s": 5, "walk": {"leg": "across", "from": [2, 2], "to": [4, 2]}}
+    started = c.post(f"/api/rooms/{rid}/capture", json=walk)
+    assert started.status_code == 201, started.text
+    assert started.json()["walk"] == {"leg": "across", "from": [2.0, 2.0], "to": [4.0, 2.0]}
+    short = {**walk, "walk": {"leg": "across", "from": [2, 2], "to": [2.5, 2]}}
+    assert "kürzer als 1 m" in c.post(f"/api/rooms/{rid}/capture", json=short).json()["detail"]
+    assert c.post(f"/api/rooms/{rid}/capture", json={**walk, "walk": {"leg": "up"}}).status_code == 422
+
+    # A module that counts x the other way round than the plan assumes.
+    walked = {"device_id": device["id"], "epoch": 0}
+    legs = {
+        "away": {"from": [3, 1], "to": [3, 3], "start_raw": [0, 1], "end_raw": [0, 3]},
+        "across": {"from": [2, 2], "to": [4, 2], "start_raw": [1, 2], "end_raw": [-1, 2]},
+    }
+    answer = c.post(f"/api/rooms/{rid}/axes", json={**legs, **walked})
+    assert answer.status_code == 200, answer.text
+    verdict = answer.json()
+    assert verdict["ok"] and verdict["mirror"] is True and verdict["angle"] is None
+    assert verdict["basis"] == {**walked, "revision": c.get(f"/api/rooms/{rid}").json()["revision"]}
+    assert c.post(f"/api/rooms/{rid}/axes", json=walked).status_code == 422
+    bad = {**legs, "away": {**legs["away"], "end_raw": [0, "x"]}}
+    assert c.post(f"/api/rooms/{rid}/axes", json={**bad, **walked}).status_code == 422
+    # Walked with another sensor, or before a remount: they say nothing about this one.
+    other = c.post(f"/api/rooms/{rid}/axes", json={**legs, "device_id": "else", "epoch": 0})
+    assert other.status_code == 409 and other.json()["detail"]["changed"] == ["anderer Sensor"]
+    earlier = c.post(f"/api/rooms/{rid}/axes", json={**legs, **walked, "epoch": 7})
+    assert earlier.status_code == 409 and earlier.json()["detail"]["changed"] == ["Sensor neu montiert"]
+    assert c.get(f"/api/rooms/{rid}").json()["sensor"]["mirror"] is False  # nothing taken yet
+
+    # Taken: the server works it out once more, for the room it was shown for.
+    assert c.put(f"/api/rooms/{rid}/calibration", json={"axes": legs}).status_code == 422
+    taken = c.put(f"/api/rooms/{rid}/calibration", json={"axes": {**legs, "basis": verdict["basis"]}})
+    assert taken.status_code == 200, taken.text
+    stored = taken.json()
+    assert stored["sensor"]["mirror"] is True and stored["sensor"]["angle"] == 0.0
+    check = stored["calibration"]["axes_check"]
+    assert check["mirror"] is True and check["mirror_changed"] is True and check["angle_changed"] is False
+    assert check["across_error_deg"] == verdict["across_error_deg"] and check["checked_at"]
+    # The room has changed since (it was just taken): the same verdict is not taken twice.
+    again = c.put(f"/api/rooms/{rid}/calibration", json={"axes": {**legs, "basis": verdict["basis"]}})
+    assert again.status_code == 409 and again.json()["detail"]["changed"] == ["Raum geändert"]
+    assert again.json()["detail"]["room"]["sensor"]["mirror"] is True
+
+    # Walks that decide nothing are not taken.
+    along = {"across": {"from": [2, 2], "to": [4, 2], "start_raw": [0, 1], "end_raw": [0, 3]}}
+    fresh = c.post(f"/api/rooms/{rid}/axes", json={**along, **walked}).json()
+    assert not fresh["ok"]
+    refused = c.put(f"/api/rooms/{rid}/calibration", json={"axes": {**along, "basis": fresh["basis"]}})
+    assert refused.status_code == 422 and "keiner Einstellung eindeutig" in refused.json()["detail"]

@@ -150,14 +150,14 @@ def test_every_entity_carries_the_rules_behind_its_value(env):
     config = json.loads(payload_of(client, "homeassistant/sensor/echolot/room_r1_zone_zsofa_count/config"))
     assert config["json_attributes_topic"] == "echolot/room_r1_zone_zsofa_count/attributes"
     attributes = json.loads(payload_of(client, "echolot/room_r1_zone_zsofa_count/attributes"))
-    assert attributes == {"definition_version": 6, "confirm_s": 1.0, "smoothing": "normal",
+    assert attributes == {"definition_version": 7, "confirm_s": 1.0, "smoothing": "normal",
                           "entrances": 0, "assume_present_s": 1800.0, "interference_spots": 0, "range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
 
 
 def test_the_rules_are_published_even_while_the_room_is_unavailable(env):
     bridge, client, _ = env
     mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result(available=False)])
-    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 6
+    assert json.loads(payload_of(client, "echolot/room_r1_occupancy/attributes"))["definition_version"] == 7
 
 
 def test_an_entity_from_1_0_learns_its_attributes_topic_and_takes_it_along(env):
@@ -245,3 +245,27 @@ def test_nothing_is_attempted_without_a_connection(env):
     bridge.connected = False
     mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result()])
     assert client.messages == []
+
+
+def test_a_room_is_turned_into_entities_once_not_every_round(env, monkeypatch):
+    """The engine publishes up to ten times a second. The same room object
+    means the same entities: they are built once, and again only for the
+    object the next load hands over."""
+    bridge, client, _ = env
+    built = []
+    real = mqtt_bridge.room_entities
+    monkeypatch.setattr(mqtt_bridge, "room_entities", lambda room: built.append(room.id) or real(room))
+    publisher = mqtt_bridge.RoomPublisher(bridge)
+    room = make_room()
+    for _ in range(5):
+        publisher.publish([room], [result()])
+    assert built == ["r1"]
+    # A new load: the zone was renamed. Rebuilt, and Home Assistant hears it.
+    renamed = make_room(zones=[{"id": "zsofa", "name": "Couch", "kind": "detect",
+                                "points": [[0, 2], [2, 2], [2, 4], [0, 4]]}])
+    publisher.publish([renamed], [result()])
+    assert built == ["r1", "r1"]
+    assert json.loads(payload_of(client, "homeassistant/sensor/echolot/room_r1_zone_zsofa_count/config"))["name"] == "Couch Personen"
+    # A room that is gone is not held on to.
+    publisher.publish([], [])
+    assert publisher._prepared == {}

@@ -26,16 +26,33 @@ Positions are kept in sensor coordinates, so a sensor moved or turned on
 the plan does not tear every target away from its history.
 
 This is also where positions are smoothed: each report moves a target
-part of the way towards the newly reported position, `alpha` of it.
+part of the way towards the newly reported position — the more of it the
+longer since the last one, `1 - exp(-dt / tau)`, so the smoothing takes
+the same time whether the module reports twice or ten times a second.
 """
 
 import math
 from dataclasses import dataclass
 
-#: Share of the way each report moves a target towards its new position.
-#: 1.0 is no smoothing. At five reports a second "normal" lags a walking
-#: person by about a report; "strong" by three.
-SMOOTHING_ALPHA = {"off": 1.0, "normal": 0.5, "strong": 0.25}
+#: Time constant of the smoothing, seconds; 0 is none. Chosen so that at
+#: five reports a second each report moves a target as far as the fixed
+#: shares before measurement definition 7 did — half of the way for
+#: "normal", a quarter for "strong" — and then independent of the rate:
+#: a fixed share per report lagged five times longer at two reports a
+#: second than at ten, and lost somebody walking at two.
+SMOOTHING_TAU = {"off": 0.0, "normal": 0.2 / math.log(2.0), "strong": 0.2 / math.log(4.0 / 3.0)}
+#: Reports arriving together — a burst after a stall, with one receive
+#: time — each move a target at least as far as one this long after the
+#: last would: none is lost to a gap of zero.
+MIN_SMOOTHING_DT_S = 0.05
+
+
+def smoothing_share(tau: float, dt: float) -> float:
+    """How much of the way to a new report a target moves, `dt` seconds
+    after the last one."""
+    if tau <= 0:
+        return 1.0
+    return 1.0 - math.exp(-max(dt, MIN_SMOOTHING_DT_S) / tau)
 #: A target standing in a spot takes a report away from the spot's centre
 #: over one at the centre — where the reflector is — as if the one at
 #: the centre were up to this much farther away. Somebody leaving a
@@ -105,9 +122,6 @@ class Tracker:
         self.tracks: list[Track] = []
         self._next_id = 1
 
-    def reset(self) -> None:
-        self.tracks = []
-
     def visible(self) -> list[Track]:
         """The targets of the latest report, in a stable order."""
         return sorted((t for t in self.tracks if t.seen), key=lambda t: t.id)
@@ -122,7 +136,7 @@ class Tracker:
             key=lambda t: t.id,
         )
 
-    def update(self, points, now: float, *, confirm_s: float, alpha: float, spots=()) -> None:
+    def update(self, points, now: float, *, confirm_s: float, tau: float, spots=()) -> None:
         """Take one report: `points` in sensor coordinates (metres), `now`
         the time it arrived."""
         # Forget what has not been reported for longer than the TTL before
@@ -150,8 +164,9 @@ class Tracker:
             matched_points.add(pi)
             track = self.tracks[ti]
             px, py = points[pi]
-            track.x += alpha * (px - track.x)
-            track.y += alpha * (py - track.y)
+            share = smoothing_share(tau, now - track.last_seen)
+            track.x += share * (px - track.x)
+            track.y += share * (py - track.y)
             track.reported = (px, py)
             track.last_seen = now
             track.seen = True

@@ -25,6 +25,14 @@ import math
 MODEL_DEFAULTS = {"range_scale": 1.0, "range_offset_m": 0.0, "azimuth_scale": 1.0, "slant": False}
 
 
+#: A report may lie this far below the range the sensor model can place
+#: (model_shortfall) and still be taken as standing at the sensor's foot,
+#: where `correct` puts it: two steps of the module's decimetre
+#: resolution. Chosen, not measured. Farther below, the model has no place
+#: for it, and it is not counted anywhere.
+MODEL_TOLERANCE_M = 0.2
+
+
 def is_neutral(placement: dict) -> bool:
     return all(placement.get(k, v) == v for k, v in MODEL_DEFAULTS.items())
 
@@ -60,6 +68,27 @@ def correct(x_m: float, y_m: float, placement: dict) -> tuple[float, float]:
         d = math.sqrt(max(d * d - dh * dh, 0.0))
     phi /= float(placement.get("azimuth_scale", 1.0))
     return d * math.sin(phi), d * math.cos(phi)
+
+
+def model_shortfall(x_m: float, y_m: float, placement: dict) -> float:
+    """How far a report lies below the range the sensor model can place,
+    in metres; 0 within it.
+
+    Two ways to fall short: a distance below the range offset, and — with
+    the slant — a line from the module shorter than the height between it
+    and the body, which no point on the floor can give. `correct` puts
+    either at the sensor's foot, as a number has to go somewhere; this
+    says whether that is a small miss of the model or a report it cannot
+    explain (MODEL_TOLERANCE_M).
+    """
+    if is_neutral(placement):
+        return 0.0
+    r = math.hypot(x_m, y_m)
+    d = (r - float(placement.get("range_offset_m", 0.0))) / float(placement.get("range_scale", 1.0))
+    if placement.get("slant") and placement.get("mount_height_m") is not None:
+        dh = abs(float(placement["mount_height_m"]) - float(placement.get("target_height_m", 1.0)))
+        return max(0.0, dh - d)
+    return max(0.0, -d)
 
 
 def to_room(x_m: float, y_m: float, placement: dict) -> tuple[float, float]:
@@ -121,6 +150,23 @@ def distance_to_polygon(x: float, y: float, points: list) -> float:
     return min(
         _segment_distance(x, y, *points[i], *points[(i + 1) % n]) for i in range(n)
     ) if n >= 2 else math.inf
+
+
+def nearest_on_polygon(x: float, y: float, points: list) -> tuple[float, float]:
+    """The point on the polygon's edges closest to (x, y) — for a sensor,
+    the nearest place on a wall."""
+    best, best_d = (x, y), math.inf
+    n = len(points)
+    for i in range(n):
+        (ax, ay), (bx, by) = points[i], points[(i + 1) % n]
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / length2))
+        px, py = ax + t * dx, ay + t * dy
+        d = math.hypot(x - px, y - py)
+        if d < best_d:
+            best, best_d = (px, py), d
+    return best
 
 
 def within_walls(x: float, y: float, width: float, height: float, outline, margin: float = 0.0) -> bool:

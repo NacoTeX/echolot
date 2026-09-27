@@ -221,3 +221,68 @@ def test_the_compile_smoke_uses_the_same_runner():
     source = (Path(__file__).resolve().parents[1] / "tools" / "compile_firmware.py").read_text()
     assert "_run_esphome" in source
     assert "subprocess.run" not in source, "der Smoke-Test baut wieder an der Umgebung vorbei"
+
+
+# --- what a node says it runs ------------------------------------------------
+
+
+def test_the_image_names_its_project_and_version():
+    import yaml
+
+    project = yaml.safe_load(builder.render_yaml(make()))["esphome"]["project"]
+    assert project["name"] == builder.FIRMWARE_PROJECT and project["name"].count(".") == 1
+    assert project["version"] == builder.firmware_version()
+    assert project["version"] == f"{builder.addon_version()} ({builder.firmware_revision()})"
+    assert builder.build_manifest(make(), None)["firmware_version"] == builder.firmware_version()
+
+
+def test_the_revision_follows_the_firmware_sources_only(tmp_path, monkeypatch):
+    """Another add-on version with the same component and template is the
+    same firmware; a changed component or template is not."""
+    import shutil
+
+    components = tmp_path / "components"
+    templates = tmp_path / "templates"
+    shutil.copytree(builder.COMPONENTS_DIR, components, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(builder.TEMPLATES_DIR, templates)
+    monkeypatch.setattr(builder, "COMPONENTS_DIR", components)
+    monkeypatch.setattr(builder, "TEMPLATES_DIR", templates)
+
+    def revision():
+        builder.firmware_revision.cache_clear()
+        return builder.firmware_revision()
+
+    try:
+        base = revision()
+        assert len(base) == 8 and int(base, 16) >= 0
+        monkeypatch.setenv("ECHOLOT_VERSION", "9.9.9")
+        assert revision() == base and builder.firmware_version() == f"9.9.9 ({base})"
+        header = components / builder.RADAR_COMPONENT / "ld2460_protocol.h"
+        header.write_text(header.read_text() + "\n// changed\n")
+        changed = revision()
+        assert changed != base
+        template = templates / "ld2460.yaml.j2"
+        template.write_text(template.read_text() + "\n# changed\n")
+        assert revision() not in (base, changed)
+    finally:
+        builder.firmware_revision.cache_clear()
+
+
+@pytest.mark.parametrize("node, state", [
+    ({"project": "", "version": "", "esphome": "2026.6.5"}, "unknown"),  # built before 1.7
+    ({"project": "nacotex.echolot", "version": "not ours"}, "unknown"),
+    ({"project": "someone.else", "version": "2.0"}, "foreign"),
+    ({"project": "nacotex.echolot", "version": "1.6.0 (00000000)"}, "outdated"),
+])
+def test_what_a_node_runs_is_compared_with_what_would_be_built(node, state):
+    assert builder.running_firmware(node)["state"] == state
+
+
+def test_the_current_image_is_current_and_says_so():
+    reported = {"project": builder.FIRMWARE_PROJECT, "version": builder.firmware_version(),
+                "esphome": "2026.6.5", "compiled": "Sep 26 2026, 20:30:12"}
+    running = builder.running_firmware(reported)
+    assert running["state"] == "current"
+    assert (running["version"], running["revision"]) == (builder.addon_version(), builder.firmware_revision())
+    assert (running["esphome"], running["compiled"]) == ("2026.6.5", "Sep 26 2026, 20:30:12")
+    assert builder.running_firmware(None) is None

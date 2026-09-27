@@ -112,6 +112,10 @@ class LinkSnapshot:
     mount_mode: str | None = None
     mount_height_m: float | None = None
     mount_angle_deg: float | None = None
+    #: What the node said about itself on this connection (ESPHome's
+    #: device info): {"project", "version", "esphome", "compiled"}. None
+    #: until it has answered, or when it did not.
+    node: dict | None = None
 
     def mounting(self) -> dict | None:
         """The module's mounting, once all three are known."""
@@ -200,6 +204,7 @@ class LinkSnapshot:
             "dropped": self.dropped,
             "mounting_entities": self.mounting_entities,
             "mounting": self.mounting(),
+            "node": self.node,
         }
 
 
@@ -243,7 +248,7 @@ def explain_error(err: BaseException, address: str) -> str:
 class RadarLink:
     """One node: connect, subscribe, keep the snapshot, reconnect."""
 
-    def __init__(self, device, client_factory, on_frame, on_mounting=None) -> None:
+    def __init__(self, device, client_factory, on_frame, on_mounting=None, on_line=None, on_link=None) -> None:
         self.device_id = device.id
         self.name = device.config.name
         self.address = device.ota_address()
@@ -252,6 +257,11 @@ class RadarLink:
         self._factory = client_factory
         self._on_frame = on_frame
         self._on_mounting = on_mounting
+        #: Told every frame line as it arrived, before anything is made of
+        #: it, and every connection that comes and goes — what a recording
+        #: needs to play the link back (app/recording.py).
+        self._on_line = on_line
+        self._on_link = on_link
         self._task: asyncio.Task | None = None
         self._roles: dict[int, str] = {}
         self._client = None
@@ -305,8 +315,14 @@ class RadarLink:
             stopped.set()
 
         try:
-            await asyncio.wait_for(client.connect(on_stop=on_stop, login=True), CONNECT_TIMEOUT)
-            entities, _services = await asyncio.wait_for(client.list_entities_services(), LIST_TIMEOUT)
+            # asyncio.timeout, not wait_for: on Python 3.11 — the add-on's —
+            # wait_for returns the result of a call that has just finished
+            # even when a cancellation arrives with it, and stop() would then
+            # wait for the connection to drop.
+            async with asyncio.timeout(CONNECT_TIMEOUT):
+                await client.connect(on_stop=on_stop, login=True)
+            async with asyncio.timeout(LIST_TIMEOUT):
+                entities, _services = await client.list_entities_services()
             self._roles = {}
             for info in entities:
                 role = ENTITY_ROLES.get(str(getattr(info, "name", "")).strip().lower())
@@ -315,6 +331,7 @@ class RadarLink:
             self.snapshot.no_frame_entity = "frame" not in self._roles.values()
             self.snapshot.mounting_entities = all(r in self._roles.values() for r in MOUNT_ROLES)
             self.snapshot.new_session()
+            self.snapshot.node = await self._node_info(client)
             self.snapshot.connected = True
             self.snapshot.connected_since = time.time()
             self.snapshot.error = (
@@ -324,17 +341,39 @@ class RadarLink:
                 else None
             )
             logger.info("Radar %s verbunden (%s)", self.name, self.address)
+            self._link_event(True)
             client.subscribe_states(self._on_state)
             self._client = client
             await stopped.wait()
             logger.info("Radar %s getrennt", self.name)
         finally:
+            was_connected = self.snapshot.connected
             self.snapshot.connected = False
+            if was_connected:
+                self._link_event(False)
             self._client = None
             try:
                 await client.disconnect(force=True)
             except Exception:  # noqa: BLE001 - already gone is fine
                 pass
+
+    async def _node_info(self, client) -> dict | None:
+        """Which firmware the node runs, as it says. A node that does not
+        answer is still a node: the link goes on without it."""
+        try:
+            async with asyncio.timeout(LIST_TIMEOUT):
+                info = await client.device_info()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - an unanswered question is no failed link
+            logger.debug("Radar %s: keine Geräteinfo: %s", self.name, err)
+            return None
+        return {
+            "project": str(getattr(info, "project_name", "") or ""),
+            "version": str(getattr(info, "project_version", "") or ""),
+            "esphome": str(getattr(info, "esphome_version", "") or ""),
+            "compiled": str(getattr(info, "compilation_time", "") or ""),
+        }
 
     def _on_state(self, state) -> None:
         role = self._roles.get(getattr(state, "key", None))
@@ -343,12 +382,16 @@ class RadarLink:
         value = getattr(state, "state", None)
         snap = self.snapshot
         if role == "frame":
+            text = str(value)
+            now = time.monotonic()
+            if self._on_line is not None:
+                self._on_line(self.device_id, text, now)
             try:
-                frame = parse_frame(str(value))
+                frame = parse_frame(text)
             except ValueError as err:
                 logger.debug("Radar %s: Zeile verworfen: %s", self.name, err)
                 return
-            if snap.record(frame, time.monotonic()) and self._on_frame is not None:
+            if snap.record(frame, now) and self._on_frame is not None:
                 self._on_frame(self.device_id)
         elif role == "wifi_signal":
             snap.wifi_signal = float(value) if value == value else None  # NaN -> None
@@ -367,6 +410,10 @@ class RadarLink:
         else:
             setattr(snap, role, str(value) if value is not None else None)
 
+
+    def _link_event(self, connected: bool) -> None:
+        if self._on_link is not None:
+            self._on_link(self.device_id, connected, self.snapshot.no_frame_entity, time.monotonic())
 
     def _mounting_changed(self) -> None:
         if self._on_mounting is None:
@@ -411,6 +458,8 @@ class RadarLinks:
     links: dict[str, RadarLink] = field(default_factory=dict)
     _listeners: list = field(default_factory=list)
     _mounting_listeners: list = field(default_factory=list)
+    _line_listeners: list = field(default_factory=list)
+    _link_listeners: list = field(default_factory=list)
 
     def add_listener(self, callback) -> None:
         self._listeners.append(callback)
@@ -419,6 +468,30 @@ class RadarLinks:
         """Told, with the device id, when a module's mounting as read back
         has changed — including the first time it is known."""
         self._mounting_listeners.append(callback)
+
+    def add_line_listener(self, callback) -> None:
+        """Told (device id, frame line, monotonic time) for every line as it
+        arrives — repeats and unreadable ones included."""
+        self._line_listeners.append(callback)
+
+    def add_link_listener(self, callback) -> None:
+        """Told (device id, connected, no frame entity, monotonic time) when
+        a connection is made or lost."""
+        self._link_listeners.append(callback)
+
+    def _line(self, device_id: str, text: str, now: float) -> None:
+        for callback in list(self._line_listeners):
+            try:
+                callback(device_id, text, now)
+            except Exception:  # noqa: BLE001 - a listener must not break the link
+                logger.exception("Zeilen-Listener fehlgeschlagen")
+
+    def _link(self, device_id: str, connected: bool, no_frame_entity: bool, now: float) -> None:
+        for callback in list(self._link_listeners):
+            try:
+                callback(device_id, connected, no_frame_entity, now)
+            except Exception:  # noqa: BLE001 - a listener must not break the link
+                logger.exception("Verbindungs-Listener fehlgeschlagen")
 
     def _mounting(self, device_id: str) -> None:
         for callback in list(self._mounting_listeners):
@@ -445,7 +518,7 @@ class RadarLinks:
                 await self.links.pop(device_id).stop()
         for device_id, device in wanted.items():
             link = self.links.get(device_id)
-            fresh = RadarLink(device, self.client_factory, self._frame, self._mounting)
+            fresh = RadarLink(device, self.client_factory, self._frame, self._mounting, self._line, self._link)
             if link is not None and link.identity() == fresh.identity():
                 continue
             if link is not None:

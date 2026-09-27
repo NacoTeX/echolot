@@ -1,5 +1,6 @@
-// Live calibration of a room: learn reflections in the empty room, align
-// the sensor from standpoints, and set how strictly targets are filtered.
+// Live calibration of a room: learn reflections in the empty room, check
+// which way the module's axes point from two walks, align the sensor from
+// standpoints, and set how strictly targets are filtered.
 //
 // The recordings run on the server (app/calibration.py) — the browser
 // sees the room three times a second, the module reports more often. This
@@ -13,6 +14,42 @@
   const POLL_MS = 400;
   const f2 = (v) => E.formatNumber(v, 2);
   const cm = (m) => `${Math.round(m * 100)} cm`;
+  const deg = (v) => `${E.formatNumber(Math.abs(v), 0)}°`;
+
+  // The two walks of the axes check (app/axes.py). Drawn this far from any
+  // wall, and around what stands in the room except doors and windows.
+  const WALL_GAP_M = 0.3;
+  // A finished walk found on coming back to the page counts this long.
+  const WALK_KEPT_S = 1800;
+  const PASSABLE = new Set(["door", "window"]);
+  const LEGS = {
+    away: { n: 1, name: "Vom Sensor weg", how: "Von A geradeaus vom Sensor weg nach B." },
+    across: { n: 2, name: "Quer vor dem Sensor", how: "Von A quer vor dem Sensor vorbei nach B." },
+  };
+  const r2 = (v) => Math.round(v * 100) / 100 + 0;
+
+  // The walls as drawn: the outline, or the plan's rectangle.
+  function wallsOf(room) {
+    return room.outline && room.outline.length >= 3 ? room.outline
+      : [[0, 0], [room.width, 0], [room.width, room.height], [0, room.height]];
+  }
+
+  // How far a ray from (x, y) along the unit vector u runs before it meets
+  // a wall; the wall it starts on does not count.
+  function reachAlong(x, y, u, walls) {
+    let best = Infinity;
+    for (let i = 0; i < walls.length; i++) {
+      const [ax, ay] = walls[i];
+      const [bx, by] = walls[(i + 1) % walls.length];
+      const ex = bx - ax, ey = by - ay;
+      const den = u[0] * ey - u[1] * ex;
+      if (Math.abs(den) < 1e-9) continue;
+      const t = ((ax - x) * ey - (ay - y) * ex) / den;
+      const k = ((ax - x) * u[1] - (ay - y) * u[0]) / den;
+      if (t > 0.05 && k >= 0 && k <= 1) best = Math.min(best, t);
+    }
+    return best;
+  }
 
   function spotsCount(n) {
     return n === 1 ? "1 Störquelle" : `${n} Störquellen`;
@@ -44,6 +81,12 @@
       this.moduleForm = null; // mounting typed in, not yet written to the module
       this.remeasure = null; // id of the standpoint being measured again
       this.preview = null; // id of the history record drawn on the plan
+      if (this.walksRoom !== params.id) {
+        this.walks = {}; // leg -> {result, device_id, epoch}: what the module saw of a walk
+        this.axesAt = null; // a spot tapped on the plan the walks go through
+        this.verdict = null;
+      }
+      this.walksRoom = params.id;
       this.render();
       this.resume();
     },
@@ -80,6 +123,8 @@
         this.plan.setRoom(room);
         this.drawExtra();
         if (!this.busy()) this.renderSide();
+        // What the walks say depends on how the sensor stands on the plan.
+        if (Object.keys(this.walks).length) this.evaluateWalks();
       }
     },
     onLive() {
@@ -122,6 +167,7 @@
           <aside class="side">
             <div class="segmented cal-tabs" role="tablist">
               <button type="button" data-tab="spots">Störquellen</button>
+              <button type="button" data-tab="axes">Achsen</button>
               <button type="button" data-tab="align">Ausrichten</button>
               <button type="button" data-tab="filter">Filter</button>
             </div>
@@ -176,6 +222,7 @@
         return;
       }
       if (this.tab === "spots") host.innerHTML = this.spotsCard(room);
+      else if (this.tab === "axes") host.innerHTML = this.axesCard(room);
       else if (this.tab === "align") host.innerHTML = this.alignCard(room);
       else host.innerHTML = this.filterCard(room);
       this.bindSide(host);
@@ -183,12 +230,14 @@
 
     progressHtml(cap) {
       if (cap.phase === "waiting") {
+        const what = { empty: "Sekunden, um den Raum zu verlassen", walk: "Sekunden — auf A stehen, Blick nach B" }[cap.kind]
+          || "Sekunden bis zur Messung — hinstellen";
         return `<div class="cal-count"><div class="big-number">${Math.ceil(cap.starts_in_s)}</div>
-          <div>${cap.kind === "empty" ? "Sekunden, um den Raum zu verlassen" : "Sekunden bis zur Messung — hinstellen"}</div></div>`;
+          <div>${what}</div></div>`;
       }
       const share = Math.min(100, (cap.elapsed_s / cap.duration_s) * 100);
       return `<div class="cal-progress"><div class="bar"><i style="width:${share.toFixed(1)}%"></i></div>
-        <div class="meta"><span>${cap.kind === "empty" ? "Hört zu" : "Misst"} · ${Math.round(cap.elapsed_s)} / ${Math.round(cap.duration_s)} s</span>
+        <div class="meta"><span>${{ empty: "Hört zu", walk: "Jetzt von A nach B gehen" }[cap.kind] || "Misst"} · ${Math.round(cap.elapsed_s)} / ${Math.round(cap.duration_s)} s</span>
         <span>${cap.reports} Meldungen</span></div>
         ${cap.sensor_fresh ? "" : `<p class="hint warn-text">Vom Sensor kommt gerade nichts an.</p>`}</div>`;
     },
@@ -240,6 +289,249 @@
           <div class="actions"><button class="btn primary" data-start>${icon("radar")}Aufnahme starten</button></div>`;
       }
       return `<div class="card"><h2>Störquellen lernen</h2>${body}</div>`;
+    },
+
+    // ------------------------------------------------------------ axes
+
+    // The two walks as drawn: through a spot tapped on the plan, or up to
+    // two metres straight in front of the sensor. The walk away runs on
+    // the line from the sensor through that spot, the walk across crosses
+    // that line there. null where the room has no space for one; `blocked`
+    // names what stands in the way.
+    plannedLegs(room) {
+      const s = room.sensor;
+      const walls = wallsOf(room);
+      const inside = (q) => G.pointInPolygon(q[0], q[1], walls) && G.distanceToPolygon(q[0], q[1], walls) >= WALL_GAP_M - 1e-9;
+      const samples = (from, to) => {
+        const n = Math.max(2, Math.ceil(Math.hypot(to[0] - from[0], to[1] - from[1]) / 0.1));
+        return Array.from({ length: n + 1 }, (_, i) => [from[0] + ((to[0] - from[0]) * i) / n, from[1] + ((to[1] - from[1]) * i) / n]);
+      };
+      const clear = (from, to) => samples(from, to).every(inside);
+      const obstacles = (room.furniture || []).filter((f) => !PASSABLE.has(f.kind))
+        .map((f) => ({ item: f, outline: G.furnitureOutline(f.x, f.y, f.w, f.h, f.angle, 0.15) }));
+      const blocker = (from, to) => {
+        for (const q of samples(from, to)) {
+          const hit = obstacles.find((o) => G.pointInPolygon(q[0], q[1], o.outline));
+          if (hit) return hit.item.name || (Plan.FURNITURE[hit.item.kind] || Plan.FURNITURE.other).label;
+        }
+        return null;
+      };
+      const a = ((s.angle || 0) * Math.PI) / 180;
+      let u = [-Math.sin(a), Math.cos(a)];
+      let r = null;
+      if (this.axesAt) {
+        const dx = this.axesAt[0] - s.x, dy = this.axesAt[1] - s.y;
+        r = Math.hypot(dx, dy);
+        u = [dx / r, dy / r];
+      }
+      const reach = reachAlong(s.x, s.y, u, walls);
+      if (r === null) r = Math.max(1, Math.min(2, (reach - WALL_GAP_M) / 2));
+      const at = (t) => [r2(s.x + u[0] * t), r2(s.y + u[1] * t)];
+      const legs = { away: null, across: null };
+      // Away: two metres ending a metre past the spot, short of the wall.
+      // A little over the metre the server asks for, after rounding.
+      const far = Math.min(r + 1, reach - WALL_GAP_M);
+      const near = Math.max(0.5, far - 2);
+      if (far - near >= 1.05 && clear(at(near), at(far))) {
+        legs.away = { from: at(near), to: at(far) };
+        legs.away.blocked = blocker(legs.away.from, legs.away.to);
+      }
+      // Across: up to a metre to either side of the spot.
+      const c = [s.x + u[0] * r, s.y + u[1] * r];
+      const side = [-u[1], u[0]];
+      const half = (sign) => {
+        for (let h = 1; h >= 0.55 - 1e-9; h -= 0.05) {
+          if (clear(c, [c[0] + sign * side[0] * h, c[1] + sign * side[1] * h])) return h;
+        }
+        return 0;
+      };
+      const h1 = half(-1), h2 = half(1);
+      if (h1 && h2) {
+        legs.across = { from: [r2(c[0] - side[0] * h1), r2(c[1] - side[1] * h1)], to: [r2(c[0] + side[0] * h2), r2(c[1] + side[1] * h2)] };
+        legs.across.blocked = blocker(legs.across.from, legs.across.to);
+      }
+      return legs;
+    },
+
+    axesCard(room) {
+      const cap = this.capture && this.capture.kind === "walk" ? this.capture : null;
+      const walking = cap && (cap.phase === "waiting" || cap.phase === "recording") ? cap : null;
+      const planned = this.plannedLegs(room);
+      const cal = room.calibration || {};
+      const s = room.sensor;
+      const v = this.verdict;
+      const check = cal.axes_check;
+
+      let last = "";
+      if (check) {
+        const facts = [check.mirror_changed ? (check.mirror ? "„Links und rechts tauschen“ eingeschaltet" : "„Links und rechts tauschen“ ausgeschaltet") : "Links und rechts stimmten"];
+        if (check.angle_changed) facts.push(`Blickrichtung auf ${E.formatNumber(check.angle, 0)}° gesetzt`);
+        const since = s.mirror !== check.mirror;
+        last = `<div class="notice ${since ? "warn" : "ok"}">${icon(since ? "alert" : "check")}<div class="grow"><strong>Achsen geprüft · ${escapeHtml(when(check.checked_at))}</strong>${escapeHtml(facts.join(" · "))}${since ? "<br>„Links und rechts tauschen“ steht inzwischen anders als nach der Prüfung." : ""}</div></div>`;
+      }
+
+      const move = this.waysFixed() ? "Zum Verlegen erst „Gänge verwerfen“, dann auf dem Plan auf eine freie Stelle tippen."
+        : "Tippe auf dem Plan auf eine freie Stelle.";
+      const rows = Object.entries(LEGS).map(([leg, spec]) => {
+        const w = this.walks[leg];
+        const way = planned[leg];
+        let meta;
+        if (walking && walking.walk && walking.walk.leg === leg) meta = walking.phase === "waiting" ? "gleich geht es los" : "läuft";
+        else if (w && w.result.ok) meta = `gegangen · ${cm(w.result.moved_m)} Weg erkannt`;
+        else {
+          const said = [
+            w ? w.result.error : null,
+            !way ? `Hier ist kein Platz für diesen Weg. ${move}` : way.blocked ? `Der Weg führt durch „${way.blocked}“. ${move}` : null,
+          ].filter(Boolean);
+          meta = said.length ? said.map((t) => `<span class="warn-text">${escapeHtml(t)}</span>`).join("<br>") : escapeHtml(spec.how);
+        }
+        const label = w && w.result.ok ? "Noch einmal" : "Gehen";
+        return `<div class="zone-row ax-leg ${w && w.result.ok ? "done" : ""}"><span class="spot-num">${spec.n}</span>
+          <div class="grow"><div class="name">${spec.name}</div><div class="meta">${meta}</div></div>
+          <button class="btn small ${w && w.result.ok ? "" : "primary"}" data-walk="${leg}" ${walking || !way ? "disabled" : ""}>${label}</button></div>`;
+      }).join("");
+
+      let action = "";
+      if (walking) {
+        this.hint(walking.phase === "waiting"
+          ? "Auf A stellen. Wenn die Messung beginnt, kurz stehen bleiben, dann zügig und geradeaus nach B gehen."
+          : "Zügig und geradeaus von A nach B gehen, dort stehen bleiben, bis die Zeit um ist.");
+        action = `${this.progressHtml(walking)}<div class="actions"><button class="btn" data-cancel>Abbrechen</button></div>`;
+      } else if (this.waysFixed()) {
+        this.hint("Allein im Raum. Auf A stellen, „Gehen“ tippen und nach dem Countdown von A nach B gehen.");
+      } else {
+        this.hint("Die Wege liegen auf dem Plan. Steht dort etwas im Weg, legt ein Tipp auf den Plan sie an eine andere Stelle.");
+      }
+
+      let result = "";
+      if (v && !walking) {
+        const kind = v.ok ? "ok" : v.reason === "across" ? "" : "warn";
+        const changes = v.ok && (v.mirror !== s.mirror || v.angle !== null);
+        const metric = (label, value, note) => `<div class="stat-line"><span>${label}${note ? `<small>${note}</small>` : ""}</span><span>${value}</span></div>`;
+        const lines = [];
+        if (v.module_angle_deg !== null) lines.push(metric("Gang weg", `${deg(v.module_angle_deg)}`, "neben der Blickrichtung des Moduls, wie es ihn gesehen hat"));
+        if (v.plan_error_deg !== null) lines.push(metric("Plan gegen Raum", `${deg(v.plan_error_deg)}`, "so weit blickt der Sensor auf dem Plan anders"));
+        if (v.across_error_deg !== null) lines.push(metric("Gang quer", `${deg(v.across_error_deg)}`, "neben dem gezeichneten Weg, mit der vorgeschlagenen Einstellung"));
+        result = `<div class="cal-block"><h3>Ergebnis</h3>
+          ${v.messages.map((m) => `<div class="notice ${kind}">${icon(v.ok ? "check" : "alert")}<div class="grow">${escapeHtml(m)}</div></div>`).join("")}
+          ${lines.length ? `<div class="stat-lines cal-metrics">${lines.join("")}</div>` : ""}
+          ${v.ok && !this.walks.away ? `<p class="hint">Der Gang vom Sensor weg prüft zusätzlich, ob der Sensor auf dem Plan richtig blickt.</p>` : ""}
+          ${changes && cal.aligned_at ? `<p class="hint">Danach gilt die Ausrichtung als veraltet: im Tab „Ausrichten“ neu messen.</p>` : ""}
+          <div class="actions">${v.ok ? `<button class="btn primary" data-axes-apply>${icon("check")}${changes ? "Übernehmen" : "Als geprüft vermerken"}</button>` : ""}
+            <button class="btn" data-axes-clear>Gänge verwerfen</button></div></div>`;
+      } else if (Object.keys(this.walks).length && !walking) {
+        result = `<div class="actions"><button class="btn" data-axes-clear>Gänge verwerfen</button></div>`;
+      }
+
+      return `<div class="card"><h2>Links, rechts und Blickrichtung</h2>
+        <p class="hint">Welche Seite des Moduls links ist, steht in keinem Handbuch. Statt zu raten, gehst du zwei kurze Wege, die Echolot auf den Plan zeichnet. Aus dem, was das Modul dabei sieht, folgt, ob „Links und rechts tauschen“ an gehört und ob der Sensor auf dem Plan in die richtige Richtung blickt. Nur eine Person im Raum.</p>
+        ${last}
+        <div class="cal-block"><h3>Gänge</h3><div class="zone-list">${rows}</div>${action}</div>
+        ${result}</div>`;
+    },
+
+    // Once a walk is walked, the ways stay where they were: the verdict
+    // compares what was walked with what was drawn.
+    waysFixed() {
+      return Object.values(this.walks).some((w) => w.result.ok);
+    },
+
+    // Where the walks go: a tap on the plan moves both, until one is walked.
+    axesPick(p) {
+      if (this.waysFixed()) { toast("Die Wege liegen fest, seit gegangen wurde. Erst „Gänge verwerfen“."); return; }
+      const s = this.room().sensor;
+      const r = Math.hypot(p[0] - s.x, p[1] - s.y);
+      if (r < 1) { toast("So nah am Sensor ist kein Platz für die Wege. Weiter weg tippen."); return; }
+      // Well inside the field of view: the walk away is judged by how far
+      // off the module's own axis it was seen (axes.AWAY_WITHIN_DEG).
+      const a = ((s.angle || 0) * Math.PI) / 180;
+      const off = Math.abs((Math.atan2(-(p[0] - s.x), p[1] - s.y) - a + 3 * Math.PI) % (2 * Math.PI) - Math.PI) * 180 / Math.PI;
+      if (off > Math.min(50, (s.fov_deg || 120) / 2 - 10)) { toast("Dort sieht der Sensor laut Plan nicht hin. Weiter vorn tippen."); return; }
+      this.axesAt = p;
+      this.renderSide();
+      this.drawExtra();
+    },
+
+    async startWalk(leg) {
+      const room = this.room();
+      const way = room && this.plannedLegs(room)[leg];
+      if (!way) return;
+      await this.start({ kind: "walk", delay_s: 3, duration_s: 8, walk: { leg, from: way.from, to: way.to } });
+    },
+
+    // A finished walk, as the capture has it. Walks with another sensor or
+    // mounting than this one say nothing together with it.
+    takeWalk(cap) {
+      if (!cap.walk || !cap.result) return;
+      for (const [leg, w] of Object.entries(this.walks)) {
+        if (w.device_id !== cap.device_id || w.epoch !== cap.epoch) delete this.walks[leg];
+      }
+      this.walks[cap.walk.leg] = { id: cap.id, result: cap.result, walk: cap.walk, device_id: cap.device_id, epoch: cap.epoch };
+      if (cap.result.ok && (cap.result.warnings || []).length) toast(cap.result.warnings[0]);
+    },
+
+    // The walks as the verdict and taking it want them.
+    walkedLegs() {
+      const legs = {};
+      for (const [leg, w] of Object.entries(this.walks)) {
+        if (w.result.ok) legs[leg] = { from: w.walk.from, to: w.walk.to, start_raw: w.result.start_raw, end_raw: w.result.end_raw };
+      }
+      return legs;
+    },
+
+    async evaluateWalks() {
+      const legs = this.walkedLegs();
+      const any = Object.values(this.walks).find((w) => w.result.ok);
+      const seq = (this.verdictSeq = (this.verdictSeq || 0) + 1);
+      if (!any) this.verdict = null;
+      else {
+        try {
+          const v = await api(`api/rooms/${encodeURIComponent(this.id)}/axes`, { method: "POST",
+            body: { ...legs, device_id: any.device_id, epoch: any.epoch } });
+          if (seq !== this.verdictSeq) return;
+          this.verdict = v;
+        } catch (err) {
+          if (seq !== this.verdictSeq) return;
+          this.verdict = null;
+          // Walked with another sensor, or before a remount.
+          if (err.status === 409) this.walks = {};
+          toast(err.message, "err");
+        }
+      }
+      if (!this.plan) return;
+      if (!this.busy()) this.renderSide();
+      this.drawExtra();
+    },
+
+    async applyAxes() {
+      const v = this.verdict;
+      if (!v || !v.ok) return;
+      try {
+        // The server works it out once more from the walks, for the room
+        // this verdict was shown for.
+        this.takeRoom(await api(`api/rooms/${encodeURIComponent(this.id)}/calibration`, { method: "PUT",
+          body: { axes: { ...this.walkedLegs(), basis: v.basis } } }));
+        toast("Übernommen.");
+        this.walks = {};
+        this.verdict = null;
+        this.axesAt = null;
+      } catch (err) {
+        toast(err.message, "err");
+        if (err.status === 409 && err.detail && err.detail.room) this.takeRoom(err.detail.room);
+        else await E.refresh();
+        await this.evaluateWalks();
+        return;
+      }
+      this.renderSide();
+      this.drawExtra();
+    },
+
+    clearWalks() {
+      this.walks = {};
+      this.verdict = null;
+      this.verdictSeq = (this.verdictSeq || 0) + 1;
+      this.renderSide();
+      this.drawExtra();
     },
 
     // Heights as the page has them: from the module when it says how it
@@ -468,7 +760,7 @@
           <p class="hint">Ein neues Ziel zählt erst, wenn das Radar es so lange meldet. Reflexionen, die kurz aufblitzen, erreichen das nie. Auf der Karte sind sie bis dahin hohl gezeichnet. 0 s zählt jede Meldung sofort, wie Echolot 1.0.</p></label>
         <div class="field"><span>Glättung</span><div class="segmented" id="cal-smooth">
           ${[["off", "Aus"], ["normal", "Normal"], ["strong", "Stark"]].map(([k, v]) => `<button type="button" data-smooth="${k}" class="${cal.smoothing === k ? "active" : ""}">${v}</button>`).join("")}</div>
-          <p class="hint">Mittelt die Position über die letzten Meldungen. Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas später.</p></div>
+          <p class="hint">Mittelt die Position über etwa die letzte Drittelsekunde (normal) oder Dreiviertelsekunde (stark), gleich wie oft das Modul meldet. Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas später.</p></div>
         ${version ? `<p class="hint">Messdefinition ${version}. Home Assistant bekommt Version und Filter als Attribute jeder Entität.</p>` : ""}
       </div>`;
     },
@@ -476,6 +768,9 @@
     bindSide(host) {
       const on = (sel, fn) => host.querySelectorAll(sel).forEach((b) => b.addEventListener("click", fn));
       on("[data-start]", () => this.startEmpty());
+      host.querySelectorAll("[data-walk]").forEach((b) => b.addEventListener("click", () => this.startWalk(b.dataset.walk)));
+      on("[data-axes-apply]", () => this.applyAxes());
+      on("[data-axes-clear]", () => this.clearWalks());
       on("[data-cancel]", () => this.cancel());
       on("[data-dismiss]", () => this.dismiss());
       on("[data-keep]", () => this.keepSpots());
@@ -572,6 +867,7 @@
         }
         if (cap.phase === "done" && cap.result && cap.result.ok) svg += this.plan.spotsSvg(cap.result.spots, room.sensor, "proposal");
       }
+      if (this.tab === "axes") svg += this.axesSvg(room);
       if (this.tab === "align") {
         const pr = this.proposal ? { ...room.sensor, ...this.mounting(), ...this.proposal } : null;
         const done = this.points().map((p) => p.ref.join(","));
@@ -581,13 +877,16 @@
           svg += `<g class="cal-mark suggested"><circle cx="${q[0]}" cy="${q[1]}" r="0.14"/>
             <text x="${q[0]}" y="${q[1]}" text-anchor="middle" dominant-baseline="central">${String.fromCharCode(65 + i)}</text></g>`;
         });
+        // A report the model has no place for sits at the sensor's foot
+        // only because the arithmetic put it there: drawn as such.
+        const placeless = (raw, model) => G.modelShortfall(raw[0], raw[1], model) > G.MODEL_TOLERANCE_M ? " placeless" : "";
         this.points().forEach((p, i) => {
           const now = G.toRoom(p.raw[0], p.raw[1], room.sensor);
           svg += `<line class="cal-error" x1="${p.ref[0]}" y1="${p.ref[1]}" x2="${now.x.toFixed(3)}" y2="${now.y.toFixed(3)}"/>`;
-          svg += `<circle class="cal-seen" cx="${now.x.toFixed(3)}" cy="${now.y.toFixed(3)}" r="0.06"/>`;
+          svg += `<circle class="cal-seen${placeless(p.raw, room.sensor)}" cx="${now.x.toFixed(3)}" cy="${now.y.toFixed(3)}" r="0.06"/>`;
           if (pr) {
             const then = G.toRoom(p.raw[0], p.raw[1], pr);
-            svg += `<circle class="cal-seen after" cx="${then.x.toFixed(3)}" cy="${then.y.toFixed(3)}" r="0.06"/>`;
+            svg += `<circle class="cal-seen after${placeless(p.raw, pr)}" cx="${then.x.toFixed(3)}" cy="${then.y.toFixed(3)}" r="0.06"/>`;
           }
           const isCheck = p.role === "check";
           const label = isCheck ? `K${this.points().slice(0, i + 1).filter((q) => q.role === "check").length}`
@@ -621,6 +920,63 @@
       this.plan.setExtra(svg);
     },
 
+    // The walks on the plan: the way to walk, A to B; for a walk walked,
+    // where the module saw it with the sensor as it stands, and — with a
+    // proposal — as it would stand after taking it.
+    axesSvg(room) {
+      const cap = this.capture && this.capture.kind === "walk" ? this.capture : null;
+      const walking = cap && (cap.phase === "waiting" || cap.phase === "recording") ? cap.walk : null;
+      const planned = this.plannedLegs(room);
+      const v = this.verdict;
+      const proposal = v && v.ok ? { ...room.sensor, mirror: v.mirror, angle: v.angle !== null ? v.angle : room.sensor.angle } : null;
+      const changes = proposal && (proposal.mirror !== room.sensor.mirror || proposal.angle !== room.sensor.angle);
+      const f3 = (n) => n.toFixed(3);
+      const arrow = (from, to, cls) => {
+        const dx = to[0] - from[0], dy = to[1] - from[1];
+        const len = Math.hypot(dx, dy);
+        if (len < 0.05) return "";
+        const ux = dx / len, uy = dy / len, head = 0.16;
+        const bx = to[0] - ux * head, by = to[1] - uy * head;
+        return `<g class="${cls}"><line x1="${f3(from[0])}" y1="${f3(from[1])}" x2="${f3(bx)}" y2="${f3(by)}"/>
+          <polygon points="${f3(to[0])},${f3(to[1])} ${f3(bx - uy * head * 0.55)},${f3(by + ux * head * 0.55)} ${f3(bx + uy * head * 0.55)},${f3(by - ux * head * 0.55)}"/></g>`;
+      };
+      const label = (q, text, cls) => `<g class="cal-mark ${cls}"><circle cx="${q[0]}" cy="${q[1]}" r="0.13"/>
+        <text x="${q[0]}" y="${q[1]}" text-anchor="middle" dominant-baseline="central">${text}</text></g>`;
+      // The leg to walk next is drawn with its ends named; the other faint.
+      const next = walking ? walking.leg : Object.keys(LEGS).find((leg) => !(this.walks[leg] && this.walks[leg].result.ok));
+      let svg = "";
+      for (const leg of Object.keys(LEGS)) {
+        const w = this.walks[leg];
+        const way = walking && walking.leg === leg ? walking : w && w.result.ok && leg !== next ? w.walk : planned[leg];
+        if (!way) continue;
+        const current = leg === next;
+        svg += arrow(way.from, way.to, `ax-way ${current ? "current" : "other"}${way.blocked && current ? " blocked" : ""}`);
+        if (current) svg += label(way.from, "A", "ax-end") + label(way.to, "B", "ax-end");
+        else {
+          const mid = [(way.from[0] + way.to[0]) / 2, (way.from[1] + way.to[1]) / 2];
+          svg += label([r2(mid[0]), r2(mid[1])], String(LEGS[leg].n), "ax-num");
+        }
+        if (w && w.result.ok) {
+          const seen = (placement) => [G.toRoom(...w.result.start_raw, placement), G.toRoom(...w.result.end_raw, placement)]
+            .map((q) => [q.x, q.y]);
+          const [s0, s1] = seen(room.sensor);
+          svg += arrow(s0, s1, "ax-seen");
+          if (changes) {
+            const [p0, p1] = seen(proposal);
+            svg += arrow(p0, p1, "ax-seen after");
+          }
+        }
+      }
+      if (cap && (cap.phase === "recording" || cap.phase === "done")) {
+        for (const [x, y] of cap.points) {
+          const q = G.toRoom(x, y, room.sensor);
+          svg += `<circle class="cal-sample" cx="${q.x.toFixed(3)}" cy="${q.y.toFixed(3)}" r="0.04"/>`;
+        }
+      }
+      if (changes) svg += this.plan.sensorGhostSvg(proposal);
+      return svg;
+    },
+
     // ------------------------------------------------------- recordings
 
     async resume() {
@@ -635,10 +991,20 @@
         else { this.measuring = cap.standpoint.ref; this.tab = "align"; }
         if (cap.kept) await this.reloadRoom();
       } else if (cap && cap.kind === "empty") this.tab = "spots";
+      else if (cap && cap.kind === "walk") {
+        this.tab = "axes";
+        if (cap.phase === "done") {
+          // A walk that ended while the page was away: kept for a while,
+          // after that it may no longer describe how the sensor hangs.
+          if (cap.ended_ago_s <= WALK_KEPT_S) this.takeWalk(cap);
+          this.capture = null;
+        }
+      }
       this.renderSide();
       this.drawExtra();
       if (this.busy()) this.poll();
       else if (this.points().length) this.solve();
+      if (!this.busy() && Object.keys(this.walks).length) this.evaluateWalks();
     },
 
     async startEmpty() {
@@ -677,6 +1043,12 @@
 
     async finished() {
       const cap = this.capture;
+      if (cap.kind === "walk") {
+        this.capture = null;
+        this.takeWalk(cap);
+        await this.evaluateWalks();
+        return;
+      }
       if (cap.kind === "point") {
         const r = cap.result;
         this.capture = null;
@@ -753,6 +1125,7 @@
     // -------------------------------------------------------- alignment
 
     pick(p) {
+      if (this.tab === "axes" && !this.busy()) { this.axesPick(p); return; }
       if (this.tab !== "align" || this.busy()) return;
       const role = this.pendingRole === "check" ? "check" : "fit";
       const same = this.points().filter((q) => q.role === role).length;

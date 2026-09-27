@@ -53,8 +53,9 @@ NOISE_M = 0.06
 #: The alignment procedure. A proposal computed by one version is not
 #: applied by another: 1 was 1.3 (the model chosen once, a conditional
 #: leave-one-out as its accuracy), 2 redoes the choice per fold and takes
-#: control spots.
-VERSION = 2
+#: control spots, 3 keeps the sensor within a room's drawn walls rather
+#: than its width × depth rectangle.
+VERSION = 3
 
 #: Candidate sensor models, simplest first: the terms each one fits on
 #: top of the placement.
@@ -133,8 +134,17 @@ def rms(pairs, placement: dict) -> float:
     return math.sqrt(sum(v * v for v in e) / len(e)) if e else 0.0
 
 
-def _outside(x: float, y: float, width: float, height: float) -> float:
-    return math.hypot(max(0.0, -x, x - width), max(0.0, -y, y - height))
+def _outside(x: float, y: float, walls: list) -> float:
+    """How far (x, y) lies outside the walls; 0 inside. The walls are the
+    room's outline when it has one — a sensor in the corner cut out of an
+    L-shaped room is outside it, though inside its rectangle."""
+    if geometry.point_in_polygon(x, y, walls):
+        return 0.0
+    return geometry.distance_to_polygon(x, y, walls)
+
+
+def walls_of(width: float, height: float, outline=None) -> list:
+    return [tuple(p) for p in outline] if outline else [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
 
 
 # --- least squares ------------------------------------------------------------
@@ -262,7 +272,7 @@ MIRROR_UNSURE = (
 )
 
 
-def _select(pairs, current: dict, width: float, height: float) -> dict:
+def _select(pairs, current: dict, walls: list) -> dict:
     """The whole choice from these spots alone: placement, mirror, slant
     and sensor model. Run once on all spots, and again in every fold of
     the cross-check, so the check sees the choice made without the spot
@@ -270,7 +280,6 @@ def _select(pairs, current: dict, width: float, height: float) -> dict:
     base = {"mount_height_m": current["mount_height_m"], "target_height_m": current["target_height_m"]}
     warnings: list[str] = []
     mirror_basis = "kept"
-    model_name = None
     candidates: list[dict] = []
     n = len(pairs)
     if n < 3:
@@ -335,9 +344,9 @@ def _select(pairs, current: dict, width: float, height: float) -> dict:
         {"model": f.name, "slant": f.slant, "fit_rms_m": round(math.sqrt(f.cost / n), 3), "score": round(f.bic, 1)}
         for f in side
     ]
-    inside = [f for f in side if _outside(f.params[0], f.params[1], width, height) <= MAX_OUTSIDE_M]
+    inside = [f for f in side if _outside(f.params[0], f.params[1], walls) <= MAX_OUTSIDE_M]
     if not inside:
-        outside = _outside(side[0].params[0], side[0].params[1], width, height)
+        outside = _outside(side[0].params[0], side[0].params[1], walls)
         warnings.append(
             f"Die Standpunkte ergäben einen Sensor {outside:.1f} m außerhalb des Raums. "
             "Das passt nicht — die Position bleibt, nur die Richtung wird angepasst. "
@@ -349,9 +358,9 @@ def _select(pairs, current: dict, width: float, height: float) -> dict:
     else:
         best = inside[0]
         x, y = best.params[0], best.params[1]
-        if _outside(x, y, width, height) > 0:
-            # On the wall, then everything else fitted again around it.
-            cx, cy = min(max(x, 0.0), width), min(max(y, 0.0), height)
+        if _outside(x, y, walls) > 0:
+            # On the nearest wall, then everything else fitted again around it.
+            cx, cy = geometry.nearest_on_polygon(x, y, walls)
             best = _fit(pairs, base, best.name, best.terms, best.mirror, best.slant,
                         start=list(best.params), fixed_xy=(cx, cy))
     proposal = best.placement(current)
@@ -441,7 +450,7 @@ def _layout_warnings(pairs, current: dict) -> list[str]:
     return out
 
 
-def solve(pairs, placement: dict, width: float, height: float, checks=()) -> dict:
+def solve(pairs, placement: dict, width: float, height: float, checks=(), outline=None) -> dict:
     """A proposal for the placement and the sensor model, with three
     different numbers for how well it does — kept apart on purpose:
 
@@ -473,7 +482,8 @@ def solve(pairs, placement: dict, width: float, height: float, checks=()) -> dic
         **{k: placement.get(k, v) for k, v in NEUTRAL.items()},
     }
     n = len(pairs)
-    chosen = _select(pairs, current, width, height)
+    walls = walls_of(width, height, outline)
+    chosen = _select(pairs, current, walls)
     held_out = _held_out_errors(pairs, current, chosen)
     proposal = chosen["proposal"]
     warnings = list(chosen["warnings"])
@@ -498,7 +508,7 @@ def solve(pairs, placement: dict, width: float, height: float, checks=()) -> dic
     if n >= 3:
         cv_errors = []
         for i in range(n):
-            fold = _select(pairs[:i] + pairs[i + 1:], current, width, height)["proposal"]
+            fold = _select(pairs[:i] + pairs[i + 1:], current, walls)["proposal"]
             (px, py), (qx, qy) = pairs[i]
             rx, ry = geometry.to_room(px, py, fold)
             cv_errors.append(math.hypot(rx - qx, ry - qy))
@@ -521,6 +531,21 @@ def solve(pairs, placement: dict, width: float, height: float, checks=()) -> dic
                 f"Standpunkt {i + 1} passt nicht zu den anderen ({e * 100:.0f} cm daneben). "
                 "Falsch markiert oder bewegt? Neu messen oder entfernen — er verzerrt sonst das Ergebnis."
             )
+
+    # A spot the chosen model has no place for (geometry.model_shortfall)
+    # is put at the sensor's foot by the arithmetic; a person standing
+    # there would not count at all.
+    short = [f"Standpunkt {i + 1}" for i, ((px, py), _q) in enumerate(pairs)
+             if geometry.model_shortfall(px, py, proposal) > geometry.MODEL_TOLERANCE_M]
+    short += [f"Kontrollpunkt {i + 1}" for i, ((px, py), _q) in enumerate(checks)
+              if geometry.model_shortfall(px, py, proposal) > geometry.MODEL_TOLERANCE_M]
+    if short:
+        warnings.append(
+            f"{', '.join(short)}: Das Modul meldet {'ihn' if len(short) == 1 else 'sie'} näher am Sensor, als "
+            "das Sensormodell es zulässt — mit Schrägstrecke kürzer als der Höhenunterschied zwischen Modul "
+            "und Körper. Dort hätte ein Ziel keinen Ort und zählte nicht. Montagehöhe und Zielhöhe prüfen, "
+            "oder den Punkt neu messen."
+        )
 
     validation = errors(list(checks), proposal) if checks else []
     validated = len(validation) >= 2

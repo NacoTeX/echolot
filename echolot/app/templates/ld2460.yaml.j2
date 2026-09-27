@@ -9,6 +9,11 @@
 esphome:
   name: {{ device_name }}
   friendly_name: {{ friendly_name | tojson }}
+  # What the node tells every API client it is running — the device page
+  # compares it with what this add-on would build (builder.firmware_version).
+  project:
+    name: {{ firmware_project | tojson }}
+    version: {{ firmware_version | tojson }}
 {% if antenna_select_pin is not none %}
   on_boot:
     # Before Wi-Fi comes up (priority 250), so the first association

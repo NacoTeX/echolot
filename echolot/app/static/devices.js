@@ -19,6 +19,27 @@
     return s.slice(0, 32).replace(/-+$/, "");
   }
 
+  // What the node says it runs (builder.running_firmware), while connected.
+  function runningFirmware(f) {
+    if (!f) return "—";
+    if (f.state === "current") return `${escapeHtml(f.version)} · ${escapeHtml(f.revision)} <span class="chip ok">aktuell</span>`;
+    if (f.state === "outdated") return `${escapeHtml(f.version)} · ${escapeHtml(f.revision)} <span class="chip warn">älterer Stand</span>`;
+    if (f.state === "foreign") return escapeHtml(`${f.project}${f.version ? ` ${f.version}` : ""}`);
+    return "unbekannt";
+  }
+
+  function firmwareNote(f) {
+    if (!f) return "";
+    if (f.state === "outdated") {
+      return `Auf dem Sensor läuft Stand ${escapeHtml(f.revision)} (Echolot ${escapeHtml(f.version)}). Dieses Add-on baut Stand ${escapeHtml(f.builds.revision)} (Echolot ${escapeHtml(f.builds.version)}). Neu bauen und aufspielen bringt den Sensor auf diesen Stand.`;
+    }
+    if (f.state === "unknown") {
+      return "Die Firmware auf dem Sensor nennt ihren Stand nicht: Sie wurde vor Echolot 1.7 gebaut. Nach dem nächsten Bauen und Aufspielen steht er hier.";
+    }
+    if (f.state === "foreign") return `Auf dem Sensor läuft „${escapeHtml(f.project)}“, keine Echolot-Firmware.`;
+    return "";
+  }
+
   function firmwareChip(d) {
     if (d.status === "queued") return '<span class="chip warn">Build wartet</span>';
     if (d.status === "running") return '<span class="chip warn">wird gebaut…</span>';
@@ -255,10 +276,15 @@
         ["Radarmodul", l.link_state ? escapeHtml(states[l.link_state] || l.link_state) : "—"],
         ["Letzte Meldung", l.frame_age_s !== null && l.frame_age_s !== undefined ? `vor ${E.formatNumber(l.frame_age_s, 1)} s` : "—"],
         ["WLAN-Signal", l.wifi_signal !== null && l.wifi_signal !== undefined ? `${Math.round(l.wifi_signal)} dBm` : "—"],
+        ["Echolot-Firmware", runningFirmware(d.firmware_running)],
+        ...(d.firmware_running && d.firmware_running.esphome
+          ? [["ESPHome", `${escapeHtml(d.firmware_running.esphome)}${d.firmware_running.compiled ? ` · gebaut ${escapeHtml(d.firmware_running.compiled)}` : ""}`]] : []),
         ["Radarchip-Firmware", l.firmware ? escapeHtml(l.firmware) : "—"],
         ["Adresse", escapeHtml(l.address || d.address || `${d.config.name}.local`)],
       ];
+      const note = firmwareNote(d.firmware_running);
       return rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")
+        + (note ? `<p class="hint" style="margin-top:8px" data-firmware-note>${note}</p>` : "")
         + (l.error ? `<p class="hint" style="margin-top:8px">${escapeHtml(l.error)}</p>` : "");
     },
 

@@ -320,3 +320,41 @@ def test_suggested_spots_are_in_view_inside_the_walls_and_off_the_furniture():
     xs = [x for x, _ in spots]
     ds = [math.hypot(x - 3, y) for x, y in spots]
     assert max(xs) - min(xs) > 2.0 and max(ds) - min(ds) > 1.0  # left and right, near and far
+
+
+# --- a room's drawn walls, not its rectangle ----------------------------------------
+
+L_ROOM = [(0, 0), (6, 0), (6, 1.5), (2, 1.5), (2, 4), (0, 4)]  # the corner x > 2, y > 1.5 is not the room
+L_SPOTS = [(1.0, 1.0), (4.5, 0.7), (1.0, 3.2), (5.5, 1.1)]
+
+
+def test_a_sensor_in_the_corner_cut_out_of_the_room_is_not_taken():
+    """Inside the 6 × 4 rectangle, but 1.5 m from the nearest wall of the
+    L-shaped room: the spots do not describe this room."""
+    truth = {"x": 4.0, "y": 3.0, "angle": 180.0, "mirror": False}
+    pairs = pairs_for(truth, L_SPOTS)
+    assert alignment.solve(pairs, DRAWN, 6, 4)["mode"] == "full"  # the rectangle alone lets it pass
+    result = alignment.solve(pairs, DRAWN, 6, 4, outline=L_ROOM)
+    assert result["mode"] == "direction" and (result["x"], result["y"]) == (DRAWN["x"], DRAWN["y"])
+    assert any("außerhalb des Raums" in w for w in result["warnings"])
+
+
+def test_a_sensor_just_behind_an_inner_wall_is_put_on_it():
+    truth = {"x": 2.3, "y": 2.5, "angle": 90.0, "mirror": False}
+    result = alignment.solve(pairs_for(truth, L_SPOTS), DRAWN, 6, 4, outline=L_ROOM)
+    assert result["mode"] == "full"
+    assert (result["x"], result["y"]) == pytest.approx((2.0, 2.5), abs=1e-3)
+
+
+def test_a_control_spot_the_model_has_no_place_for_is_named():
+    """With the slant, a report shorter than the height between module and
+    body has no place on the floor; a person there would not count."""
+    truth = {"x": 3.0, "y": 0.0, "angle": 0.0, "mirror": False, "slant": True,
+             "mount_height_m": 2.2, "target_height_m": 1.0}
+    drawn = {**DRAWN2, "mount_height_m": 2.2, "target_height_m": 1.0}
+    pairs = module_pairs(truth, SPREAD, noise=0.02, seed=3)
+    fine = alignment.solve(pairs, drawn, 6, 4, checks=module_pairs(truth, [(3.0, 0.4), (2.0, 2.0)]))
+    assert fine["slant"] is True and not any("Sensormodell" in w for w in fine["warnings"])
+    too_short = [((0.0, 0.7), (3.0, 0.3))]
+    result = alignment.solve(pairs, drawn, 6, 4, checks=too_short)
+    assert any(w.startswith("Kontrollpunkt 1: Das Modul meldet ihn näher") for w in result["warnings"]), result["warnings"]

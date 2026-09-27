@@ -24,10 +24,11 @@ TIMEOUT = 3.0
 
 
 async def _probe(host: str, port: int, timeout: float) -> bool:
+    # asyncio.timeout rather than wait_for, which on Python 3.11 can
+    # swallow a cancellation (see radar_link).
     try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout
-        )
+        async with asyncio.timeout(timeout):
+            _, writer = await asyncio.open_connection(host, port)
     except (OSError, asyncio.TimeoutError):
         return False
     writer.close()
@@ -47,9 +48,8 @@ async def _resolve(host: str) -> str | None:
     """
     loop = asyncio.get_running_loop()
     try:
-        infos = await asyncio.wait_for(
-            loop.getaddrinfo(host, None, type=socket.SOCK_STREAM), timeout=TIMEOUT
-        )
+        async with asyncio.timeout(TIMEOUT):
+            infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except (OSError, asyncio.TimeoutError):
         return None
     return infos[0][4][0] if infos else None

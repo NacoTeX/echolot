@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.7.0
+
+**Ein Raum im Dashboard, Links und Rechts aus zwei Gängen, Aufzeichnen
+und Abspielen (Messdefinition 7).**
+
+- **Dashboard-Karte** `custom:echolot-room-card`: ein Raum live im
+  Home-Assistant-Dashboard — Plan, Personen, Zonen, hell oder dunkel wie
+  Home Assistant. Die Raumseite hat dafür *Im Dashboard*: Datei,
+  Ressourcen-Zeile und das YAML mit Raum-ID und Add-on-Kürzel zum
+  Kopieren. Die Karte öffnet eine Ingress-Sitzung wie Home Assistants
+  eigene Add-on-Seite, bestätigt sie jede Minute und erneuert sie, wenn
+  Ingress sie ablehnt; mehrere Karten teilen sich eine. Nur für
+  Administratoren — so lässt Home Assistant Add-ons öffnen; andere sehen
+  einen Hinweis.
+- **Kalibrieren → Achsen:** Echolot zeichnet zwei Wege auf den Plan, vom
+  Sensor weg und quer vor ihm; aus dem, was das Modul beim Gehen sah,
+  folgt, ob „Links und rechts tauschen“ an gehört und ob der Sensor auf
+  dem Plan in die richtige Richtung blickt. Vorgeschlagen wird nur, was
+  eindeutig ist; übernommen erst auf Tipp, vom Server neu gerechnet und an
+  Sensor, Montage und Raumstand gebunden. Der Gang wird mit einer eigenen
+  Zielverfolgung gefunden, die Reflexionen, Blitze, Aussetzer und
+  Spiegelbilder in Wänden auseinanderhält — an 5 400 simulierten Gängen
+  geprüft, an einem echten Modul noch nicht (siehe „Was offen ist“).
+- **Aufzeichnen und abspielen:** *Raum → Aufzeichnen* hält die Meldungen
+  eines Sensors fest (10 s bis 60 min, ohne Schlüssel und WLAN), mit
+  Marken für Personen, Zonen, Standpunkte und Notizen. Danach: Bericht
+  gegen die Marken, Vergleich mit anderen Filtern oder dem jetzigen Raum,
+  Wiedergabe auf der Karte bis 16-fach, Export und Import.
+- **Messdefinition 7.** Eine Meldung, die das Sensormodell nicht
+  unterbringen kann — Schrägstrecke kürzer als der Höhenunterschied —,
+  zählt nirgends; bisher lag sie am Fuß des Sensors und zählte dort.
+  Karte und Kalibrierung zeichnen sie als *ohne Ort*. Die Glättung arbeitet
+  mit einer Zeitkonstante (0,29 s normal, 0,70 s stark) statt mit einem
+  festen Anteil je Meldung, gleich lang bei jeder Melderate; bei fünf
+  Meldungen je Sekunde wie bisher.
+- **Ausrichtung (Verfahren 3)** nimmt die Wände eines gezeichneten Umrisses
+  statt des Rechtecks, und nennt Standpunkte, die das Modul näher meldet,
+  als das Modell erlaubt.
+- **Welche Firmware läuft:** Die Sensorseite zeigt die Echolot-Firmware
+  (Version und Stand, als *aktuell* oder *älterer Stand*), die
+  ESPHome-Version mit Bauzeit und die Radarchip-Firmware — wie der Sensor
+  sie selbst meldet. Die Firmware trägt dafür ihren Stand im
+  ESPHome-Projekt (`nacotex.echolot`); ältere Sensoren zeigen *unbekannt*
+  bis zum nächsten Aufspielen.
+- **Neues Aussehen** nach Apples aktueller Gestaltung: Glas für
+  Seitenleiste, Tab-Leiste, Blätter, Dialoge und Meldungen, Haarlinien,
+  Kapselknöpfe, iOS-Segmentschalter, große Titel, hell und dunkel; weniger
+  Bewegung, wer das im System eingestellt hat.
+- **Korrekturen:** Python 3.11 verlor in `asyncio.wait_for` einen Abbruch,
+  der mit dem Ende des Wartens zusammenfiel — ein Radar-Link oder die
+  Raumauswertung ließ sich dann nicht stoppen; jetzt `asyncio.timeout`.
+  MQTT baut die Entitäten eines Raums nur einmal; das Nachladen bei einer
+  Montageänderung hält eine Referenz auf seine Aufgabe. Das Download-Symbol
+  war doppelt definiert. Aufgeräumt: eine Replay-Schleife statt zwei, ein
+  gemeinsamer Supervisor-Zugang, ungenutzter Code entfernt.
+
 ## 1.6.0
 
 **Eingänge: wer nicht gegangen ist, ist noch da (Messdefinition 6).** Das

@@ -250,3 +250,57 @@ def test_a_turned_item_is_placed_by_what_shows_on_the_plan():
     # Placed by that corner, every item lines up, whatever its size or angle.
     for box in result["placed"]:
         assert box[:2] == pytest.approx([0.35, 1.2])
+
+
+# --- where the sensor model has no place for a report ------------------------------
+
+SLANT = {"x": 2.0, "y": 0.0, "angle": 0, "slant": True, "mount_height_m": 2.2, "target_height_m": 1.0}
+OFFSET = {"x": 2.0, "y": 0.0, "angle": 0, "range_offset_m": 0.3}
+#: Mounted below the body's height — on a sideboard: the slant is the same.
+LOW = {"x": 2.0, "y": 0.0, "angle": 0, "slant": True, "mount_height_m": 0.6, "target_height_m": 1.2}
+NEAR = [(0.0, 1.3), (0.0, 1.2), (0.3, 1.0), (0.0, 0.8), (0.0, 0.2), (0.0, 0.0), (1.0, 3.0)]
+
+
+def test_a_report_shorter_than_the_slant_allows_falls_short():
+    """1.2 m between the module and the body: no point on the floor gives
+    a slant line shorter than that. `correct` still has to put the report
+    somewhere — the sensor's foot — so how far short it falls is said
+    separately."""
+    assert geometry.model_shortfall(0.0, 1.3, SLANT) == 0.0
+    assert geometry.model_shortfall(0.0, 1.2, SLANT) == pytest.approx(0.0, abs=1e-12)
+    assert geometry.model_shortfall(0.0, 1.1, SLANT) == pytest.approx(0.1)
+    assert geometry.model_shortfall(0.0, 0.8, SLANT) == pytest.approx(0.4)
+    assert geometry.correct(0.0, 0.8, SLANT) == (0.0, 0.0)  # placed at the foot all the same
+    # A range offset: reports inside it fall short by as much.
+    assert geometry.model_shortfall(0.0, 0.2, OFFSET) == pytest.approx(0.1)
+    assert geometry.model_shortfall(0.0, 0.5, OFFSET) == 0.0
+    # Mounted below the body, the height difference counts all the same.
+    assert geometry.model_shortfall(0.0, 0.2, LOW) == pytest.approx(0.4)
+    # The neutral model places everything.
+    assert geometry.model_shortfall(0.0, 0.0, {"x": 0, "y": 0}) == 0.0
+    assert geometry.MODEL_TOLERANCE_M == 0.2
+
+
+def test_the_nearest_place_on_a_wall():
+    assert geometry.nearest_on_polygon(0.5, 0.5, L_SHAPE) == pytest.approx((0.5, 0.0))
+    # In the corner cut out of the L: onto the nearer of the two inner walls.
+    assert geometry.nearest_on_polygon(2.5, 2.0, L_SHAPE) == pytest.approx((2.5, 1.0))
+    assert geometry.nearest_on_polygon(1.4, 3.0, L_SHAPE) == pytest.approx((1.0, 3.0))
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_the_browser_finds_the_same_reports_short():
+    models = MODELS + [SLANT, OFFSET, LOW]
+    cases = [[p, m] for p in NEAR + POINTS for m in models]
+    script = f"""
+      const g = require({json.dumps(str(JS))});
+      console.log(JSON.stringify({{
+        tolerance: g.MODEL_TOLERANCE_M,
+        short: {json.dumps(cases)}.map(([[x, y], m]) => g.modelShortfall(x, y, m)),
+      }}));
+    """
+    result = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert result["tolerance"] == geometry.MODEL_TOLERANCE_M
+    for ((x, y), model), js in zip(cases, result["short"]):
+        assert js == pytest.approx(geometry.model_shortfall(x, y, model), abs=1e-12)
+    assert any(v > geometry.MODEL_TOLERANCE_M for v in result["short"])  # the cases reach past it

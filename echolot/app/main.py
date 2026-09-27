@@ -20,11 +20,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from app import alignment, builder, devices, mqtt_bridge, reachability, rooms
+from app import alignment, axes, builder, dashboard, devices, mqtt_bridge, reachability, recording, replay, rooms
 from app.board_registry import BOARDS
 from app.calibration import Captures
 from app.radar_link import MOUNT_MODES, MountingError, links
-from app.room_engine import RoomEngine
+from app.room_engine import MEASUREMENT_VERSION, RoomEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("echolot")
@@ -35,6 +35,12 @@ engine = RoomEngine(links)
 links.add_listener(engine.wake)
 captures = Captures(links)
 links.add_listener(captures.on_frame)
+recorder = recording.Recorder(links)
+links.add_line_listener(recorder.on_line)
+links.add_link_listener(recorder.on_link)
+# Every evaluation, at least twice a second: a recording stops on time
+# even while its sensor sends nothing.
+engine.add_listener(lambda _rooms, _results: recorder.tick())
 
 
 def _module_mounting(device_id: str) -> bool:
@@ -47,9 +53,31 @@ def _module_mounting(device_id: str) -> bool:
     return rooms.note_module_mounting(device_id, mounting) is not None
 
 
+#: Refreshes started from a callback, held until they are done: the loop
+#: keeps only a weak reference to a task, and one nobody holds can be
+#: collected before it has run.
+_background_refreshes: set = set()
+
+
+def _refresh_done(task: asyncio.Task) -> None:
+    _background_refreshes.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Neu laden nach geänderter Montage fehlgeschlagen", exc_info=task.exception())
+
+
 def _on_module_mounting(device_id: str) -> None:
-    if _module_mounting(device_id):
-        asyncio.get_running_loop().create_task(refresh())
+    if not _module_mounting(device_id):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called outside the add-on's loop (a test, a library calling back
+        # from a thread). What changed is stored; the next refresh loads it.
+        logger.debug("Montage von %s gespeichert, ohne laufende Event-Loop", device_id)
+        return
+    task = loop.create_task(refresh())
+    _background_refreshes.add(task)
+    task.add_done_callback(_refresh_done)
 
 
 links.add_mounting_listener(_on_module_mounting)
@@ -68,7 +96,9 @@ async def refresh() -> None:
     """
     device_list = devices.list_devices()
     await links.sync(device_list)
-    engine.load(rooms.list_rooms(), device_list)
+    room_list = rooms.list_rooms()
+    engine.load(room_list, device_list)
+    recorder.sync(room_list)
 
 
 @asynccontextmanager
@@ -76,6 +106,9 @@ async def lifespan(_app: FastAPI):
     interrupted = devices.mark_interrupted_jobs()
     if interrupted:
         logger.info("Unterbrochene Jobs zurückgesetzt: %s", ", ".join(interrupted))
+    cut = recording.mark_interrupted()
+    if cut:
+        logger.info("Unterbrochene Aufzeichnungen: %s", ", ".join(cut))
     await refresh()
     engine.start()
 
@@ -87,6 +120,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        recorder.stop_all("Add-on beendet")
         await engine.stop()
         await links.stop_all()
         if task:
@@ -243,6 +277,19 @@ def api_info() -> dict:
     }
 
 
+@app.get("/api/dashboard-card")
+async def api_dashboard_card() -> dict:
+    """What the room page needs to hand out the dashboard card: the file,
+    where Home Assistant serves it from, and this add-on's slug (None
+    outside Home Assistant)."""
+    return {
+        "slug": await dashboard.own_slug(),
+        "file": dashboard.CARD_FILE,
+        "resource": dashboard.CARD_RESOURCE,
+        "card_version": dashboard.CARD_VERSION,
+    }
+
+
 @app.get("/api/mqtt/status")
 def api_mqtt_status() -> dict:
     return mqtt_bridge.bridge.status()
@@ -269,6 +316,9 @@ def _device_view(device: devices.Device) -> dict:
     data = device.public()
     snap = links.snapshot(device.id)
     data["link"] = snap.as_dict() if snap else None
+    # What runs on the node, only while it is connected: after a flash the
+    # last answer describes the image that was replaced.
+    data["firmware_running"] = builder.running_firmware(snap.node) if snap and snap.connected else None
     room = rooms.room_for_device(device.id)
     data["room"] = {"id": room.id, "name": room.name} if room else None
     return data
@@ -704,13 +754,88 @@ async def api_start_capture(room_id: str, payload: dict) -> dict:
         raise HTTPException(status_code=422, detail="Der zugeordnete Sensor existiert nicht mehr")
     try:
         standpoint = _standpoint_request(payload["standpoint"]) if payload.get("standpoint") is not None else None
+        walk = _walk_request(payload.get("walk"), room) if payload.get("kind") == "walk" else None
         capture = captures.start(
             room, str(payload.get("kind")),
-            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"), standpoint=standpoint,
+            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"), standpoint=standpoint, walk=walk,
         )
     except (TypeError, ValueError) as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
     return captures.view(capture)
+
+
+def _walk_request(wanted, room) -> dict:
+    """The way drawn for a walk (axes.py): which leg, from where to where
+    in the room."""
+    if not isinstance(wanted, dict) or wanted.get("leg") not in ("away", "across"):
+        raise ValueError("Ein Gang braucht leg (away oder across), from und to")
+    try:
+        start = [float(v) for v in wanted["from"]]
+        end = [float(v) for v in wanted["to"]]
+    except (KeyError, TypeError, ValueError) as err:
+        raise ValueError("from und to sind Punkte [x, y] im Raum") from err
+    if len(start) != 2 or len(end) != 2 or not all(math.isfinite(v) for v in start + end):
+        raise ValueError("from und to sind Punkte [x, y] im Raum")
+    for x, y in (start, end):
+        if not (-1 <= x <= room.width + 1 and -1 <= y <= room.height + 1):
+            raise ValueError("Der Gang liegt außerhalb des Raums")
+    if math.hypot(end[0] - start[0], end[1] - start[1]) < 1.0:
+        raise ValueError("Der Gang ist kürzer als 1 m")
+    return {"leg": wanted["leg"], "from": start, "to": end}
+
+
+def _axes_legs(payload: dict) -> dict:
+    """The walks handed in: {"away": {...}, "across": {...}}, each with
+    from, to (room) and start_raw, end_raw (sensor metres)."""
+    legs = {}
+    for leg in ("away", "across"):
+        value = payload.get(leg)
+        if value is None:
+            continue
+        try:
+            legs[leg] = {k: [float(v) for v in value[k]] for k in ("from", "to", "start_raw", "end_raw")}
+        except (KeyError, TypeError, ValueError) as err:
+            raise HTTPException(status_code=422, detail=f"Gang „{leg}“: from, to, start_raw, end_raw") from err
+        if not all(len(p) == 2 and all(math.isfinite(v) for v in p) for p in legs[leg].values()):
+            raise HTTPException(status_code=422, detail=f"Gang „{leg}“: jeder Punkt ist [x, y]")
+    if not legs:
+        raise HTTPException(status_code=422, detail="Mindestens ein Gang ist nötig")
+    return legs
+
+
+def _axes_conflicts(room, basis: dict) -> list[str]:
+    """Why walks, or a verdict on them, no longer fit the room."""
+    changed = []
+    if basis.get("device_id") != room.sensor.device_id:
+        changed.append("anderer Sensor")
+    if basis.get("epoch") != room.calibration.mounting_epoch:
+        changed.append("Sensor neu montiert")
+    if "revision" in basis and basis["revision"] != room.revision and not changed:
+        changed.append("Raum geändert")
+    return changed
+
+
+@app.post("/api/rooms/{room_id}/axes")
+async def api_axes_verdict(room_id: str, payload: dict) -> dict:
+    """What two walks (captures of kind "walk") say about the module's
+    axes, against the sensor as it stands on the plan. Changes nothing.
+
+    `device_id` and `epoch` are the walks' (as their captures name them):
+    walked with another sensor, or before a remount, they say nothing
+    about this one. The answer's `basis` binds taking it (PUT
+    calibration, `axes`) to the room as it is now.
+    """
+    room = _room_or_404(room_id)
+    legs = _axes_legs(payload)
+    walked = {"device_id": payload.get("device_id"), "epoch": payload.get("epoch")}
+    changed = _axes_conflicts(room, walked)
+    if changed:
+        raise _calibration_conflict(rooms.CalibrationConflict(
+            "Die Gänge passen nicht mehr zum Sensor (" + ", ".join(changed) + ") — bitte neu gehen.", changed, room,
+        ))
+    result = axes.verdict(room.sensor.model_dump(), **legs)
+    result["basis"] = {**walked, "revision": room.revision}
+    return result
 
 
 def _keep_standpoint(capture, view: dict) -> None:
@@ -797,7 +922,7 @@ def _solve_for(room: rooms.Room, pairs: list, checks: list, key: str, heights: d
         **room.sensor.model_dump(),
         **{k: heights[k] for k in ("mount_height_m", "target_height_m") if k in heights},
     })
-    result = alignment.solve(pairs, sensor.model_dump(), room.width, room.height, checks=checks)
+    result = alignment.solve(pairs, sensor.model_dump(), room.width, room.height, checks=checks, outline=room.outline)
     # What this was computed for. Applying checks it against the room.
     result["basis"] = {
         "revision": room.revision,
@@ -970,9 +1095,10 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
 
     Any of: `filter` {confirm_s, smoothing}; `mounting` {mount_height_m,
     target_height_m}; `reset_model` true; `interference` {spots,
-    device_id, epoch}, or null to forget the learned spots. An alignment
-    is applied on its own route (alignment/apply), bound to what it was
-    computed for.
+    device_id, epoch}, or null to forget the learned spots; `axes`
+    {away, across, basis}, the walks and the `basis` POST axes answered
+    with. An alignment is applied on its own route (alignment/apply),
+    bound to what it was computed for.
     """
     room = _room_or_404(room_id)
     sensor: dict = {}
@@ -989,6 +1115,33 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
         # Heights alone, before any standpoint is measured.
         wanted = payload["mounting"] or {}
         sensor.update({k: wanted[k] for k in ("mount_height_m", "target_height_m") if k in wanted})
+    if "axes" in payload:
+        # What the two walks say (POST axes), computed once more here for
+        # the room it was shown for: what is kept is what the server
+        # computes, not what a page sends.
+        wanted = payload["axes"]
+        if not isinstance(wanted, dict) or not isinstance(wanted.get("basis"), dict):
+            raise HTTPException(status_code=422, detail="„axes“ braucht die Gänge und den Stand, für den sie ausgewertet wurden (basis)")
+        legs = _axes_legs(wanted)
+        changed = _axes_conflicts(room, {"revision": None, **wanted["basis"]})  # here the revision is needed
+        if changed:
+            raise _calibration_conflict(rooms.CalibrationConflict(
+                "Die Auswertung passt nicht mehr zum Raum (" + ", ".join(changed) + ") — sie wird neu berechnet.",
+                changed, room,
+            ))
+        result = axes.verdict(room.sensor.model_dump(), **legs)
+        if not result["ok"]:
+            raise HTTPException(status_code=422, detail=result["messages"][0] if result["messages"] else "Kein eindeutiges Ergebnis")
+        sensor["mirror"] = result["mirror"]
+        if result["angle"] is not None:
+            sensor["angle"] = result["angle"]
+        calibration["axes_check"] = {
+            "checked_at": time.time(), "mirror": result["mirror"],
+            "angle": result["angle"] if result["angle"] is not None else room.sensor.angle,
+            "angle_changed": result["angle"] is not None,
+            "mirror_changed": result["mirror"] != room.sensor.mirror,
+            **{k: result[k] for k in ("module_angle_deg", "plan_error_deg", "across_error_deg")},
+        }
     if payload.get("reset_model"):
         # Back to the module's positions as they are; placement stays.
         sensor.update(dict(rooms.NEUTRAL_MODEL))
@@ -1037,6 +1190,152 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
     return _room_view(updated)
 
 
+# --- recordings ------------------------------------------------------------
+#
+# async throughout: the recorder is fed on the event loop by the links.
+
+
+def _recording_error(err: recording.RecordingError, status: int = 409) -> HTTPException:
+    return HTTPException(status_code=status, detail=str(err))
+
+
+@app.get("/api/recordings")
+async def api_list_recordings() -> dict:
+    return {"recordings": recording.list_recordings(), "usage": recording.usage(),
+            "active": recorder.active()}
+
+
+@app.post("/api/rooms/{room_id}/recording", status_code=201)
+async def api_start_recording(room_id: str, payload: dict | None = None) -> dict:
+    """Start recording what the room's sensor says — off until asked, and
+    it stops by itself after `limit_s` seconds."""
+    payload = payload or {}
+    room = _room_or_404(room_id)
+    device = devices.get_device(room.sensor.device_id) if room.sensor.device_id else None
+    try:
+        limit_s = float(payload.get("limit_s", recording.DEFAULT_LIMIT_S))
+        return recorder.start(room, device, limit_s=limit_s, note=str(payload.get("note") or ""),
+                              definition=MEASUREMENT_VERSION, alignment=alignment.VERSION,
+                              addon=builder.addon_version())
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=422, detail="Dauer in Sekunden angeben") from err
+    except recording.RecordingError as err:
+        raise _recording_error(err) from err
+
+
+@app.get("/api/rooms/{room_id}/recording", response_model=None)
+async def api_recording_status(room_id: str) -> dict | Response:
+    _room_or_404(room_id)
+    status = recorder.status(room_id)
+    return status if status is not None else Response(status_code=204)
+
+
+@app.post("/api/rooms/{room_id}/recording/stop")
+async def api_stop_recording(room_id: str) -> dict:
+    stopped = recorder.stop(room_id, "Beendet")
+    if stopped is None:
+        raise HTTPException(status_code=404, detail="Für diesen Raum läuft keine Aufzeichnung")
+    return stopped
+
+
+@app.post("/api/rooms/{room_id}/recording/marks", status_code=201)
+async def api_mark_recording(room_id: str, payload: dict) -> dict:
+    try:
+        mark = recording.Mark.model_validate(payload)
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    try:
+        return recorder.mark(room_id, mark)
+    except recording.RecordingError as err:
+        raise _recording_error(err) from err
+
+
+@app.delete("/api/recordings/{recording_id}", status_code=204)
+async def api_delete_recording(recording_id: str) -> None:
+    entry = recording.get(recording_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unbekannte Aufzeichnung")
+    if entry.get("state") == "recording":
+        recorder.stop(entry["room_id"], "Gelöscht")
+    recording.delete(recording_id)
+
+
+@app.get("/api/recordings/{recording_id}/export")
+async def api_export_recording(recording_id: str) -> Response:
+    """The file as it is on disk: it carries no credentials (recording.py)."""
+    entry = recording.get(recording_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unbekannte Aufzeichnung")
+    body = recording.path_of(recording_id).read_bytes()
+    stamp = time.strftime("%Y%m%d-%H%M", time.localtime(entry["started_at"]))
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", entry.get("room_name") or "raum").strip("-") or "raum"
+    return Response(body, media_type="application/x-ndjson", headers={
+        "Content-Disposition": f'attachment; filename="echolot-{name}-{stamp}.jsonl"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.post("/api/recordings/import", status_code=201)
+async def api_import_recording(request: Request) -> dict:
+    body = await request.body()
+    if len(body) > recording.MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail="Die Datei ist zu groß")
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise HTTPException(status_code=422, detail="Keine Textdatei") from err
+    try:
+        return recording.import_text(text)
+    except recording.RecordingError as err:
+        raise _recording_error(err, 422) from err
+
+
+def _variant_room(header: dict, variant: dict) -> rooms.Room:
+    base = variant.get("base", "recorded")
+    current = None
+    if base == "current":
+        current = rooms.get_room(header["room"]["id"])
+        if current is None:
+            raise ValueError("Den aufgezeichneten Raum gibt es nicht mehr")
+    elif base != "recorded":
+        raise ValueError("Grundlage: recorded oder current")
+    settings = variant.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise ValueError("settings muss ein Objekt sein")
+    return replay.room_for(header, settings, current)
+
+
+@app.post("/api/recordings/{recording_id}/replay")
+async def api_replay_recording(recording_id: str, payload: dict | None = None) -> dict:
+    """Play a recording back through the room engine, once per variant:
+    {"variants": [{"label", "base": "recorded"|"current", "settings":
+    {"confirm_s", "smoothing", "hold_s", "assume_present_s"}}], "timeline":
+    true for the first variant's evaluations, for the viewer}."""
+    payload = payload or {}
+    if recording.get(recording_id) is None:
+        raise HTTPException(status_code=404, detail="Unbekannte Aufzeichnung")
+    variants = payload.get("variants") or [{"label": "Wie aufgezeichnet", "base": "recorded"}]
+    if not isinstance(variants, list) or not 1 <= len(variants) <= 4:
+        raise HTTPException(status_code=422, detail="Eine bis vier Varianten")
+    try:
+        header, events = recording.load(recording_id)
+        prepared = [{"label": str(v.get("label") or f"Variante {i + 1}")[:60], "room": _variant_room(header, v)}
+                    for i, v in enumerate(variants)]
+    except recording.RecordingError as err:
+        raise _recording_error(err, 422) from err
+    except (ValidationError, ValueError, AttributeError) as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+
+    def work() -> dict:
+        return {"header": {k: header.get(k) for k in ("started_at", "synthetic", "definition", "addon", "note")},
+                "marks": [e for e in events if e["type"] == "mark"],
+                "room": prepared[0]["room"].model_dump(mode="json"),
+                "variants": replay.compare(header, events, prepared, timeline=bool(payload.get("timeline")))}
+
+    # Seconds of work for a long recording: off the loop that feeds the links.
+    return await asyncio.to_thread(work)
+
+
 # --- live ------------------------------------------------------------------
 
 
@@ -1053,12 +1352,23 @@ _ASSET_RE = re.compile(r'((?:href|src)=")static/')
 def index() -> HTMLResponse:
     # Single-page app: Ingress serves this behind a per-session token path
     # prefix, and every asset/API call uses relative URLs so they resolve
-    # under it. A second HTML route would nest them one level too deep.
-    #
+    # under it. An HTML route one level deeper would nest them too deep.
+    return _page("index.html")
+
+
+@app.get("/embed", response_class=HTMLResponse)
+def embed() -> HTMLResponse:
+    """One room, live, for the dashboard card (app/dashboard.py). The
+    room is in the query — `embed?room=<id>` — so the page sits beside
+    index.html and its relative URLs resolve the same way."""
+    return _page("embed.html")
+
+
+def _page(name: str) -> HTMLResponse:
     # Every file the page loads comes from the versioned asset path (see
     # ASSET_PREFIX), so nothing between here and the browser can pair
     # this page with the files of another release; the page itself is
     # never cached.
-    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = (STATIC_DIR / name).read_text(encoding="utf-8")
     html = _ASSET_RE.sub(lambda m: f"{m.group(1)}{ASSET_PREFIX}/", html)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

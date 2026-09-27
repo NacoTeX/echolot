@@ -6,7 +6,6 @@ The one that matters most: a room without a current measurement is
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -242,3 +241,23 @@ def test_somebody_beside_the_sofa_counts_in_its_zone_within_the_margin():
     engine.load([room(furniture=[sofa], zones=[{**zone, "margin_m": 0.0}])], [device()])
     feed(links, "1|R|2|-7,36", clock.now)
     assert engine.evaluate()[0]["zones"][0]["count"] == 0
+
+
+def test_the_engine_stops_even_when_woken_as_it_is_stopped():
+    """A frame that wakes the engine in the same breath as the add-on
+    stops it: Python 3.11's asyncio.wait_for returned the finished wait and
+    swallowed the cancellation, the loop went on, and stop() waited for it
+    for good."""
+    import asyncio
+
+    async def run():
+        engine = RoomEngine(Links())
+        engine.start()
+        await asyncio.sleep(0.01)  # the loop is waiting to be woken
+        engine.wake()
+        stopping = asyncio.get_running_loop().create_task(engine.stop())
+        done, _ = await asyncio.wait({stopping}, timeout=2)
+        assert stopping in done
+        stopping.result()
+
+    asyncio.run(run())

@@ -15,6 +15,7 @@ broker acknowledged every one of them. The Wi-Fi CSI zones of earlier
 versions leave through the same queue.
 """
 
+import functools
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ from pathlib import Path
 import httpx
 import paho.mqtt.client as mqtt
 
+from app import supervisor
 from app.room_engine import filter_settings
 
 logger = logging.getLogger("echolot.mqtt")
@@ -140,6 +142,11 @@ class Entity:
     def discovery_topic(self) -> str:
         return f"{DISCOVERY_PREFIX}/{self.component}/{BASE_TOPIC}/{self.key}/config"
 
+    @functools.cached_property
+    def discovery_payload(self) -> str:
+        """The discovery message, serialized once per entity."""
+        return json.dumps(self.discovery, sort_keys=True)
+
     def topics(self) -> list[str]:
         extra = [self.attributes_topic] if self.attributes_topic else []
         return [self.discovery_topic, self.state_topic, *extra, *self.owned]
@@ -235,8 +242,7 @@ def room_entities(room) -> list[Entity]:
 
 async def fetch_broker_config() -> dict:
     """Ask the Supervisor for the MQTT service it manages."""
-    token = os.environ.get("ECHOLOT_SUPERVISOR_TOKEN") or os.environ.get("SUPERVISOR_TOKEN")
-    base = os.environ.get("ECHOLOT_SUPERVISOR_URL", "http://supervisor")
+    base, token = supervisor.access()
     if not token:
         raise MqttUnavailable("Kein SUPERVISOR_TOKEN vorhanden")
     try:
@@ -340,7 +346,7 @@ class Bridge:
     def announce(self, entity: Entity) -> bool:
         if not self.ready:
             return False
-        return self._publish_changed(entity.discovery_topic, json.dumps(entity.discovery, sort_keys=True))
+        return self._publish_changed(entity.discovery_topic, entity.discovery_payload)
 
     def publish(self, topic: str, payload: str) -> bool:
         return self.ready and self._publish_changed(topic, payload)
@@ -385,6 +391,8 @@ class RoomPublisher:
     def __init__(self, target: Bridge | None = None) -> None:
         self.bridge = target or bridge
         self.announced, self.tombstones = load_state()
+        #: room id -> (room, its entities, its attributes JSON).
+        self._prepared: dict[str, tuple] = {}
 
     def __call__(self, rooms, results) -> None:
         try:
@@ -392,8 +400,23 @@ class RoomPublisher:
         except Exception:  # noqa: BLE001 - a bad round must not kill the loop
             logger.exception("MQTT publish cycle failed")
 
+    def _prepare(self, room) -> tuple[list[Entity], str]:
+        """A room's entities and the attributes they carry, built once per
+        room object. The engine replaces its rooms on every load and never
+        changes one in place, so the same object means the same entities —
+        building them anew every round, up to ten times a second, only to
+        find nothing changed was work for nobody."""
+        prepared = self._prepared.get(room.id)
+        if prepared is None or prepared[0] is not room:
+            prepared = (room, room_entities(room), json.dumps(filter_settings(room), sort_keys=True))
+            self._prepared[room.id] = prepared
+        return prepared[1], prepared[2]
+
     def publish(self, rooms, results) -> None:
-        entities = {e.key: e for room in rooms for e in room_entities(room)}
+        prepared = {room.id: self._prepare(room) for room in rooms}
+        for room_id in set(self._prepared) - set(prepared):
+            del self._prepared[room_id]
+        entities = {e.key: e for entity_list, _ in prepared.values() for e in entity_list}
         by_room = {r["room_id"]: r for r in results}
 
         # A queued delete for an entity that exists again is not a delete
@@ -417,8 +440,8 @@ class RoomPublisher:
             result = by_room.get(room.id)
             available = bool(result and result["available"])
             zone_state = {z["id"]: z for z in (result or {}).get("zones", [])}
-            attributes = json.dumps(filter_settings(room), sort_keys=True)
-            for entity in room_entities(room):
+            entity_list, attributes = prepared[room.id]
+            for entity in entity_list:
                 if not self.bridge.announce(entity):
                     continue
                 if entity.key not in self.announced or self.announced[entity.key] != entity.topics():

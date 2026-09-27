@@ -5,17 +5,21 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 6 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 7 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
      (the firmware's heartbeat) is no new report (radar_link):
-     positions are followed from report to report and smoothed, and a
+     positions are followed from report to report and smoothed with a
+     time constant (tracking.SMOOTHING_TAU), and a
      new target is confirmed only once it has been reported for the
      room's confirmation time outside the learned interference spots.
   2. Each target of the latest report is corrected by the sensor model
      the calibration fitted — distance and angle scale, slant line — and
      turned into room coordinates (geometry.to_room).
+     A report more than geometry.MODEL_TOLERANCE_M below what that model
+     can place — nearer than the slant line or the range offset allows —
+     has no place: status "invalid", counted nowhere.
   3. Outside the walls by more than the room's edge margin: shown on the
      map, counted nowhere. Radar sees through drywall. The walls are the
      room's outline when it has one (niches, L-shapes), else its
@@ -36,7 +40,11 @@ is, the room stays occupied, for at most the room's assume_present_s, and
 until a target first reported away from the entrances counts again. Without entrances
 nothing of this applies. The person count stays what was measured.
 
-Definition 5 (1.5) had no entrances. Definition 4 (1.4) counted only the targets of the latest report: one
+Definition 6 (1.6) put a report the sensor model cannot place at the
+sensor's foot and counted it there, and smoothed by a fixed share per
+report — the same at five reports a second, five times slower at two
+than at ten. Definition 5 (1.5) had no entrances.
+Definition 4 (1.4) counted only the targets of the latest report: one
 dropped report took a person out of the count and put them back.
 Definition 3 (1.3) counted heartbeat repeats as reports, took only the
 latest report per evaluation, at evaluation time, and could match a
@@ -63,14 +71,14 @@ from dataclasses import dataclass, field
 from app import geometry
 from app.radar_frame import QUIET, RECEIVING
 from app.rooms import active_interference
-from app.tracking import SMOOTHING_ALPHA, Tracker
+from app.tracking import SMOOTHING_TAU, Tracker
 
 logger = logging.getLogger("echolot.engine")
 
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 6
+MEASUREMENT_VERSION = 7
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -326,7 +334,7 @@ class RoomEngine:
             follow.tracker.update(
                 points, received_at,
                 confirm_s=room.calibration.confirm_s,
-                alpha=SMOOTHING_ALPHA[room.calibration.smoothing],
+                tau=SMOOTHING_TAU[room.calibration.smoothing],
                 spots=spots,
             )
         return follow.tracker
@@ -374,7 +382,11 @@ class RoomEngine:
         for track in sorted(tracker.visible() + held, key=lambda t: t.id):
             x, y = geometry.to_room(track.x, track.y, placement)
             zone_ids: list[str] = []
-            if not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):
+            if geometry.model_shortfall(track.x, track.y, placement) > geometry.MODEL_TOLERANCE_M:
+                # The sensor model has no place for it (see geometry): the
+                # position it got — the sensor's foot — says nothing.
+                status = "invalid"
+            elif not geometry.within_walls(x, y, room.width, room.height, room.outline, room.edge_margin_m):
                 status = "outside"
             elif any(geometry.point_in_polygon(x, y, z.points) for z in exclude):
                 status = "excluded"
@@ -388,10 +400,23 @@ class RoomEngine:
                     geometry.to_room(*track.reported, placement),
                     geometry.to_room(*track.origin, placement),
                 )
+            rep_x, rep_y = track.reported
+            mx, my = geometry.to_room(rep_x, rep_y, placement)
             targets.append({
                 "id": track.id,
+                # Four positions, kept apart (review P0-03):
+                #   x, y      the track's estimate in the room — what counts;
+                #   measured  the latest report, corrected, in the room;
+                #   reported  that report as the module gave it, sensor metres;
+                #   sensor    the estimate in sensor metres.
+                # Where the map draws a target in between is the browser's
+                # business, and counts for nothing.
                 "x": round(x, 3), "y": round(y, 3),
-                # Sensor coordinates of the same (smoothed) position.
+                "measured": [round(mx, 3), round(my, 3)],
+                "reported": [round(rep_x, 3), round(rep_y, 3)],
+                "sensor": [round(track.x, 3), round(track.y, 3)],
+                # Before 1.7 the only extra: the smoothed sensor position,
+                # under a name that suggested otherwise. Kept for readers of it.
                 "raw_x": round(track.x, 3), "raw_y": round(track.y, 3),
                 "status": status, "zones": zone_ids,
             })
@@ -452,8 +477,12 @@ class RoomEngine:
 
     async def _loop(self) -> None:
         while True:
+            # asyncio.timeout, not wait_for: on Python 3.11 wait_for hands
+            # back a wait that has just ended even when stop() cancels in
+            # the same moment, and the loop would go on for good.
             try:
-                await asyncio.wait_for(self._wake.wait(), IDLE_INTERVAL)
+                async with asyncio.timeout(IDLE_INTERVAL):
+                    await self._wake.wait()
             except asyncio.TimeoutError:
                 pass
             self._wake.clear()
