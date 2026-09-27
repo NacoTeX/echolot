@@ -1327,17 +1327,10 @@ async def api_replay_recording(recording_id: str, payload: dict | None = None) -
         raise HTTPException(status_code=422, detail=str(err)) from err
 
     def work() -> dict:
-        out = {"header": {k: header.get(k) for k in ("started_at", "synthetic", "definition", "addon", "note")},
-               "marks": [e for e in events if e["type"] == "mark"],
-               "room": prepared[0]["room"].model_dump(mode="json"),
-               "variants": []}
-        for i, variant in enumerate(prepared):
-            timeline = replay.run(header, events, variant["room"])
-            item = {"label": variant["label"], "report": replay.report(header, events, timeline)}
-            if i == 0 and payload.get("timeline"):
-                item["timeline"] = replay.compact(timeline)
-            out["variants"].append(item)
-        return out
+        return {"header": {k: header.get(k) for k in ("started_at", "synthetic", "definition", "addon", "note")},
+                "marks": [e for e in events if e["type"] == "mark"],
+                "room": prepared[0]["room"].model_dump(mode="json"),
+                "variants": replay.compare(header, events, prepared, timeline=bool(payload.get("timeline")))}
 
     # Seconds of work for a long recording: off the loop that feeds the links.
     return await asyncio.to_thread(work)

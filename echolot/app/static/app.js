@@ -309,8 +309,8 @@ const Echolot = (() => {
   }
 
   return {
-    state, api, ApiError, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
-    people, roomStatus, register, go, start, loadData, loadInfo, ROOM_ICONS,
+    state, api, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
+    people, roomStatus, register, go, start, loadInfo, ROOM_ICONS,
     refresh: loadData,
   };
 })();

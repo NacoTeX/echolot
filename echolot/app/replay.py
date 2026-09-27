@@ -312,13 +312,17 @@ def report(header: dict, events: list[dict], timeline: list[dict]) -> dict:
     return out
 
 
-def compare(header: dict, events: list[dict], variants: list[dict]) -> list[dict]:
-    """The same recording through several rooms: [{"label", "room",
-    "report"}]. Each variant is {"label", "room": rooms.Room}."""
+def compare(header: dict, events: list[dict], variants: list[dict], timeline: bool = False) -> list[dict]:
+    """The same recording through several rooms: [{"label", "report"}],
+    each variant {"label", "room": rooms.Room}. With `timeline`, the first
+    also carries its evaluations for the viewer (compact)."""
     out = []
-    for variant in variants:
-        timeline = run(header, events, variant["room"])
-        out.append({"label": variant["label"], "report": report(header, events, timeline)})
+    for i, variant in enumerate(variants):
+        evaluations = run(header, events, variant["room"])
+        item = {"label": variant["label"], "report": report(header, events, evaluations)}
+        if timeline and i == 0:
+            item["timeline"] = compact(evaluations)
+        out.append(item)
     return out
 
 

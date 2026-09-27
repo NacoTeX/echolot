@@ -375,7 +375,6 @@ def test_walls_are_saved_through_the_editor_route(client):
 
 
 def test_the_sensor_model_is_fitted_applied_and_reset_through_the_routes(client):
-    import math
 
     c, _ = client
     _, room = room_with_sensor(c)

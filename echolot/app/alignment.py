@@ -280,7 +280,6 @@ def _select(pairs, current: dict, walls: list) -> dict:
     base = {"mount_height_m": current["mount_height_m"], "target_height_m": current["target_height_m"]}
     warnings: list[str] = []
     mirror_basis = "kept"
-    model_name = None
     candidates: list[dict] = []
     n = len(pairs)
     if n < 3:

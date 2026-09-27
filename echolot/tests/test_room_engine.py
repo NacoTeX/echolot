@@ -6,7 +6,6 @@ The one that matters most: a room without a current measurement is
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest

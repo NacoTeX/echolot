@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 import paho.mqtt.client as mqtt
 
+from app import supervisor
 from app.room_engine import filter_settings
 
 logger = logging.getLogger("echolot.mqtt")
@@ -241,8 +242,7 @@ def room_entities(room) -> list[Entity]:
 
 async def fetch_broker_config() -> dict:
     """Ask the Supervisor for the MQTT service it manages."""
-    token = os.environ.get("ECHOLOT_SUPERVISOR_TOKEN") or os.environ.get("SUPERVISOR_TOKEN")
-    base = os.environ.get("ECHOLOT_SUPERVISOR_URL", "http://supervisor")
+    base, token = supervisor.access()
     if not token:
         raise MqttUnavailable("Kein SUPERVISOR_TOKEN vorhanden")
     try:

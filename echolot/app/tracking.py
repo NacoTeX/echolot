@@ -122,9 +122,6 @@ class Tracker:
         self.tracks: list[Track] = []
         self._next_id = 1
 
-    def reset(self) -> None:
-        self.tracks = []
-
     def visible(self) -> list[Track]:
         """The targets of the latest report, in a stable order."""
         return sorted((t for t in self.tracks if t.seen), key=lambda t: t.id)

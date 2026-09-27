@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import builder, devices, main  # noqa: E402
 from app.board_registry import BOARDS  # noqa: E402
-from app.devices import BuildStatus, Device, DeviceCreate  # noqa: E402
+from app.devices import Device, DeviceCreate  # noqa: E402
 
 
 @pytest.fixture

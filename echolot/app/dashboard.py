@@ -13,9 +13,9 @@ Supervisor for it (own_slug) so the room page can hand out the card's
 configuration ready to paste.
 """
 
-import os
-
 import httpx
+
+from app import supervisor
 
 CARD_FILE = "echolot-room-card.js"
 #: Where Home Assistant serves a file put in /config/www.
@@ -35,8 +35,7 @@ async def own_slug() -> str | None:
     global _slug
     if _slug:
         return _slug
-    token = os.environ.get("ECHOLOT_SUPERVISOR_TOKEN") or os.environ.get("SUPERVISOR_TOKEN")
-    base = os.environ.get("ECHOLOT_SUPERVISOR_URL", "http://supervisor")
+    base, token = supervisor.access()
     if not token:
         return None
     try:
