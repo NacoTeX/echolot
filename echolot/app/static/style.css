@@ -544,3 +544,25 @@ h3 .icon { color: var(--muted); margin-right: 4px; }
 .cal-history .chip { margin-left: 8px; vertical-align: 1px; }
 .cal-history .actions { margin-top: 8px; }
 .cal-history .btn.active { background: var(--surface-3); }
+
+/* ------------------------------------------------------------------
+   The dashboard card's page (embed.html): one room inside Home
+   Assistant's own card, which brings the frame and the background. */
+html.embed, body.embed { height: auto; background: transparent; }
+body.embed { color: var(--text); }
+.embed-card { padding: 14px 16px 16px; }
+.embed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.embed-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-weight: 650; font-size: 17px; }
+.embed-title span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.embed-dims { color: var(--muted); font-weight: 400; font-size: 13px; white-space: nowrap; }
+.embed-stage { padding: 0; background: transparent; }
+.embed-stage svg { max-height: none; }
+.embed-note { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+
+/* "Im Dashboard": three steps with things to copy. */
+.dash-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 18px; }
+.dash-steps li { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.dash-steps li::marker { font-weight: 700; color: var(--accent); }
+.code-box { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
+.code-box textarea { flex: 1; min-width: 0; resize: none; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2); font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre; overflow-x: auto; }

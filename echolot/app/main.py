@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from app import alignment, axes, builder, devices, mqtt_bridge, reachability, recording, replay, rooms
+from app import alignment, axes, builder, dashboard, devices, mqtt_bridge, reachability, recording, replay, rooms
 from app.board_registry import BOARDS
 from app.calibration import Captures
 from app.radar_link import MOUNT_MODES, MountingError, links
@@ -274,6 +274,19 @@ def api_info() -> dict:
         "esphome": _esphome_version(),
         "mqtt": {**mqtt_bridge.bridge.status(), "wanted": mqtt_wanted()},
         "legacy_devices": len(devices.list_legacy_devices()),
+    }
+
+
+@app.get("/api/dashboard-card")
+async def api_dashboard_card() -> dict:
+    """What the room page needs to hand out the dashboard card: the file,
+    where Home Assistant serves it from, and this add-on's slug (None
+    outside Home Assistant)."""
+    return {
+        "slug": await dashboard.own_slug(),
+        "file": dashboard.CARD_FILE,
+        "resource": dashboard.CARD_RESOURCE,
+        "card_version": dashboard.CARD_VERSION,
     }
 
 
@@ -1346,12 +1359,23 @@ _ASSET_RE = re.compile(r'((?:href|src)=")static/')
 def index() -> HTMLResponse:
     # Single-page app: Ingress serves this behind a per-session token path
     # prefix, and every asset/API call uses relative URLs so they resolve
-    # under it. A second HTML route would nest them one level too deep.
-    #
+    # under it. An HTML route one level deeper would nest them too deep.
+    return _page("index.html")
+
+
+@app.get("/embed", response_class=HTMLResponse)
+def embed() -> HTMLResponse:
+    """One room, live, for the dashboard card (app/dashboard.py). The
+    room is in the query — `embed?room=<id>` — so the page sits beside
+    index.html and its relative URLs resolve the same way."""
+    return _page("embed.html")
+
+
+def _page(name: str) -> HTMLResponse:
     # Every file the page loads comes from the versioned asset path (see
     # ASSET_PREFIX), so nothing between here and the browser can pair
     # this page with the files of another release; the page itself is
     # never cached.
-    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = (STATIC_DIR / name).read_text(encoding="utf-8")
     html = _ASSET_RE.sub(lambda m: f"{m.group(1)}{ASSET_PREFIX}/", html)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

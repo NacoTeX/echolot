@@ -185,10 +185,12 @@
       this.el.querySelector("#room-head").innerHTML = `
         <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1></div>
         <div class="head-actions">
+          <button class="btn" type="button" id="room-dashboard">${icon("dashboard")}Im Dashboard</button>
           <a class="btn" href="#/room/${encodeURIComponent(room.id)}/record">${icon("record")}Aufzeichnen</a>
           <a class="btn" href="#/room/${encodeURIComponent(room.id)}/calibrate">${icon("target")}Kalibrieren</a>
           <a class="btn primary" href="#/room/${encodeURIComponent(room.id)}/edit">${icon("edit")}Raum einrichten</a>
         </div>`;
+      this.el.querySelector("#room-dashboard").addEventListener("click", () => this.showDashboardCard(room));
       this.el.querySelector("#room-dims").textContent =
         room.outline
           ? `${E.formatNumber(window.EcholotGeometry.polygonArea(room.outline))} m² · ${E.formatNumber(room.width)} × ${E.formatNumber(room.height)} m`
@@ -259,6 +261,47 @@
         : others || `<div class="empty-state">Noch keine Zonen. Unter „Raum einrichten“ zeichnest du zum Beispiel das Sofa oder den Esstisch ein.</div>`;
       this.el.querySelector("#sensor-lines").innerHTML = sensorLines(live, room);
     },
+    // How to put this room on a Home Assistant dashboard (app/dashboard.py).
+    async showDashboardCard(room) {
+      const sheet = E.openSheet("Im Dashboard");
+      sheet.body.innerHTML = `<p class="hint">Lädt …</p>`;
+      let card;
+      try { card = await api("api/dashboard-card"); } catch (err) { sheet.body.innerHTML = `<div class="notice err">${escapeHtml(err.message)}</div>`; return; }
+      // The release's own asset path, as the stylesheet came from: a
+      // cache cannot hand out the card of another release there.
+      const sheetHref = document.querySelector('link[rel="stylesheet"]').getAttribute("href");
+      const assetBase = sheetHref.slice(0, sheetHref.lastIndexOf("/") + 1);
+      const yaml = `type: custom:echolot-room-card\naddon: ${card.slug || "local_echolot"}\nroom: ${room.id}`;
+      const codeBox = (id, text) => `<div class="code-box"><textarea id="${id}" readonly rows="${text.split("\n").length}" spellcheck="false">${escapeHtml(text)}</textarea>
+        <button class="btn small" type="button" data-copy="${id}">${icon("copy")}Kopieren</button></div>`;
+      sheet.body.innerHTML = `
+        <p class="hint">Eine Karte zeigt „${escapeHtml(room.name)}“ live im Home-Assistant-Dashboard: Plan, Personen, Zonen — gezeichnet vom Add-on, sie bleibt also mit jedem Update aktuell. Home Assistant öffnet Add-ons nur für <b>Administratoren</b>; andere sehen einen Hinweis statt des Plans.</p>
+        <ol class="dash-steps">
+          <li><strong>Karte herunterladen</strong>
+            <span class="hint">und als <code>/config/www/${escapeHtml(card.file)}</code> ablegen, etwa mit dem File-editor- oder Samba-Add-on. Nur einmal nötig, für alle Räume.</span>
+            <a class="btn" href="${escapeHtml(assetBase + card.file)}" download="${escapeHtml(card.file)}">${icon("download")}${escapeHtml(card.file)}</a></li>
+          <li><strong>Als Ressource eintragen</strong>
+            <span class="hint">Einstellungen → Dashboards → ⋮ → Ressourcen → Ressource hinzufügen, Typ „JavaScript-Modul“. Danach die Seite neu laden.</span>
+            ${codeBox("dash-resource", card.resource)}</li>
+          <li><strong>Karte hinzufügen</strong>
+            <span class="hint">Dashboard bearbeiten → Karte hinzufügen → „Manuell“, und das hier einfügen:</span>
+            ${codeBox("dash-yaml", yaml)}
+            ${card.slug ? "" : `<span class="hint warn-text">Das Kürzel des Add-ons war gerade nicht zu erfahren. Steht es in der Adresszeile der Add-on-Seite anders, dort das richtige eintragen.</span>`}</li>
+        </ol>`;
+      sheet.body.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", async () => {
+        const field = sheet.body.querySelector(`#${button.dataset.copy}`);
+        try {
+          await navigator.clipboard.writeText(field.value);
+        } catch {
+          // Inside Home Assistant's frame the clipboard may be closed.
+          field.focus();
+          field.select();
+          if (!document.execCommand("copy")) { toast("Markiert — jetzt mit Strg+C / ⌘C kopieren."); return; }
+        }
+        toast("Kopiert.");
+      }));
+    },
+
     async clearPresence(button) {
       button.disabled = true;
       try {
