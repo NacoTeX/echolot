@@ -335,6 +335,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .cal-mark.check rect { fill: var(--surface); stroke: var(--present); stroke-width: .03; }
 .cal-mark.check text { font-size: .12px; fill: var(--present); }
 .cal-mark.pending text { fill: var(--accent); }
+/* The axes check: the way to walk, and where the module saw it. */
+.ax-way line { stroke: var(--accent); stroke-width: .045; stroke-linecap: round; }
+.ax-way polygon { fill: var(--accent); }
+.ax-way.other line { stroke: var(--muted); stroke-width: .03; stroke-dasharray: .07 .05; }
+.ax-way.other polygon { fill: var(--muted); }
+.ax-way.blocked line { stroke: var(--warn); stroke-dasharray: .07 .05; }
+.ax-way.blocked polygon { fill: var(--warn); }
+.cal-mark.ax-end circle { stroke: var(--accent); stroke-width: .035; }
+.cal-mark.ax-end text { fill: var(--accent); }
+.cal-mark.ax-num circle { fill: var(--surface); stroke: var(--muted); stroke-width: .025; }
+.cal-mark.ax-num text { fill: var(--muted); font-size: .13px; }
+.ax-seen line { stroke: var(--danger); stroke-width: .035; stroke-dasharray: .05 .04; stroke-linecap: round; }
+.ax-seen polygon { fill: var(--danger); }
+.ax-seen.after line { stroke: var(--present); stroke-dasharray: none; }
+.ax-seen.after polygon { fill: var(--present); }
 .cal-preview { opacity: .8; }
 .cal-preview .pl-sensor .pl-sensor-body { fill: var(--surface-3); }
 .cal-ref { fill: none; stroke: var(--muted); stroke-width: .025; stroke-dasharray: .05 .04; }
@@ -520,6 +535,8 @@ h3 .icon { color: var(--muted); margin-right: 4px; }
 .cal-point .name { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cal-point .btn.icon-only { width: 32px; min-height: 32px; }
 .cal-point.check .spot-num { border-radius: 6px; border-color: var(--present); color: var(--present); font-size: 11px; }
+.ax-leg { padding: 8px 8px 8px 10px; gap: 10px; }
+.ax-leg.done .spot-num { border-color: var(--accent); color: var(--accent); }
 .cal-sub { margin: 14px 0 8px; font-size: 14px; }
 .cal-metrics .stat-line span:first-child small { display: block; font-size: 11.5px; color: var(--faint); }
 .cal-metrics .stat-line span:last-child { white-space: nowrap; }

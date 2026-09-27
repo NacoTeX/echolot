@@ -335,7 +335,8 @@ def test_the_first_word_from_the_module_is_only_noted():
 def test_a_changed_mounting_in_the_module_drops_what_was_measured():
     room = with_standpoints()
     rooms.update_calibration(room.id, calibration={"interference": [{"x": 1, "y": 1, "r": 0.3}],
-                                                   "interference_device_id": "dev-1"})
+                                                   "interference_device_id": "dev-1",
+                                                   "axes_check": {"checked_at": 1.0, "mirror": True}})
     rooms.note_module_mounting("dev-1", {"mode": "side", "height_m": 2.6, "angle_deg": 25.0})
     align(room.id, 2.8)
     before = rooms.get_room(room.id)
@@ -343,6 +344,7 @@ def test_a_changed_mounting_in_the_module_drops_what_was_measured():
     cal = changed.calibration
     assert cal.invalidated_reason == "Montage im Modul geändert" and cal.mounting_epoch == 1
     assert cal.interference == [] and cal.alignment_id is None and cal.alignment_draft is None
+    assert cal.axes_check is None  # checked on the old mounting
     assert cal.module_mounting == {"mode": "side", "height_m": 2.4, "angle_deg": 30.0}
     assert changed.sensor.mount_height_m == 2.4
     assert changed.revision == before.revision + 1

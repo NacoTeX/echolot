@@ -956,3 +956,58 @@ def test_a_recording_through_the_api_from_start_to_playback(client):
     assert c.delete(f"/api/recordings/{rec_id}").status_code == 204
     assert c.get(f"/api/recordings/{rec_id}/export").status_code == 404
     assert c.delete(f"/api/recordings/{rec_id}").status_code == 404
+
+
+def test_the_axes_are_checked_by_two_walks_and_taken_on_request(client):
+    c, _ = client
+    device, room = room_with_sensor(c)  # 6 x 4, sensor at (3, 0) looking down
+    rid = room["id"]
+    walk = {"kind": "walk", "delay_s": 0, "duration_s": 5, "walk": {"leg": "across", "from": [2, 2], "to": [4, 2]}}
+    started = c.post(f"/api/rooms/{rid}/capture", json=walk)
+    assert started.status_code == 201, started.text
+    assert started.json()["walk"] == {"leg": "across", "from": [2.0, 2.0], "to": [4.0, 2.0]}
+    short = {**walk, "walk": {"leg": "across", "from": [2, 2], "to": [2.5, 2]}}
+    assert "kürzer als 1 m" in c.post(f"/api/rooms/{rid}/capture", json=short).json()["detail"]
+    assert c.post(f"/api/rooms/{rid}/capture", json={**walk, "walk": {"leg": "up"}}).status_code == 422
+
+    # A module that counts x the other way round than the plan assumes.
+    walked = {"device_id": device["id"], "epoch": 0}
+    legs = {
+        "away": {"from": [3, 1], "to": [3, 3], "start_raw": [0, 1], "end_raw": [0, 3]},
+        "across": {"from": [2, 2], "to": [4, 2], "start_raw": [1, 2], "end_raw": [-1, 2]},
+    }
+    answer = c.post(f"/api/rooms/{rid}/axes", json={**legs, **walked})
+    assert answer.status_code == 200, answer.text
+    verdict = answer.json()
+    assert verdict["ok"] and verdict["mirror"] is True and verdict["angle"] is None
+    assert verdict["basis"] == {**walked, "revision": c.get(f"/api/rooms/{rid}").json()["revision"]}
+    assert c.post(f"/api/rooms/{rid}/axes", json=walked).status_code == 422
+    bad = {**legs, "away": {**legs["away"], "end_raw": [0, "x"]}}
+    assert c.post(f"/api/rooms/{rid}/axes", json={**bad, **walked}).status_code == 422
+    # Walked with another sensor, or before a remount: they say nothing about this one.
+    other = c.post(f"/api/rooms/{rid}/axes", json={**legs, "device_id": "else", "epoch": 0})
+    assert other.status_code == 409 and other.json()["detail"]["changed"] == ["anderer Sensor"]
+    earlier = c.post(f"/api/rooms/{rid}/axes", json={**legs, **walked, "epoch": 7})
+    assert earlier.status_code == 409 and earlier.json()["detail"]["changed"] == ["Sensor neu montiert"]
+    assert c.get(f"/api/rooms/{rid}").json()["sensor"]["mirror"] is False  # nothing taken yet
+
+    # Taken: the server works it out once more, for the room it was shown for.
+    assert c.put(f"/api/rooms/{rid}/calibration", json={"axes": legs}).status_code == 422
+    taken = c.put(f"/api/rooms/{rid}/calibration", json={"axes": {**legs, "basis": verdict["basis"]}})
+    assert taken.status_code == 200, taken.text
+    stored = taken.json()
+    assert stored["sensor"]["mirror"] is True and stored["sensor"]["angle"] == 0.0
+    check = stored["calibration"]["axes_check"]
+    assert check["mirror"] is True and check["mirror_changed"] is True and check["angle_changed"] is False
+    assert check["across_error_deg"] == verdict["across_error_deg"] and check["checked_at"]
+    # The room has changed since (it was just taken): the same verdict is not taken twice.
+    again = c.put(f"/api/rooms/{rid}/calibration", json={"axes": {**legs, "basis": verdict["basis"]}})
+    assert again.status_code == 409 and again.json()["detail"]["changed"] == ["Raum geändert"]
+    assert again.json()["detail"]["room"]["sensor"]["mirror"] is True
+
+    # Walks that decide nothing are not taken.
+    along = {"across": {"from": [2, 2], "to": [4, 2], "start_raw": [0, 1], "end_raw": [0, 3]}}
+    fresh = c.post(f"/api/rooms/{rid}/axes", json={**along, **walked}).json()
+    assert not fresh["ok"]
+    refused = c.put(f"/api/rooms/{rid}/calibration", json={"axes": {**along, "basis": fresh["basis"]}})
+    assert refused.status_code == 422 and "keiner Einstellung eindeutig" in refused.json()["detail"]

@@ -295,6 +295,10 @@ class Calibration(BaseModel):
     #: module uses these to compute the positions it reports, so when they
     #: change, whatever was measured before describes other positions.
     module_mounting: dict | None = None
+    #: The last check of the module's axes by two walks (axes.py), as
+    #: taken: {checked_at, mirror, angle, module_angle_deg, plan_error_deg,
+    #: across_error_deg}. Gone with the mounting it was made on.
+    axes_check: dict | None = None
 
 
 class Room(BaseModel):
@@ -651,6 +655,7 @@ def invalidate_sensor(room: Room, reason: str) -> None:
     cal.mounting_epoch += 1
     # Whatever the next module says is the first word on the new mounting.
     cal.module_mounting = None
+    cal.axes_check = None
     cal.invalidated_at = time.time()
     cal.invalidated_reason = reason
 

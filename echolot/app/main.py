@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from app import alignment, builder, devices, mqtt_bridge, reachability, recording, replay, rooms
+from app import alignment, axes, builder, devices, mqtt_bridge, reachability, recording, replay, rooms
 from app.board_registry import BOARDS
 from app.calibration import Captures
 from app.radar_link import MOUNT_MODES, MountingError, links
@@ -741,13 +741,88 @@ async def api_start_capture(room_id: str, payload: dict) -> dict:
         raise HTTPException(status_code=422, detail="Der zugeordnete Sensor existiert nicht mehr")
     try:
         standpoint = _standpoint_request(payload["standpoint"]) if payload.get("standpoint") is not None else None
+        walk = _walk_request(payload.get("walk"), room) if payload.get("kind") == "walk" else None
         capture = captures.start(
             room, str(payload.get("kind")),
-            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"), standpoint=standpoint,
+            delay_s=payload.get("delay_s"), duration_s=payload.get("duration_s"), standpoint=standpoint, walk=walk,
         )
     except (TypeError, ValueError) as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
     return captures.view(capture)
+
+
+def _walk_request(wanted, room) -> dict:
+    """The way drawn for a walk (axes.py): which leg, from where to where
+    in the room."""
+    if not isinstance(wanted, dict) or wanted.get("leg") not in ("away", "across"):
+        raise ValueError("Ein Gang braucht leg (away oder across), from und to")
+    try:
+        start = [float(v) for v in wanted["from"]]
+        end = [float(v) for v in wanted["to"]]
+    except (KeyError, TypeError, ValueError) as err:
+        raise ValueError("from und to sind Punkte [x, y] im Raum") from err
+    if len(start) != 2 or len(end) != 2 or not all(math.isfinite(v) for v in start + end):
+        raise ValueError("from und to sind Punkte [x, y] im Raum")
+    for x, y in (start, end):
+        if not (-1 <= x <= room.width + 1 and -1 <= y <= room.height + 1):
+            raise ValueError("Der Gang liegt außerhalb des Raums")
+    if math.hypot(end[0] - start[0], end[1] - start[1]) < 1.0:
+        raise ValueError("Der Gang ist kürzer als 1 m")
+    return {"leg": wanted["leg"], "from": start, "to": end}
+
+
+def _axes_legs(payload: dict) -> dict:
+    """The walks handed in: {"away": {...}, "across": {...}}, each with
+    from, to (room) and start_raw, end_raw (sensor metres)."""
+    legs = {}
+    for leg in ("away", "across"):
+        value = payload.get(leg)
+        if value is None:
+            continue
+        try:
+            legs[leg] = {k: [float(v) for v in value[k]] for k in ("from", "to", "start_raw", "end_raw")}
+        except (KeyError, TypeError, ValueError) as err:
+            raise HTTPException(status_code=422, detail=f"Gang „{leg}“: from, to, start_raw, end_raw") from err
+        if not all(len(p) == 2 and all(math.isfinite(v) for v in p) for p in legs[leg].values()):
+            raise HTTPException(status_code=422, detail=f"Gang „{leg}“: jeder Punkt ist [x, y]")
+    if not legs:
+        raise HTTPException(status_code=422, detail="Mindestens ein Gang ist nötig")
+    return legs
+
+
+def _axes_conflicts(room, basis: dict) -> list[str]:
+    """Why walks, or a verdict on them, no longer fit the room."""
+    changed = []
+    if basis.get("device_id") != room.sensor.device_id:
+        changed.append("anderer Sensor")
+    if basis.get("epoch") != room.calibration.mounting_epoch:
+        changed.append("Sensor neu montiert")
+    if "revision" in basis and basis["revision"] != room.revision and not changed:
+        changed.append("Raum geändert")
+    return changed
+
+
+@app.post("/api/rooms/{room_id}/axes")
+async def api_axes_verdict(room_id: str, payload: dict) -> dict:
+    """What two walks (captures of kind "walk") say about the module's
+    axes, against the sensor as it stands on the plan. Changes nothing.
+
+    `device_id` and `epoch` are the walks' (as their captures name them):
+    walked with another sensor, or before a remount, they say nothing
+    about this one. The answer's `basis` binds taking it (PUT
+    calibration, `axes`) to the room as it is now.
+    """
+    room = _room_or_404(room_id)
+    legs = _axes_legs(payload)
+    walked = {"device_id": payload.get("device_id"), "epoch": payload.get("epoch")}
+    changed = _axes_conflicts(room, walked)
+    if changed:
+        raise _calibration_conflict(rooms.CalibrationConflict(
+            "Die Gänge passen nicht mehr zum Sensor (" + ", ".join(changed) + ") — bitte neu gehen.", changed, room,
+        ))
+    result = axes.verdict(room.sensor.model_dump(), **legs)
+    result["basis"] = {**walked, "revision": room.revision}
+    return result
 
 
 def _keep_standpoint(capture, view: dict) -> None:
@@ -1007,9 +1082,10 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
 
     Any of: `filter` {confirm_s, smoothing}; `mounting` {mount_height_m,
     target_height_m}; `reset_model` true; `interference` {spots,
-    device_id, epoch}, or null to forget the learned spots. An alignment
-    is applied on its own route (alignment/apply), bound to what it was
-    computed for.
+    device_id, epoch}, or null to forget the learned spots; `axes`
+    {away, across, basis}, the walks and the `basis` POST axes answered
+    with. An alignment is applied on its own route (alignment/apply),
+    bound to what it was computed for.
     """
     room = _room_or_404(room_id)
     sensor: dict = {}
@@ -1026,6 +1102,33 @@ async def api_apply_calibration(room_id: str, payload: dict) -> dict:
         # Heights alone, before any standpoint is measured.
         wanted = payload["mounting"] or {}
         sensor.update({k: wanted[k] for k in ("mount_height_m", "target_height_m") if k in wanted})
+    if "axes" in payload:
+        # What the two walks say (POST axes), computed once more here for
+        # the room it was shown for: what is kept is what the server
+        # computes, not what a page sends.
+        wanted = payload["axes"]
+        if not isinstance(wanted, dict) or not isinstance(wanted.get("basis"), dict):
+            raise HTTPException(status_code=422, detail="„axes“ braucht die Gänge und den Stand, für den sie ausgewertet wurden (basis)")
+        legs = _axes_legs(wanted)
+        changed = _axes_conflicts(room, {"revision": None, **wanted["basis"]})  # here the revision is needed
+        if changed:
+            raise _calibration_conflict(rooms.CalibrationConflict(
+                "Die Auswertung passt nicht mehr zum Raum (" + ", ".join(changed) + ") — sie wird neu berechnet.",
+                changed, room,
+            ))
+        result = axes.verdict(room.sensor.model_dump(), **legs)
+        if not result["ok"]:
+            raise HTTPException(status_code=422, detail=result["messages"][0] if result["messages"] else "Kein eindeutiges Ergebnis")
+        sensor["mirror"] = result["mirror"]
+        if result["angle"] is not None:
+            sensor["angle"] = result["angle"]
+        calibration["axes_check"] = {
+            "checked_at": time.time(), "mirror": result["mirror"],
+            "angle": result["angle"] if result["angle"] is not None else room.sensor.angle,
+            "angle_changed": result["angle"] is not None,
+            "mirror_changed": result["mirror"] != room.sensor.mirror,
+            **{k: result[k] for k in ("module_angle_deg", "plan_error_deg", "across_error_deg")},
+        }
     if payload.get("reset_model"):
         # Back to the module's positions as they are; placement stays.
         sensor.update(dict(rooms.NEUTRAL_MODEL))
