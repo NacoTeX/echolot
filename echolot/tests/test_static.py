@@ -29,3 +29,16 @@ def test_every_icon_the_pages_ask_for_is_there():
             asked.update(re.findall(r'"([a-z0-9-]+)"', call))
     missing = sorted(asked - drawn - {"icon"})
     assert missing == []
+
+
+def test_the_plan_labels_keep_their_letters_apart():
+    """letter-spacing computes to a length where it is set and is inherited
+    as that length. From the page it reached the plan's labels, a sixth of
+    a unit high in metres, and laid their letters on top of each other."""
+    css = re.sub(r"/\*.*?\*/", "", (STATIC / "style.css").read_text(encoding="utf-8"), flags=re.S)
+    rules = [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)]
+    for selector, body in rules:
+        names = {name.strip() for name in selector.split(",")}
+        if names & {"html", "body", "body:not(.embed)", ":root"}:
+            assert "letter-spacing" not in body, selector
+    assert any(sel == "svg text" and "letter-spacing: normal" in body for sel, body in rules)

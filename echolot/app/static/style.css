@@ -89,7 +89,6 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto, sans-serif;
-  letter-spacing: -.005em;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
 }
@@ -101,7 +100,11 @@ body:not(.embed) {
     var(--bg);
   background-attachment: fixed;
 }
-button, input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
+/* Letter spacing is a length once computed, and inherited as one: set on a
+   page element, it would squeeze the plan's labels — a fraction of a unit
+   high in metres — into a blot. */
+svg text { letter-spacing: normal; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 a.btn:hover, a.chip:hover, a.room-tile:hover, a.nav-item:hover, .tabbar a:hover, a.device-tile:hover { text-decoration: none; }
