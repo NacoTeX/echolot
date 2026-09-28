@@ -762,7 +762,8 @@ def test_the_module_mounting_is_written_read_back_and_drops_what_was_measured(cl
     with_stub(monkeypatch, device["id"], stub)
     # The room page shows what the module says, live.
     assert c.get(f"/api/rooms/{rid}").json()["module"] == {
-        "connected": True, "entities": True, "mounting": {"mode": "side", "height_m": 2.2, "angle_deg": 30.0}}
+        "connected": True, "entities": True, "mounting": {"mode": "side", "height_m": 2.2, "angle_deg": 30.0},
+        "range_entities": False, "detection_range": None}
     r = c.put(f"/api/devices/{device['id']}/mounting", json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
     assert r.status_code == 200, r.text
     assert r.json()["confirmed"] and r.json()["mounting"] == {"mode": "side", "height_m": 2.6, "angle_deg": 25.0}
@@ -811,6 +812,100 @@ def test_the_mounting_route_checks_what_it_is_given(client, monkeypatch):
     r = c.put(url, json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
     assert r.status_code == 409 and "neu bauen" in r.json()["detail"]
     assert stub.asked == []
+
+
+# --- the module's detection range ---------------------------------------------
+
+
+class RangeStub(StubLink):
+    def __init__(self, reads_back=True, mode="side"):
+        super().__init__(reads_back)
+        snap = self.snapshot
+        snap.mount_mode = mode
+        snap.range_entities = True
+        snap.range_distance_m, snap.range_start_deg, snap.range_end_deg = (6.0, -60.0, 60.0) if mode == "side" else (4.0, 0.0, 360.0)
+
+    def write_range(self, distance_m, start_deg, end_deg):
+        self.asked.append((distance_m, start_deg, end_deg))
+        if self.reads_back:
+            snap = self.snapshot
+            snap.range_distance_m, snap.range_start_deg, snap.range_end_deg = distance_m, start_deg, end_deg
+
+
+def test_the_detection_range_is_written_read_back_and_drops_nothing(client, monkeypatch):
+    c, _ = client
+    device, room = aligned_room(c)
+    rid = room["id"]
+    spots = [{"x": 1.0, "y": 1.5, "r": 0.4, "share": 0.6}]
+    c.put(f"/api/rooms/{rid}/calibration", json={"interference": {"spots": spots, "device_id": device["id"]}})
+    assert apply(c, rid, solve(c, rid)).status_code == 200
+    stub = RangeStub()
+    with_stub(monkeypatch, device["id"], stub)
+    module = c.get(f"/api/rooms/{rid}").json()["module"]
+    assert module["range_entities"] is True
+    assert module["detection_range"] == {"distance_m": 6.0, "start_deg": -60.0, "end_deg": 60.0}
+    before = c.get(f"/api/rooms/{rid}").json()["calibration"]
+    r = c.put(f"/api/devices/{device['id']}/range", json={"distance_m": 4.54, "start_deg": -50, "end_deg": 40.04})
+    assert r.status_code == 200, r.text
+    # In the module's own steps: a decimetre, a tenth of a degree.
+    assert stub.asked == [(4.5, -50.0, 40.0)]
+    assert r.json() == {"confirmed": True, "range": {"distance_m": 4.5, "start_deg": -50.0, "end_deg": 40.0},
+                        "wanted": {"distance_m": 4.5, "start_deg": -50.0, "end_deg": 40.0}}
+    # Which targets the module reports, not where: what was measured stays.
+    after = c.get(f"/api/rooms/{rid}").json()["calibration"]
+    assert before["alignment_id"] is not None and after["alignment_id"] == before["alignment_id"]
+    assert after["interference"] == before["interference"] != []
+    assert after["mounting_epoch"] == before["mounting_epoch"]
+
+
+def test_a_range_the_module_does_not_confirm_is_said_so(client, monkeypatch):
+    from app import main
+
+    c, _ = client
+    device, _room = room_with_sensor(c)
+    stub = RangeStub(reads_back=False)
+    with_stub(monkeypatch, device["id"], stub)
+    monkeypatch.setattr(main, "RANGE_CONFIRM_S", 0.3)
+    r = c.put(f"/api/devices/{device['id']}/range", json={"distance_m": 5, "start_deg": -60, "end_deg": 60})
+    assert r.status_code == 200 and r.json()["confirmed"] is False
+    assert r.json()["range"] == {"distance_m": 6.0, "start_deg": -60.0, "end_deg": 60.0}
+
+
+def test_the_range_route_keeps_to_what_the_mode_allows(client, monkeypatch):
+    from app.radar_link import RangeError
+
+    c, _ = client
+    device, _room = room_with_sensor(c)
+    url = f"/api/devices/{device['id']}/range"
+    assert c.put(url, json={"distance_m": 6, "start_deg": -60, "end_deg": 60}).status_code == 409  # no link
+    side = RangeStub()
+    with_stub(monkeypatch, device["id"], side)
+    for bad in ({"distance_m": 6.1, "start_deg": -60, "end_deg": 60}, {"distance_m": 0.4, "start_deg": -60, "end_deg": 60},
+                {"distance_m": 6, "start_deg": -61, "end_deg": 60}, {"distance_m": 6, "start_deg": 0, "end_deg": 90},
+                {"distance_m": 6, "start_deg": 20, "end_deg": 20}, {"distance_m": 6, "start_deg": 30, "end_deg": -30},
+                {"distance_m": "weit", "start_deg": 0, "end_deg": 10}, {"distance_m": 6}):
+        r = c.put(url, json=bad)
+        assert r.status_code == 422, bad
+    assert "An der Wand" in c.put(url, json={"distance_m": 7, "start_deg": -60, "end_deg": 60}).json()["detail"]
+    assert side.asked == []
+    # On the ceiling: 4 m, all round.
+    top = RangeStub(mode="top")
+    with_stub(monkeypatch, device["id"], top)
+    assert c.put(url, json={"distance_m": 4, "start_deg": 0, "end_deg": 360}).status_code == 200
+    for bad in ({"distance_m": 5, "start_deg": 0, "end_deg": 360}, {"distance_m": 4, "start_deg": -10, "end_deg": 360}):
+        assert c.put(url, json=bad).status_code == 422, bad
+    # A mode the module has not said: its limits are not known.
+    top.snapshot.mount_mode = None
+    r = c.put(url, json={"distance_m": 4, "start_deg": 0, "end_deg": 360})
+    assert r.status_code == 409 and "Montageart" in r.json()["detail"]
+
+    def old_firmware(*_):
+        raise RangeError("Die Firmware … neu bauen und flashen.")
+
+    side.write_range = old_firmware
+    with_stub(monkeypatch, device["id"], side)
+    r = c.put(url, json={"distance_m": 6, "start_deg": -60, "end_deg": 60})
+    assert r.status_code == 409 and "neu bauen" in r.json()["detail"]
 
 
 def test_an_entrance_is_kept_and_the_room_can_be_called_empty(client):

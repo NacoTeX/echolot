@@ -49,6 +49,14 @@ ACK_MOUNTING_240_30 = bytes.fromhex("fdfcfbfa080f00f000b80b04030201")  # 2.40 m,
 SET_MOUNTING_240_25 = bytes.fromhex("fdfcfbfa070f00f000c40904030201")
 SET_MOUNTING_240_30 = bytes.fromhex("fdfcfbfa070f00f000b80b04030201")
 ACK_SET_MOUNTING_OK = bytes.fromhex("fdfcfbfa070c000104030201")
+QUERY_RANGE = bytes.fromhex("fdfcfbfa120c000104030201")
+ACK_RANGE_60_50 = bytes.fromhex("fdfcfbfa1210003c0cfef40104030201")  # 6 m, -50 to +50 deg
+ACK_RANGE_45_50_40 = bytes.fromhex("fdfcfbfa1210002d0cfe900104030201")  # 4.5 m, -50 to +40 deg
+ACK_RANGE_TOP = bytes.fromhex("fdfcfbfa121000280000100e04030201")  # 4 m, 0 to 360 deg
+SET_RANGE_45_50_50 = bytes.fromhex("fdfcfbfa1110002d0cfef40104030201")
+SET_RANGE_45_50_40 = bytes.fromhex("fdfcfbfa1110002d0cfe900104030201")
+ACK_SET_RANGE_OK = bytes.fromhex("fdfcfbfa110c000104030201")
+ACK_MODE_TOP = bytes.fromhex("fdfcfbfa0a0c000204030201")
 
 YAML = """
 esphome:
@@ -67,6 +75,26 @@ esphome:
       - number.set:
           id: angle_a
           value: 30
+      # Then the detection range: 4.5 m, then an end at 40 degrees — and,
+      # once the module holds that, an end at 70 degrees, which a module
+      # mounted on a wall does not have.
+      - wait_until:
+          condition:
+            lambda: 'return id(rdist_a).has_state();'
+      - delay: 1s
+      - number.set:
+          id: rdist_a
+          value: 4.5
+      - number.set:
+          id: rend_a
+          value: 40
+      - wait_until:
+          condition:
+            lambda: 'return id(rend_a).state == 40.0f;'
+      - delay: 300ms
+      - number.set:
+          id: rend_a
+          value: 70
 host:
 logger:
   level: DEBUG
@@ -113,6 +141,21 @@ echolot_ld2460:
       name: "Angle A"
       on_value:
         - logger.log: {{format: "ANGLE_A %.2f", args: [x]}}
+    range_distance:
+      id: rdist_a
+      name: "Range A"
+      on_value:
+        - logger.log: {{format: "RDIST_A %.1f", args: [x]}}
+    range_start:
+      id: rstart_a
+      name: "Range Start A"
+      on_value:
+        - logger.log: {{format: "RSTART_A %.1f", args: [x]}}
+    range_end:
+      id: rend_a
+      name: "Range End A"
+      on_value:
+        - logger.log: {{format: "REND_A %.1f", args: [x]}}
   - id: radar_b
     uart_id: uart_b
     stale_after: 1s
@@ -344,3 +387,52 @@ def test_the_mounting_is_read_from_the_module_and_only_its_answer_counts(firmwar
     fw.send("a", ACK_MOUNTING_240_30)
     fw.pump(0.4)
     assert fw.values("HEIGHT_A")[-1] == "2.40" and fw.values("ANGLE_A")[-1] == "30.00"
+
+
+def test_the_detection_range_is_read_and_written_like_the_mounting(firmware):
+    """Runs after the mounting. Hi-Link protocol V1.0, tables 21-24."""
+    fw = firmware
+    assert QUERY_RANGE in fw.wire["a"], "the range was never asked for"
+    assert fw.values("RDIST_A") == []
+
+    fw.send("a", ACK_RANGE_60_50)
+    fw.pump(0.5)
+    assert fw.values("RDIST_A") == ["6.0"]
+    assert fw.values("RSTART_A") == ["-50.0"] and fw.values("REND_A") == ["50.0"]
+
+    # 4.5 m, then an end at 40 degrees (on_boot above): the second command
+    # carries the first's distance, and nothing shows before the module
+    # reads it back.
+    before = len(fw.wire["a"])
+    fw.pump(1.8)
+    sent = fw.wire["a"][before:]
+    assert SET_RANGE_45_50_50 in sent and SET_RANGE_45_50_40 in sent
+    assert sent.index(SET_RANGE_45_50_50) < sent.index(SET_RANGE_45_50_40)
+    assert fw.values("RDIST_A") == ["6.0"] and fw.values("REND_A") == ["50.0"]
+
+    before = len(fw.wire["a"])
+    fw.send("a", ACK_SET_RANGE_OK + ACK_SET_RANGE_OK)
+    fw.pump(0.8)
+    assert QUERY_RANGE in fw.wire["a"][before:]
+    fw.send("a", ACK_RANGE_45_50_40)
+    fw.pump(0.4)
+    assert fw.values("RDIST_A")[-1] == "4.5" and fw.values("REND_A")[-1] == "40.0"
+
+    # 70 degrees is not a side-mounted module's: nothing is sent, and the
+    # entity goes back to what the module holds.
+    fw.pump(1.2)
+    assert fw.wire["a"].count(b"\xfd\xfc\xfb\xfa\x11") == 2, "a third range command went out"
+    assert fw.values("REND_A")[-1] == "40.0"
+    assert any("outside what this firmware writes" in line for line in fw.lines)
+
+    # The module says it is mounted on the ceiling now: another mode,
+    # another range, asked for afresh.
+    before = len(fw.wire["a"])
+    fw.send("a", ACK_MODE_TOP)
+    fw.pump(0.6)
+    assert fw.values("MODE_A")[-1] == "top"
+    assert QUERY_RANGE in fw.wire["a"][before:]
+    fw.send("a", ACK_RANGE_TOP)
+    fw.pump(0.4)
+    assert fw.values("RDIST_A")[-1] == "4.0"
+    assert fw.values("RSTART_A")[-1] == "0.0" and fw.values("REND_A")[-1] == "360.0"

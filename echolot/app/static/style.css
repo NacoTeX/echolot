@@ -89,7 +89,6 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto, sans-serif;
-  letter-spacing: -.005em;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
 }
@@ -101,7 +100,11 @@ body:not(.embed) {
     var(--bg);
   background-attachment: fixed;
 }
-button, input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
+/* Letter spacing is a length once computed, and inherited as one: set on a
+   page element, it would squeeze the plan's labels — a fraction of a unit
+   high in metres — into a blot. */
+svg text { letter-spacing: normal; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 a.btn:hover, a.chip:hover, a.room-tile:hover, a.nav-item:hover, .tabbar a:hover, a.device-tile:hover { text-decoration: none; }
@@ -153,25 +156,82 @@ h3 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
 .sub { color: var(--muted); margin: 0; }
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
-/* bottom tab bar (phones): a floating capsule of glass */
-.tabbar { display: none; }
+/* Bottom tab bar (phones), after iOS 26: a floating capsule of Liquid
+   Glass — a denser tint than the other glass so it holds over a busy plan,
+   a light rim brighter along the top, the labels in the text colour, and
+   the selected tab on a pill of its own in the accent colour. Under it the
+   page fades and blurs towards the edge (iOS's scroll edge effect), so the
+   bar never sits on text as sharp as its own. */
+.tabbar, .tabbar-edge { display: none; }
+:root {
+  --dock: rgba(255, 255, 255, .74);
+  --dock-solid: rgba(250, 250, 252, .96);
+  --dock-rim: linear-gradient(170deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .35) 45%, rgba(255, 255, 255, .15) 70%, rgba(255, 255, 255, .6));
+  --dock-ring: rgba(0, 0, 0, .06);
+  --dock-shadow: 0 10px 34px rgba(0, 0, 0, .16), 0 2px 8px rgba(0, 0, 0, .06);
+  --dock-pill: rgba(118, 118, 128, .16);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --dock: rgba(40, 40, 44, .78);
+    --dock-solid: rgba(36, 36, 40, .97);
+    --dock-rim: linear-gradient(170deg, rgba(255, 255, 255, .42), rgba(255, 255, 255, .1) 45%, rgba(255, 255, 255, .04) 70%, rgba(255, 255, 255, .2));
+    --dock-ring: rgba(0, 0, 0, .5);
+    --dock-shadow: 0 10px 34px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .4);
+    --dock-pill: rgba(255, 255, 255, .13);
+  }
+}
+:root[data-theme="dark"] {
+  --dock: rgba(40, 40, 44, .78);
+  --dock-solid: rgba(36, 36, 40, .97);
+  --dock-rim: linear-gradient(170deg, rgba(255, 255, 255, .42), rgba(255, 255, 255, .1) 45%, rgba(255, 255, 255, .04) 70%, rgba(255, 255, 255, .2));
+  --dock-ring: rgba(0, 0, 0, .5);
+  --dock-shadow: 0 10px 34px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .4);
+  --dock-pill: rgba(255, 255, 255, .13);
+}
 
 @media (max-width: 1023px) {
   .shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
-  .content { padding: 20px 16px 110px; }
+  .content { padding: 20px 16px calc(120px + env(safe-area-inset-bottom)); }
   .tabbar {
-    display: flex; position: fixed; left: 12px; right: 12px; bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 30;
-    padding: 6px; border-radius: 30px; border: 1px solid var(--glass-edge);
-    background: var(--glass); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
-    box-shadow: var(--shadow);
+    display: flex; position: fixed; left: 16px; right: 16px; bottom: calc(8px + env(safe-area-inset-bottom)); z-index: 30;
+    max-width: 480px; margin: 0 auto;
+    padding: 5px; border-radius: 999px;
+    background: var(--dock);
+    backdrop-filter: blur(24px) saturate(190%); -webkit-backdrop-filter: blur(24px) saturate(190%);
+    box-shadow: var(--dock-shadow), 0 0 0 .5px var(--dock-ring);
   }
-  .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
-    font-size: 11px; font-weight: 500; color: var(--muted); text-decoration: none; padding: 6px 0; border-radius: 24px;
-    transition: background .2s var(--ease), color .2s var(--ease); }
-  .tabbar a.active { color: var(--accent); font-weight: 600; background: color-mix(in srgb, var(--accent) 13%, transparent); }
-  .tabbar .icon { width: 24px; height: 24px; }
+  /* The rim: a hairline of light, brightest along the top. */
+  .tabbar::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: var(--dock-rim);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  .tabbar a { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; min-height: 54px; padding: 5px 0 4px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 550; letter-spacing: .01em; color: var(--text); text-decoration: none;
+    transition: background .25s var(--ease), color .25s var(--ease), transform .3s var(--ease); }
+  .tabbar a:active { transform: scale(.94); }
+  .tabbar a.active { color: var(--accent); font-weight: 650; background: var(--dock-pill); }
+  .tabbar .icon { width: 26px; height: 26px; }
+  .tabbar a.active .icon { stroke-width: 2.1; }
+  .tabbar-edge {
+    display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 29; pointer-events: none;
+    height: calc(104px + env(safe-area-inset-bottom));
+    background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--bg) 72%, transparent) 70%);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 55%); mask-image: linear-gradient(to bottom, transparent, #000 55%);
+  }
   h1 { font-size: 30px; }
+}
+/* Without blur behind it, or asked for less transparency: solid. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .tabbar { background: var(--dock-solid); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .tabbar { background: var(--dock-solid); }
 }
 
 /* ---------- controls ---------- */
@@ -300,6 +360,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   padding: 14px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .plan-top .dims { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .plan-stage { position: relative; padding: 18px; background: var(--surface); }
+.plan-notice { padding: 14px 20px 0; }
+.plan-notice:empty { display: none; }
+.plan-notice .notice { align-items: center; }
 .plan-stage svg { display: block; width: 100%; height: auto; max-height: calc(100vh - 230px);
   touch-action: none; user-select: none; -webkit-user-select: none; overflow: visible; }
 .plan-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 13px 20px; border-top: 1px solid var(--line);
@@ -440,6 +503,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* side panel */
 .side { display: flex; flex-direction: column; gap: 16px; }
+#cal-side > .card + .card { margin-top: 16px; }
 .side .card { padding: 20px; }
 .big-number { font-size: 56px; font-weight: 700; letter-spacing: -.045em; line-height: 1; font-variant-numeric: tabular-nums; }
 .big-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }

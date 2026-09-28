@@ -347,6 +347,8 @@ def api_get_device(device_id: str) -> dict:
 
 #: How long the mounting route waits for the module to read a change back.
 MOUNTING_CONFIRM_S = 6.0
+#: And the range route.
+RANGE_CONFIRM_S = 6.0
 
 
 @app.put("/api/devices/{device_id}/mounting")
@@ -393,6 +395,62 @@ async def api_set_module_mounting(device_id: str, payload: dict) -> dict:
     if _module_mounting(device.id):
         await refresh()
     return {"confirmed": confirmed, "mounting": link.snapshot.mounting(), "wanted": wanted}
+
+
+#: The detection range a module allows, per installation mode: the
+#: farthest distance, and the sector's limits (Hi-Link protocol V1.0,
+#: chapter 13; ld2460_protocol.h writes nothing else). No shorter than
+#: half a metre, as the firmware.
+RANGE_LIMITS = {"side": (6.0, -60.0, 60.0), "top": (4.0, 0.0, 360.0)}
+RANGE_MIN_M = 0.5
+
+
+@app.put("/api/devices/{device_id}/range")
+async def api_set_module_range(device_id: str, payload: dict) -> dict:
+    """Write the module's detection range — {distance_m, start_deg,
+    end_deg}, for the installation mode it holds — and wait for it to read
+    the change back; `confirmed` as for the mounting.
+
+    Nothing the room measured is dropped: the range decides which targets
+    the module reports at all, and the manual says nothing of it changing
+    where it puts them.
+    """
+    device = _device_or_404(device_id)
+    try:
+        distance = round(float(payload.get("distance_m")), 1)
+        start = round(float(payload.get("start_deg")), 1)
+        end = round(float(payload.get("end_deg")), 1)
+    except (TypeError, ValueError) as err:
+        raise HTTPException(status_code=422, detail="Erfassungsbereich braucht distance_m, start_deg und end_deg") from err
+    if not all(math.isfinite(v) for v in (distance, start, end)):
+        raise HTTPException(status_code=422, detail="Erfassungsbereich braucht Zahlen")
+    link = links.link(device.id)
+    if link is None:
+        raise HTTPException(status_code=409, detail="Der Sensor ist gerade nicht verbunden.")
+    mode = link.snapshot.mount_mode
+    if mode not in RANGE_LIMITS:
+        raise HTTPException(status_code=409, detail="Das Modul hat seine Montageart noch nicht gemeldet — davon hängt ab, was es erlaubt.")
+    farthest, low, high = RANGE_LIMITS[mode]
+    if not (RANGE_MIN_M <= distance <= farthest and low <= start < end <= high):
+        where = "An der Wand" if mode == "side" else "An der Decke"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{where}: Reichweite 0,5–{farthest:g} m, Winkel von {low:g}° bis {high:g}°, der Beginn vor dem Ende".replace(".", ","),
+        )
+    wanted = {"distance_m": distance, "start_deg": start, "end_deg": end}
+    try:
+        link.write_range(distance, start, end)
+    except MountingError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    deadline = time.monotonic() + RANGE_CONFIRM_S
+    confirmed = False
+    while time.monotonic() < deadline:
+        now = link.snapshot.detection_range()
+        if now is not None and all(abs(now[k] - wanted[k]) < 0.05 for k in wanted):
+            confirmed = True
+            break
+        await asyncio.sleep(0.2)
+    return {"confirmed": confirmed, "range": link.snapshot.detection_range(), "wanted": wanted}
 
 
 @app.patch("/api/devices/{device_id}")
@@ -591,6 +649,8 @@ def _room_view(room: rooms.Room) -> dict:
         "connected": bool(snap and snap.connected),
         "entities": bool(snap and snap.mounting_entities),
         "mounting": snap.mounting() if snap else None,
+        "range_entities": bool(snap and snap.range_entities),
+        "detection_range": snap.detection_range() if snap else None,
     }
     if room.image:
         data["image"] = {

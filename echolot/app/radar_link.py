@@ -50,8 +50,14 @@ ENTITY_ROLES = {
     "radar mount mode": "mount_mode",
     "radar mount height": "mount_height",
     "radar mount angle": "mount_angle",
+    "radar range": "range_distance",
+    "radar range start": "range_start",
+    "radar range end": "range_end",
 }
 MOUNT_ROLES = ("mount_mode", "mount_height", "mount_angle")
+#: The module's detection range: how far, and across which sector, it
+#: reports targets (ld2460_protocol.h, 0x11/0x12).
+RANGE_ROLES = ("range_distance", "range_start", "range_end")
 #: The module's own names for how it hangs (ld2460_protocol.h).
 MOUNT_MODES = ("side", "top")
 #: Mounting states arrive one entity at a time; listeners hear about a
@@ -62,6 +68,10 @@ MOUNTING_SETTLE_S = 1.0
 class MountingError(Exception):
     """The mounting cannot be written: no connection, or a firmware that
     does not have the entities."""
+
+
+class RangeError(MountingError):
+    """The detection range cannot be written, for the same reasons."""
 
 
 @dataclass
@@ -112,6 +122,13 @@ class LinkSnapshot:
     mount_mode: str | None = None
     mount_height_m: float | None = None
     mount_angle_deg: float | None = None
+    #: The module's detection range, with the same rule: only what it read
+    #: back on this connection. `range_entities`: the firmware has the
+    #: three entities at all.
+    range_entities: bool = False
+    range_distance_m: float | None = None
+    range_start_deg: float | None = None
+    range_end_deg: float | None = None
     #: What the node said about itself on this connection (ESPHome's
     #: device info): {"project", "version", "esphome", "compiled"}. None
     #: until it has answered, or when it did not.
@@ -122,6 +139,12 @@ class LinkSnapshot:
         if self.mount_mode is None or self.mount_height_m is None or self.mount_angle_deg is None:
             return None
         return {"mode": self.mount_mode, "height_m": self.mount_height_m, "angle_deg": self.mount_angle_deg}
+
+    def detection_range(self) -> dict | None:
+        """The module's detection range, once all three are known."""
+        if self.range_distance_m is None or self.range_start_deg is None or self.range_end_deg is None:
+            return None
+        return {"distance_m": self.range_distance_m, "start_deg": self.range_start_deg, "end_deg": self.range_end_deg}
 
     def record(self, frame: RadarFrame, now: float) -> bool:
         """Take one frame line; True when it is a new measurement.
@@ -170,6 +193,7 @@ class LinkSnapshot:
         self.queue.clear()
         self.duplicates = self.out_of_order = self.reports_skipped = self.dropped = 0
         self.mount_mode = self.mount_height_m = self.mount_angle_deg = None
+        self.range_distance_m = self.range_start_deg = self.range_end_deg = None
 
     def pending(self, after_index: int) -> list:
         """New measurements after `after_index`, oldest first."""
@@ -204,6 +228,8 @@ class LinkSnapshot:
             "dropped": self.dropped,
             "mounting_entities": self.mounting_entities,
             "mounting": self.mounting(),
+            "range_entities": self.range_entities,
+            "detection_range": self.detection_range(),
             "node": self.node,
         }
 
@@ -330,6 +356,7 @@ class RadarLink:
                     self._roles[info.key] = role
             self.snapshot.no_frame_entity = "frame" not in self._roles.values()
             self.snapshot.mounting_entities = all(r in self._roles.values() for r in MOUNT_ROLES)
+            self.snapshot.range_entities = all(r in self._roles.values() for r in RANGE_ROLES)
             self.snapshot.new_session()
             self.snapshot.node = await self._node_info(client)
             self.snapshot.connected = True
@@ -407,6 +434,13 @@ class RadarLink:
                     snap.mount_angle_deg = round(number, 2) if number is not None else None
             if snap.mounting() is not None and snap.mounting() != before:
                 self._mounting_changed()
+        elif role in RANGE_ROLES:
+            # Metres to the centimetre, degrees to the tenth: the module's
+            # own steps are a decimetre and a tenth of a degree.
+            number = float(value) if isinstance(value, (int, float)) and value == value else None
+            rounded = None if number is None else round(number, 2 if role == "range_distance" else 1)
+            setattr(snap, {"range_distance": "range_distance_m", "range_start": "range_start_deg",
+                           "range_end": "range_end_deg"}[role], rounded)
         else:
             setattr(snap, role, str(value) if value is not None else None)
 
@@ -448,6 +482,34 @@ class RadarLink:
             client.number_command(keys["mount_height"], float(height_m))
         if snap.mount_angle_deg is None or abs(angle_deg - snap.mount_angle_deg) >= 0.005:
             client.number_command(keys["mount_angle"], float(angle_deg))
+
+    def write_range(self, distance_m: float, start_deg: float, end_deg: float) -> None:
+        """Ask the module for this detection range. What it holds afterwards
+        shows in the snapshot once it has read it back.
+
+        The parts that differ are sent, one command each; the firmware
+        carries the ones asked for before along, and refuses a sector that
+        ends before it starts. So a sector moved past the old one's end
+        gets its new end first."""
+        client = self._client
+        if client is None or not self.snapshot.connected:
+            raise RangeError("Der Sensor ist gerade nicht verbunden.")
+        if not self.snapshot.range_entities:
+            raise RangeError(
+                "Die Firmware auf dem Sensor kennt den Erfassungsbereich des Moduls noch nicht — neu bauen und flashen."
+            )
+        keys = {role: key for key, role in self._roles.items()}
+        snap = self.snapshot
+        parts = [
+            ("range_distance", snap.range_distance_m, distance_m),
+            ("range_start", snap.range_start_deg, start_deg),
+            ("range_end", snap.range_end_deg, end_deg),
+        ]
+        if snap.range_end_deg is not None and start_deg >= snap.range_end_deg:
+            parts[1], parts[2] = parts[2], parts[1]
+        for role, held, wanted in parts:
+            if held is None or abs(wanted - held) >= 0.05:
+                client.number_command(keys[role], float(wanted))
 
 
 @dataclass

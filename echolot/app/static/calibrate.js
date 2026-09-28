@@ -79,6 +79,7 @@
       this.pending = null; // a picked, unmeasured standpoint [x, y]
       this.pendingRole = "fit";
       this.moduleForm = null; // mounting typed in, not yet written to the module
+      this.rangeForm = null; // detection range typed in, not yet written
       this.remeasure = null; // id of the standpoint being measured again
       this.preview = null; // id of the history record drawn on the plan
       if (this.walksRoom !== params.id) {
@@ -762,7 +763,7 @@
           ${[["off", "Aus"], ["normal", "Normal"], ["strong", "Stark"]].map(([k, v]) => `<button type="button" data-smooth="${k}" class="${cal.smoothing === k ? "active" : ""}">${v}</button>`).join("")}</div>
           <p class="hint">Mittelt die Position über etwa die letzte Drittelsekunde (normal) oder Dreiviertelsekunde (stark), gleich wie oft das Modul meldet. Ruhigere Punkte an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas später.</p></div>
         ${version ? `<p class="hint">Messdefinition ${version}. Home Assistant bekommt Version und Filter als Attribute jeder Entität.</p>` : ""}
-      </div>`;
+      </div>${this.rangeCard(room)}`;
     },
 
     bindSide(host) {
@@ -825,6 +826,18 @@
         });
       }
       on("[data-write-mount]", () => this.writeModuleMounting(form()));
+      // The detection range, by the same rule: typing changes the form only.
+      for (const [id, key] of [["#cal-rdist", "distance_m"], ["#cal-rstart", "start_deg"], ["#cal-rend", "end_deg"]]) {
+        const input = host.querySelector(id);
+        if (input) input.addEventListener("input", () => {
+          const v = Number(input.value.replace(",", "."));
+          if (!Number.isFinite(v)) return;
+          this.rangeForm = { ...this.rangeFormNow(), [key]: v };
+          const button = host.querySelector("[data-write-range]");
+          if (button) button.disabled = !this.rangeWritable(this.room());
+        });
+      }
+      on("[data-write-range]", () => this.writeModuleRange(this.rangeFormNow()));
       host.querySelectorAll("[data-preview]").forEach((b) => b.addEventListener("click", () => {
         this.preview = this.preview === b.dataset.preview ? null : b.dataset.preview;
         this.renderSide();
@@ -1262,6 +1275,81 @@
       this.proposal = null; this.suggested = null; this.suggestedChecks = null; this.pending = null; this.remeasure = null; this.preview = null;
       this.renderSide();
       this.drawExtra();
+    },
+
+    // What the module allows for its detection range, by the mode it holds
+    // (ld2460_protocol.h; the add-on's range route checks the same).
+    rangeLimits(mode) {
+      return mode === "top" ? { distance: 4, low: 0, high: 360 } : mode === "side" ? { distance: 6, low: -60, high: 60 } : null;
+    },
+
+    rangeFormNow() {
+      const mod = this.room().module || {};
+      return this.rangeForm || (mod.detection_range ? { ...mod.detection_range } : null);
+    },
+
+    rangeWritable(room) {
+      const mod = room.module || {};
+      const rr = mod.detection_range, f = this.rangeFormNow();
+      if (!mod.connected || !rr || !f || this.busy()) return false;
+      return ["distance_m", "start_deg", "end_deg"].some((k) => Math.abs(f[k] - rr[k]) >= 0.05);
+    },
+
+    // How far, and across which sector, the module reports targets at all:
+    // a filter in the module, before anything reaches Echolot.
+    rangeCard(room) {
+      const mod = room.module || {};
+      const head = `<div class="card"><h2>Erfassungsbereich des Moduls</h2>`;
+      if (!mod.range_entities) {
+        return mod.connected && mod.entities
+          ? `${head}<p class="hint">Die Firmware auf dem Sensor liest den Erfassungsbereich des Moduls noch nicht. Neu bauen und flashen — dann steht hier, bis wohin und über welchen Winkel das Modul Ziele meldet.</p></div>`
+          : "";
+      }
+      const rr = mod.detection_range;
+      const mode = mod.mounting && mod.mounting.mode;
+      const lim = this.rangeLimits(mode);
+      const deg = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${E.formatNumber(Math.abs(v), 1)}°`;
+      const said = rr
+        ? `<div class="notice ok">${icon("check")}<div class="grow"><strong>Das Modul meldet</strong>bis ${E.formatNumber(rr.distance_m, 1)} m · ${deg(rr.start_deg)} bis ${deg(rr.end_deg)}</div></div>`
+        : `<div class="notice warn">${icon("alert")}<div class="grow">${mod.connected ? "Das Modul hat seinen Erfassungsbereich noch nicht gemeldet." : "Der Sensor ist nicht verbunden — was das Modul eingestellt hat, ist gerade nicht lesbar."}</div></div>`;
+      if (!rr || !lim) return `${head}${said}</div>`;
+      const f = this.rangeFormNow();
+      const factory = mode === "top" ? "4 m rundum (0° bis 360°)" : "6 m, −60° bis +60°";
+      return `${head}${said}
+        <label class="field" style="margin-top:12px"><span>Reichweite · m</span>
+          <input type="number" id="cal-rdist" min="0.5" max="${lim.distance}" step="0.1" inputmode="decimal" value="${f.distance_m}"></label>
+        <div class="row2">
+          <label class="field"><span>Von · °</span>
+            <input type="number" id="cal-rstart" min="${lim.low}" max="${lim.high}" step="1" inputmode="decimal" value="${f.start_deg}"></label>
+          <label class="field"><span>Bis · °</span>
+            <input type="number" id="cal-rend" min="${lim.low}" max="${lim.high}" step="1" inputmode="decimal" value="${f.end_deg}"></label>
+        </div>
+        <p class="hint">Was außerhalb liegt, meldet das Modul gar nicht erst. 0° ist geradeaus. Werkseinstellung ${mode === "top" ? "an der Decke" : "an der Wand"}: ${factory}. Enger stellen hält etwa den Flur hinter einer offenen Tür heraus. Ausrichtung und Störquellen bleiben, wie sie sind.</p>
+        <div class="actions"><button class="btn primary" data-write-range ${this.rangeWritable(room) ? "" : "disabled"}>${icon("check")}Ins Modul schreiben</button></div></div>`;
+    },
+
+    async writeModuleRange(f) {
+      const room = this.room();
+      const mod = room.module || {};
+      const lim = this.rangeLimits(mod.mounting && mod.mounting.mode);
+      if (!f || !lim) return;
+      if (!(f.distance_m >= 0.5 && f.distance_m <= lim.distance && f.start_deg >= lim.low && f.end_deg <= lim.high && f.start_deg < f.end_deg)) {
+        toast(`Reichweite 0,5–${lim.distance} m, Winkel von ${lim.low}° bis ${lim.high}°, der Anfang vor dem Ende`, "err");
+        return;
+      }
+      const btn = this.el.querySelector("[data-write-range]");
+      if (btn) btn.disabled = true;
+      try {
+        const r = await api(`api/devices/${encodeURIComponent(room.sensor.device_id)}/range`, { method: "PUT",
+          body: { distance_m: f.distance_m, start_deg: f.start_deg, end_deg: f.end_deg } });
+        if (r.confirmed) toast("Das Modul hat den Erfassungsbereich übernommen.");
+        else toast(r.range
+          ? `Das Modul hat die Änderung nicht bestätigt — es meldet weiter ${E.formatNumber(r.range.distance_m, 1)} m, ${E.formatNumber(r.range.start_deg, 1)}° bis ${E.formatNumber(r.range.end_deg, 1)}°.`
+          : "Das Modul hat die Änderung nicht bestätigt.", "err");
+        this.rangeForm = null;
+      } catch (err) { toast(err.message, "err"); }
+      await E.refresh();
+      this.renderSide();
     },
 
     async writeModuleMounting(f) {

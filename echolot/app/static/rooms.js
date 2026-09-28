@@ -156,6 +156,7 @@
         <div class="room-layout">
           <section class="card plan-card">
             <div class="plan-top"><span id="room-chip" class="chip">…</span><span class="dims" id="room-dims"></span></div>
+            <div class="plan-notice" id="room-view-warn"></div>
             <div class="plan-stage" id="stage"><div class="plan-overlay" id="overlay" hidden></div></div>
             <div class="plan-legend">
               <span><i class="lg-dot"></i>erkanntes Ziel</span>
@@ -195,6 +196,17 @@
         room.outline
           ? `${E.formatNumber(window.EcholotGeometry.polygonArea(room.outline))} m² · ${E.formatNumber(room.width)} × ${E.formatNumber(room.height)} m`
           : `${E.formatNumber(room.width)} × ${E.formatNumber(room.height)} m`;
+      // A sensor drawn looking out of the room puts every report in the
+      // wrong place, and its field of view, cut at the walls, vanishes
+      // from the plan — so it is said here, not only in the editor.
+      const G = window.EcholotGeometry;
+      const out = room.sensor.device_id && G.viewFit(room.sensor, room.width, room.height, room.outline) <= G.LOOKS_OUT_FIT;
+      this.el.querySelector("#room-view-warn").innerHTML = out
+        ? `<div class="notice err">${icon("alert")}<div class="grow"><strong>Der Sensor blickt auf dem Plan aus dem Raum hinaus.</strong>
+            Sein Sichtbereich liegt hinter der Wand, und die Meldungen landen an falschen Stellen. Unter „Raum einrichten“ →
+            „Sensor“ die Blickrichtung einstellen, in der er im Raum hängt.</div>
+            <a class="btn small" href="#/room/${encodeURIComponent(room.id)}/edit/sensor">Ausrichten</a></div>`
+        : "";
     },
     update() {
       if (!this.plan) return;
@@ -394,6 +406,7 @@
       this.plan.setLive(state.live[room.id] || null);
       this.plan.setTool("select");
       this.bindToolbar();
+      if (params.select === "sensor") this.plan.select({ kind: "sensor" });
       this.inspect();
       this.changed();
     },
@@ -438,7 +451,22 @@
         ? `${E.formatNumber(window.EcholotGeometry.polygonArea(r.outline))} m² · ${E.formatNumber(r.width)} × ${E.formatNumber(r.height)} m`
         : `${E.formatNumber(r.width)} × ${E.formatNumber(r.height)} m`;
       this.el.querySelector("#ed-title").textContent = r.name;
-      if (!this.plan.drag) this.inspect(false, true);
+      if (this.plan.drag) return;
+      if (this.fieldCommit) {
+        // The form already shows the edit; only numbers the plan may have
+        // put right (a sensor kept on the plan) are brought up to date.
+        if (this.plan.find(this.plan.selection)) this.inspect(true);
+        return;
+      }
+      this.inspect(false, true);
+    },
+
+    // Keep an edit made in the inspector. A field hands over its value as
+    // it loses focus — on the way to the click that ended the edit; a form
+    // built anew at that moment would swallow the click.
+    commitField() {
+      this.fieldCommit = true;
+      try { this.plan.commit(); } finally { this.fieldCommit = false; }
     },
 
     // The inspector follows the selection: nothing selected shows the room.
@@ -456,6 +484,7 @@
           const value = corner && (v === "x" || v === "y") ? corner[v === "x" ? 0 : 1] : item[v];
           if (v in item && typeof value === "number") input.value = Math.round(value * 100) / 100;
         });
+        if (sel.kind === "sensor") this.refreshSensorView(host);
         return;
       }
       if (sel && sel.kind === "zone" && item) this.showPalette = false, host.innerHTML = this.zoneForm(item);
@@ -534,14 +563,87 @@
             ${num("angle", s.angle, { min: -360, max: 360, step: 1 })}
             <button class="btn small" data-turn="15" type="button">${icon("redo")}</button></div>`,
           "0° blickt nach unten in den Plan, positive Werte drehen im Uhrzeigersinn.")}
+        <div id="sensor-view">${this.sensorView(s)}</div>
         <label class="check"><input type="checkbox" data-f="mirror" ${s.mirror ? "checked" : ""}>
           <span>Links und rechts tauschen<small>Welche Seite das Modul positiv zählt, steht nicht im Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die Gegenrichtung, hier umschalten.</small></span></label>
         <div class="row2">${field("Reichweite · m", num("range_m", s.range_m, { min: 1, max: 12, step: 0.5 }))}${field("Öffnungswinkel · °", num("fov_deg", s.fov_deg, { min: 30, max: 180, step: 5 }))}</div>
-        <p class="hint">Reichweite und Winkel zeichnen nur den gestrichelten Planungsbereich. Wie weit das Modul wirklich sieht, zeigen die Live-Punkte.</p>
+        ${this.moduleRangeNote(s)}
         ${this.plan.room.outline && !window.EcholotGeometry.withinWalls(s.x, s.y, 0, 0, this.plan.room.outline, 0.3)
           ? `<div class="notice warn" style="margin-top:12px">${icon("alert")}<div class="grow">Der Sensor steht außerhalb der Wände.</div></div>` : ""}
         <p class="hint">Genauer als von Hand: <a href="#/room/${encodeURIComponent(this.id)}/calibrate">Kalibrieren</a> richtet den Sensor an Standpunkten aus.</p>
         <div class="actions" style="margin-top:14px"><button class="btn" data-done>Fertig</button></div></div>`;
+    },
+
+    // Which way the sensor looks on the plan and how much of the room that
+    // takes in. Rebuilt as it turns, without the fields around it.
+    sensorView(s) {
+      const G = window.EcholotGeometry;
+      const r = this.plan.room;
+      const fit = G.viewFit(s, r.width, r.height, r.outline);
+      const cover = G.viewCover(s, r.width, r.height, r.outline);
+      const into = G.angleIntoRoom(s, r.width, r.height, r.outline);
+      const share = cover.floor ? Math.round((cover.seen / cover.floor) * 100) : 0;
+      const warning = fit <= G.LOOKS_OUT_FIT
+        ? `<div class="notice err">${icon("alert")}<div class="grow"><strong>Der Sensor blickt aus dem Raum hinaus.</strong>
+            So wie er auf dem Plan steht, liegt sein Sichtbereich hinter der Wand, und jede Meldung landet an einer falschen Stelle.
+            Stell ein, wohin er im Raum wirklich blickt.</div></div>`
+        : fit < G.PARTLY_OUT_FIT
+          ? `<div class="notice warn">${icon("alert")}<div class="grow">Ein großer Teil seines Sichtbereichs liegt hinter der Wand.
+              Blickt der Sensor im Raum wirklich so? In einer Ecke hängt er meist schräg.</div></div>`
+          : "";
+      return `<div class="stat-lines" style="margin-top:0">
+          <div class="stat-line"><span>Blickt auf dem Plan</span><span>${G.facingWords(s.angle)}</span></div>
+          <div class="stat-line"><span>Sieht laut Plan</span><span>${share} % des Raums</span></div></div>
+        ${warning ? `<div style="margin-top:12px">${warning}</div>` : ""}
+        <div class="actions" style="margin:12px 0 4px">
+          <button class="btn" type="button" data-into="${into}" ${G.normalizeAngle(s.angle || 0) === into ? "disabled" : ""}>${icon("rotate")}Zum Raum drehen</button></div>
+        <p class="hint" style="margin-bottom:12px">Dreht ihn senkrecht von der Wand weg, an der er hängt, in einer Ecke schräg in den Raum (${G.facingWords(into)}, ${into}°). Hängt er anders, mit den Pfeilen nachstellen.</p>`;
+    },
+
+    // Reichweite and Öffnungswinkel draw the plan's field of view. Once the
+    // module has said how far and across which sector it reports, the plan
+    // can draw that — for a sector even on both sides; which way an uneven
+    // one opens is not in the manual.
+    moduleRangeFor() {
+      const stored = state.rooms.find((x) => x.id === this.id);
+      const mod = stored && stored.module;
+      if (!mod || !mod.detection_range || !mod.mounting || mod.mounting.mode !== "side") return null;
+      const rr = mod.detection_range;
+      const width = rr.end_deg - rr.start_deg;
+      return {
+        ...rr, width, even: Math.abs(rr.start_deg + rr.end_deg) < 0.05,
+        range_m: window.EcholotGeometry.clamp(rr.distance_m, 1, 12),
+        fov_deg: window.EcholotGeometry.clamp(Math.round(width), 30, 180),
+      };
+    },
+
+    moduleRangeNote(s) {
+      const rr = this.moduleRangeFor();
+      const plain = `<p class="hint">Reichweite und Winkel zeichnen nur den gestrichelten Planungsbereich. Wie weit das Modul wirklich sieht, zeigen die Live-Punkte.</p>`;
+      if (!rr) return plain;
+      const said = `bis ${E.formatNumber(rr.distance_m, 1)} m über ${E.formatNumber(rr.width, 0)}°${rr.even ? "" : ` (${E.formatNumber(rr.start_deg, 0)}° bis ${E.formatNumber(rr.end_deg, 0)}°)`}`;
+      if (Math.abs((s.range_m || 6) - rr.range_m) < 0.05 && Math.abs((s.fov_deg || 120) - rr.fov_deg) < 0.5) {
+        return `<p class="hint">Wie im Modul eingestellt: ${said}.</p>`;
+      }
+      return `<div class="notice warn" style="margin-bottom:12px">${icon("alert")}<div class="grow">Das Modul meldet Ziele ${said}, der Plan zeichnet ${E.formatNumber(s.range_m || 6, 1)} m über ${E.formatNumber(s.fov_deg || 120, 0)}°.
+          ${rr.even ? `<div class="actions" style="margin-top:8px"><button class="btn small" type="button" data-module-range>Vom Modul übernehmen</button></div>`
+            : " Einen ungleichen Sektor zeichnet der Plan gleichmäßig — welche Seite das Modul negativ zählt, steht nicht im Handbuch."}</div></div>`;
+    },
+
+    bindSensorView(host) {
+      const view = host.querySelector("#sensor-view");
+      if (!view) return;
+      view.querySelectorAll("[data-into]").forEach((b) => b.addEventListener("click", () => {
+        this.plan.mutate((room) => { room.sensor.angle = Number(b.dataset.into); });
+        this.inspect();
+      }));
+    },
+
+    refreshSensorView(host) {
+      const view = host.querySelector("#sensor-view");
+      if (!view) return;
+      view.innerHTML = this.sensorView(this.plan.room.sensor);
+      this.bindSensorView(host);
     },
 
     outlineForm(points) {
@@ -720,7 +822,7 @@
             if (sel.kind === "furniture" && ["x", "y", "w", "h", "angle"].includes(key)) {
               this.placeFurniture(target, key, value, input, host);
               plan.render();
-              if (commit) plan.commit();
+              if (commit) this.commitField();
               return;
             }
             // The sensor; furniture went to placeFurniture above.
@@ -732,13 +834,21 @@
           const out = host.querySelector('[data-out="zhold"]');
           if (key === "hold_s" && out) out.textContent = E.formatSeconds(value);
           plan.render();
-          if (commit) { plan.commit(); if (key === "kind") this.inspect(); }
+          if (sel.kind === "sensor") this.refreshSensorView(host);
+          if (commit) { this.commitField(); if (key === "kind") this.inspect(); }
         };
         input.addEventListener("input", () => apply(false));
         input.addEventListener("change", () => apply(true));
       });
       host.querySelectorAll("[data-turn]").forEach((b) => b.addEventListener("click", () => {
         plan.mutate((room) => { room.sensor.angle = ((room.sensor.angle + Number(b.dataset.turn) + 540) % 360) - 180; });
+        this.inspect();
+      }));
+      this.bindSensorView(host);
+      host.querySelectorAll("[data-module-range]").forEach((b) => b.addEventListener("click", () => {
+        const rr = this.moduleRangeFor();
+        if (!rr) return;
+        this.plan.mutate((room) => { room.sensor.range_m = rr.range_m; room.sensor.fov_deg = rr.fov_deg; });
         this.inspect();
       }));
       host.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
@@ -775,7 +885,7 @@
             if (out) out.textContent = text();
           }
           plan.render();
-          if (commit) plan.commit();
+          if (commit) this.commitField();
         };
         input.addEventListener("input", () => apply(false));
         input.addEventListener("change", () => apply(true));

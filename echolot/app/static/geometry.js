@@ -194,7 +194,152 @@
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  const api = { toRoom, correct, modelShortfall, MODEL_TOLERANCE_M, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, furnitureBox, furnitureAt, clipToPlan };
+  // ------------------------------------------------ where the sensor looks
+  //
+  // The plan's field of view: what the sensor entry says it covers
+  // (range_m, fov_deg), not what the module measures — that shows in its
+  // reports. It exists to catch a sensor drawn looking the wrong way: a
+  // plan that sends the view out of the room puts every report somewhere
+  // it is not.
+
+  // With this little or less of its view going into the room (viewFit),
+  // the sensor as drawn looks out of it — what is left grazes its own
+  // wall. Below PARTLY_OUT_FIT, a good part of the view lies beyond the
+  // walls. Chosen, not measured.
+  const LOOKS_OUT_FIT = 0.1;
+  const PARTLY_OUT_FIT = 0.5;
+  // Closer than this to a wall, the sensor hangs on it (angleIntoRoom).
+  const ON_WALL_M = 0.35;
+
+  // Straight ahead of a sensor turned by `angle`: 0° looks down the plan,
+  // positive angles turn it clockwise (app/geometry.py, to_room).
+  function ahead(angle) {
+    const a = ((angle || 0) * Math.PI) / 180;
+    return [-Math.sin(a), Math.cos(a)];
+  }
+
+  // Whether (x, y) is in view: no farther than range_m, and no more than
+  // half of fov_deg off straight ahead.
+  function sees(x, y, placement) {
+    const dx = x - placement.x, dy = y - placement.y;
+    const d = Math.hypot(dx, dy);
+    if (d > (placement.range_m || 6)) return false;
+    if (d === 0) return true;
+    const [fx, fy] = ahead(placement.angle);
+    return (dx * fx + dy * fy) / d >= Math.cos((((placement.fov_deg || 120) / 2) * Math.PI) / 180);
+  }
+
+  // How much floor there is and how much of it is in view, in m²: counted
+  // on a grid of ten-centimetre cells — coarser in a large room, so never
+  // much more than 10 000 of them.
+  function viewCover(placement, width, height, outline) {
+    const step = Math.max(0.1, Math.sqrt((width * height) / 10000));
+    const nx = Math.max(1, Math.ceil(width / step - 1e-9));
+    const ny = Math.max(1, Math.ceil(height / step - 1e-9));
+    const walls = outline && outline.length ? outline : null;
+    let floor = 0, seen = 0;
+    for (let i = 0; i < nx; i++) {
+      const x = ((i + 0.5) * width) / nx;
+      for (let j = 0; j < ny; j++) {
+        const y = ((j + 0.5) * height) / ny;
+        if (walls && !pointInPolygon(x, y, walls)) continue;
+        floor++;
+        if (sees(x, y, placement)) seen++;
+      }
+    }
+    const cell = (width / nx) * (height / ny);
+    return { floor: floor * cell, seen: seen * cell };
+  }
+
+  // How much of the sensor's view goes into the room, 0 to 1: of 25 rays
+  // spread across its field of view, the share still inside the walls
+  // half a metre out — the smallest room is a metre across. Not the share of the room it sees — in a hall far beyond
+  // its reach that is small for a sensor looking straight in, and in the
+  // middle of a room it is small whichever way the sensor looks. What
+  // this catches is a view that leaves the room: 1 looking straight in
+  // from a wall, about ¾ diagonally out of a corner, ½ along a wall, 0
+  // looking out.
+  const VIEW_RAYS = 25;
+  function viewFit(placement, width, height, outline) {
+    const walls = outline && outline.length ? outline : null;
+    const half = (placement.fov_deg || 120) / 2;
+    const reach = Math.min(0.5, placement.range_m || 6);
+    const at = { x: placement.x, y: placement.y, angle: placement.angle || 0 };
+    let inside = 0;
+    for (let i = 0; i < VIEW_RAYS; i++) {
+      const t = ((-half + (2 * half * i) / (VIEW_RAYS - 1)) * Math.PI) / 180;
+      const p = toRoom(reach * Math.sin(t), reach * Math.cos(t), at);
+      if (withinWalls(p.x, p.y, width, height, walls, 0)) inside++;
+    }
+    return inside / VIEW_RAYS;
+  }
+
+  // The middle of the floor: its centre of area, not of its corners.
+  function floorCentre(points) {
+    let a = 0, cx = 0, cy = 0;
+    for (let i = 0; i < points.length; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[(i + 1) % points.length];
+      const k = x1 * y2 - x2 * y1;
+      a += k; cx += (x1 + x2) * k; cy += (y1 + y2) * k;
+    }
+    return a ? [cx / (3 * a), cy / (3 * a)] : centroid(points);
+  }
+
+  // Which way a sensor at the placement's x, y looks into the room, in the
+  // plan's degrees: straight away from the wall it hangs on, diagonally
+  // out of a corner, towards the middle of the floor when it hangs on no
+  // wall. A proposal to start from — a sensor mounted askew is turned on
+  // from there.
+  function angleIntoRoom(placement, width, height, outline) {
+    const walls = outline && outline.length ? outline : [[0, 0], [width, 0], [width, height], [0, height]];
+    const sx = placement.x, sy = placement.y;
+    let turn = 0;
+    for (let i = 0; i < walls.length; i++) {
+      const [x1, y1] = walls[i];
+      const [x2, y2] = walls[(i + 1) % walls.length];
+      turn += x1 * y2 - x2 * y1;
+    }
+    const near = [];
+    walls.forEach(([ax, ay], i) => {
+      const [bx, by] = walls[(i + 1) % walls.length];
+      const length = Math.hypot(bx - ax, by - ay);
+      const d = segmentDistance(sx, sy, ax, ay, bx, by);
+      if (!length || d > ON_WALL_M) return;
+      // Walked in the outline's order, the inside lies to the right of a
+      // wall when the outline runs clockwise on screen, to its left when
+      // it runs the other way.
+      const s = turn > 0 ? 1 : -1;
+      near.push([d, (-(by - ay) * s) / length, ((bx - ax) * s) / length]);
+    });
+    near.sort((a, b) => a[0] - b[0]);
+    let dx = 0, dy = 0;
+    for (const [, nx, ny] of near.slice(0, 2)) { dx += nx; dy += ny; }
+    if (Math.hypot(dx, dy) < 1e-6) {
+      const [cx, cy] = floorCentre(walls);
+      dx = cx - sx; dy = cy - sy;
+      if (Math.hypot(dx, dy) < 1e-6) return normalizeAngle(placement.angle || 0);
+    }
+    return normalizeAngle(Math.round((Math.atan2(-dx, dy) * 180) / Math.PI));
+  }
+
+  // -180 < angle <= 180.
+  function normalizeAngle(angle) {
+    const a = ((angle % 360) + 360) % 360;
+    return a > 180 ? a - 360 : a;
+  }
+
+  // "nach rechts", "nach links oben": which way an angle looks on the plan
+  // as it shows on screen, in eight steps.
+  const FACING = ["nach unten", "nach links unten", "nach links", "nach links oben",
+    "nach oben", "nach rechts oben", "nach rechts", "nach rechts unten"];
+  function facingWords(angle) {
+    const a = ((normalizeAngle(angle || 0) % 360) + 360) % 360;
+    return FACING[Math.round(a / 45) % 8];
+  }
+
+  const api = { toRoom, correct, modelShortfall, MODEL_TOLERANCE_M, pointInPolygon, inRoom, distanceToPolygon, withinWalls, selfIntersects, polygonArea, centroid, clamp, furnitureOutline, furnitureBox, furnitureAt, clipToPlan,
+    LOOKS_OUT_FIT, PARTLY_OUT_FIT, ON_WALL_M, sees, viewCover, viewFit, floorCentre, angleIntoRoom, normalizeAngle, facingWords };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EcholotGeometry = api;
 })(typeof window !== "undefined" ? window : globalThis);

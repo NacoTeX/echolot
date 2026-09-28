@@ -9,10 +9,11 @@ independently throttled sensors cannot promise that. The `frame` text
 sensor below is that report, whole.
 
 Next to the frame: the module's mounting — "side" or "top", height and
-tilt angle — which the module keeps and uses itself. As a select and two
-numbers whose state is only ever what the module reads back, so Home
-Assistant and Echolot both see what the module holds, not what somebody
-asked for.
+tilt angle — and its detection range — how far, and across which sector,
+it reports targets —, which the module keeps and uses itself. As a
+select and numbers whose state is only ever what the module reads back,
+so Home Assistant and Echolot both see what the module holds, not what
+somebody asked for.
 
 It is also the only entity meant for Echolot rather than for Home
 Assistant, and it is rendered `disabled_by_default` so the recorder does
@@ -60,17 +61,28 @@ CONF_QUIET_MEANS_EMPTY = "quiet_means_empty"
 CONF_MOUNT_MODE = "mount_mode"
 CONF_MOUNT_HEIGHT = "mount_height"
 CONF_MOUNT_ANGLE = "mount_angle"
+CONF_RANGE_DISTANCE = "range_distance"
+CONF_RANGE_START = "range_start"
+CONF_RANGE_END = "range_end"
 
 #: In the module's order: 1 is "side", 2 is "top" (ld2460_protocol.h).
 MOUNT_MODES = ["side", "top"]
 #: What the firmware writes; ld2460_protocol.h refuses anything else.
 HEIGHT_RANGE = (0.5, 5.0, 0.01)
 ANGLE_RANGE = (0.0, 90.0, 0.5)
+#: The detection range: up to 6 m side-mounted, 4 m top-mounted; the
+#: sector -60° to +60° side-mounted, 0° to 360° top-mounted. The numbers
+#: span both; the firmware refuses what the module's mode does not allow.
+RANGE_DISTANCE_RANGE = (0.5, 6.0, 0.1)
+RANGE_ANGLE_RANGE = (-60.0, 360.0, 1.0)
+#: EcholotLd2460::RANGE_DISTANCE, RANGE_START, RANGE_END.
+RANGE_PARTS = {CONF_RANGE_DISTANCE: 0, CONF_RANGE_START: 1, CONF_RANGE_END: 2}
 
 echolot_ld2460_ns = cg.esphome_ns.namespace("echolot_ld2460")
 EcholotLd2460 = echolot_ld2460_ns.class_("EcholotLd2460", cg.Component, uart.UARTDevice)
 MountModeSelect = echolot_ld2460_ns.class_("MountModeSelect", select.Select, cg.Parented.template(EcholotLd2460))
 MountNumber = echolot_ld2460_ns.class_("MountNumber", number.Number, cg.Parented.template(EcholotLd2460))
+RangeNumber = echolot_ld2460_ns.class_("RangeNumber", number.Number, cg.Parented.template(EcholotLd2460))
 
 
 def _counter(icon):
@@ -132,6 +144,18 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_MOUNT_ANGLE): number.number_schema(
                 MountNumber, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:angle-acute",
+                unit_of_measurement=UNIT_DEGREES,
+            ),
+            cv.Optional(CONF_RANGE_DISTANCE): number.number_schema(
+                RangeNumber, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:signal-distance-variant",
+                unit_of_measurement=UNIT_METER,
+            ),
+            cv.Optional(CONF_RANGE_START): number.number_schema(
+                RangeNumber, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:angle-obtuse",
+                unit_of_measurement=UNIT_DEGREES,
+            ),
+            cv.Optional(CONF_RANGE_END): number.number_schema(
+                RangeNumber, entity_category=ENTITY_CATEGORY_CONFIG, icon="mdi:angle-obtuse",
                 unit_of_measurement=UNIT_DEGREES,
             ),
         }
@@ -204,3 +228,10 @@ async def to_code(config):
             await cg.register_parented(entity, var)
             cg.add(entity.set_is_angle(is_angle))
             cg.add(getattr(var, setter)(entity))
+    for key, part in RANGE_PARTS.items():
+        if key in config:
+            low, high, step = RANGE_DISTANCE_RANGE if key == CONF_RANGE_DISTANCE else RANGE_ANGLE_RANGE
+            entity = await number.new_number(config[key], min_value=low, max_value=high, step=step)
+            await cg.register_parented(entity, var)
+            cg.add(entity.set_part(part))
+            cg.add(var.set_range_number(part, entity))
