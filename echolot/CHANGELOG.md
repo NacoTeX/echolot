@@ -26,6 +26,14 @@
   Alle Befehle und Quittungen der Firmware entsprechen ihm, einschließlich
   seiner Beispiele Byte für Byte. Bisher stammten die Quittungen aus
   smarthomeshop/ld2460.
+- **Die Leiste unten auf dem Handy** folgt enger Apples Tab-Leiste aus
+  iOS 26: dichteres Glas, das auch über einem vollen Plan lesbar bleibt,
+  ein heller Rand, Symbole und Beschriftungen in Textfarbe statt grau, der
+  gewählte Reiter auf einer eigenen Kapsel in der Akzentfarbe. Darunter
+  blendet die Seite zum Rand hin weich aus, wie in iOS. Ohne Unschärfe im
+  Browser oder mit „Transparenz reduzieren“ ist sie deckend. In einem Raum
+  — Plan, Editor, Kalibrieren, Aufzeichnen — bleibt „Räume“ markiert;
+  bisher war dort kein Reiter gewählt.
 - **Korrekturen:** Die Beschriftungen des Plans (Maßstab, Zonen, Möbel)
   waren seit 1.7 zu Klecksen zusammengeschoben: Der Buchstabenabstand der
   Seite wurde in Pixeln an Schrift vererbt, die im Plan nur Bruchteile

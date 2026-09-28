@@ -232,8 +232,14 @@ const Echolot = (() => {
 
   function markNav() {
     const key = navKey();
+    // The tab bar has no rooms of its own: inside a room — its page, the
+    // editor, calibration, recording — or a new one, "Räume" stays
+    // selected, as a tab does in iOS while you are deeper in it.
+    const tab = key.startsWith("room:") || key === "new-room" ? "home" : key;
     document.querySelectorAll("[data-nav]").forEach((el) => {
-      el.classList.toggle("active", el.dataset.nav === key);
+      const on = el.dataset.nav === (el.closest(".tabbar") ? tab : key);
+      el.classList.toggle("active", on);
+      if (on) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
     });
   }
 
