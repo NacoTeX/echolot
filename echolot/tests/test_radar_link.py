@@ -398,8 +398,90 @@ def test_writing_sends_only_what_differs_and_needs_the_entities():
 def test_a_new_connection_forgets_the_mounting_until_the_module_says_it_again():
     snap = radar_link.LinkSnapshot(device_id="dev")
     snap.mount_mode, snap.mount_height_m, snap.mount_angle_deg = "side", 2.6, 25.0
+    snap.range_distance_m, snap.range_start_deg, snap.range_end_deg = 6.0, -60.0, 60.0
     snap.new_session()
-    assert snap.mounting() is None
+    assert snap.mounting() is None and snap.detection_range() is None
+
+
+# --- the module's detection range -------------------------------------------
+
+RANGE_ENTITIES = MOUNT_ENTITIES + [Info(8, "Radar Range"), Info(9, "Radar Range Start"), Info(10, "Radar Range End")]
+
+
+def test_the_detection_range_is_what_the_module_read_back():
+    async def run():
+        FakeClient.entities = RANGE_ENTITIES
+        links = radar_link.RadarLinks(client_factory=CommandClient)
+        await links.sync([device()])
+        await settle()
+        snap = links.snapshot("dev")
+        assert snap.range_entities and snap.detection_range() is None
+        client = FakeClient.instances[0]
+        client.on_state(State(8, 4.5000001))
+        client.on_state(State(9, -50.00001))
+        assert snap.detection_range() is None  # the end is still missing
+        client.on_state(State(10, 40.0))
+        assert snap.detection_range() == {"distance_m": 4.5, "start_deg": -50.0, "end_deg": 40.0}
+        assert snap.as_dict()["detection_range"] == snap.detection_range()
+        assert snap.as_dict()["range_entities"] is True
+        # A number the module has not said is no range.
+        client.on_state(State(10, float("nan")))
+        assert snap.detection_range() is None
+        # The mounting is not touched by it.
+        assert snap.mounting() is None
+        await links.stop_all()
+
+        # A firmware before the range: no entities, nothing to write.
+        FakeClient.entities = MOUNT_ENTITIES
+        old = radar_link.RadarLinks(client_factory=CommandClient)
+        await old.sync([device()])
+        await settle()
+        assert old.snapshot("dev").range_entities is False
+        with pytest.raises(radar_link.RangeError, match="neu bauen"):
+            old.link("dev").write_range(6.0, -60.0, 60.0)
+        await old.stop_all()
+    asyncio.run(run())
+
+
+def test_writing_a_range_sends_what_differs_in_an_order_the_module_takes():
+    """One command per part, and the firmware refuses a sector that ends
+    before it starts: moved past the old end, the new end goes first."""
+    async def run():
+        FakeClient.entities = RANGE_ENTITIES
+        links = radar_link.RadarLinks(client_factory=CommandClient)
+        await links.sync([device()])
+        await settle()
+        client = FakeClient.instances[0]
+        link = links.link("dev")
+
+        def holds(distance, start, end):
+            for key, value in ((8, distance), (9, start), (10, end)):
+                client.on_state(State(key, value))
+            client.commands.clear()
+
+        holds(6.0, -60.0, 60.0)
+        link.write_range(4.5, -60.0, 40.0)
+        assert client.commands == [("number", 8, 4.5), ("number", 10, 40.0)]
+        # Narrower on both sides: start, then end — each step a sector.
+        holds(6.0, -60.0, 60.0)
+        link.write_range(6.0, -30.0, 30.0)
+        assert client.commands == [("number", 9, -30.0), ("number", 10, 30.0)]
+        # All to the right of the old one: the end first.
+        holds(6.0, -60.0, -10.0)
+        link.write_range(6.0, 20.0, 60.0)
+        assert client.commands == [("number", 10, 60.0), ("number", 9, 20.0)]
+        # All to the left: the start first.
+        holds(6.0, 20.0, 60.0)
+        link.write_range(6.0, -60.0, -10.0)
+        assert client.commands == [("number", 9, -60.0), ("number", 10, -10.0)]
+        # Nothing new: nothing sent.
+        holds(6.0, -60.0, 60.0)
+        link.write_range(6.0, -60.0, 60.0)
+        assert client.commands == []
+        await links.stop_all()
+        with pytest.raises(radar_link.RangeError):
+            radar_link.RadarLink(device(), CommandClient, None).write_range(6.0, -60.0, 60.0)
+    asyncio.run(run())
 
 
 def test_the_node_says_which_firmware_it_runs():

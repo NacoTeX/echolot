@@ -446,6 +446,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* side panel */
 .side { display: flex; flex-direction: column; gap: 16px; }
+#cal-side > .card + .card { margin-top: 16px; }
 .side .card { padding: 20px; }
 .big-number { font-size: 56px; font-weight: 700; letter-spacing: -.045em; line-height: 1; font-variant-numeric: tabular-nums; }
 .big-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }

@@ -567,7 +567,7 @@
         <label class="check"><input type="checkbox" data-f="mirror" ${s.mirror ? "checked" : ""}>
           <span>Links und rechts tauschen<small>Welche Seite das Modul positiv zählt, steht nicht im Handbuch. Geh einmal quer vor dem Sensor entlang: läuft der Punkt in die Gegenrichtung, hier umschalten.</small></span></label>
         <div class="row2">${field("Reichweite · m", num("range_m", s.range_m, { min: 1, max: 12, step: 0.5 }))}${field("Öffnungswinkel · °", num("fov_deg", s.fov_deg, { min: 30, max: 180, step: 5 }))}</div>
-        <p class="hint">Reichweite und Winkel zeichnen nur den gestrichelten Planungsbereich. Wie weit das Modul wirklich sieht, zeigen die Live-Punkte.</p>
+        ${this.moduleRangeNote(s)}
         ${this.plan.room.outline && !window.EcholotGeometry.withinWalls(s.x, s.y, 0, 0, this.plan.room.outline, 0.3)
           ? `<div class="notice warn" style="margin-top:12px">${icon("alert")}<div class="grow">Der Sensor steht außerhalb der Wände.</div></div>` : ""}
         <p class="hint">Genauer als von Hand: <a href="#/room/${encodeURIComponent(this.id)}/calibrate">Kalibrieren</a> richtet den Sensor an Standpunkten aus.</p>
@@ -598,6 +598,36 @@
         <div class="actions" style="margin:12px 0 4px">
           <button class="btn" type="button" data-into="${into}" ${G.normalizeAngle(s.angle || 0) === into ? "disabled" : ""}>${icon("rotate")}Zum Raum drehen</button></div>
         <p class="hint" style="margin-bottom:12px">Dreht ihn senkrecht von der Wand weg, an der er hängt, in einer Ecke schräg in den Raum (${G.facingWords(into)}, ${into}°). Hängt er anders, mit den Pfeilen nachstellen.</p>`;
+    },
+
+    // Reichweite and Öffnungswinkel draw the plan's field of view. Once the
+    // module has said how far and across which sector it reports, the plan
+    // can draw that — for a sector even on both sides; which way an uneven
+    // one opens is not in the manual.
+    moduleRangeFor() {
+      const stored = state.rooms.find((x) => x.id === this.id);
+      const mod = stored && stored.module;
+      if (!mod || !mod.detection_range || !mod.mounting || mod.mounting.mode !== "side") return null;
+      const rr = mod.detection_range;
+      const width = rr.end_deg - rr.start_deg;
+      return {
+        ...rr, width, even: Math.abs(rr.start_deg + rr.end_deg) < 0.05,
+        range_m: window.EcholotGeometry.clamp(rr.distance_m, 1, 12),
+        fov_deg: window.EcholotGeometry.clamp(Math.round(width), 30, 180),
+      };
+    },
+
+    moduleRangeNote(s) {
+      const rr = this.moduleRangeFor();
+      const plain = `<p class="hint">Reichweite und Winkel zeichnen nur den gestrichelten Planungsbereich. Wie weit das Modul wirklich sieht, zeigen die Live-Punkte.</p>`;
+      if (!rr) return plain;
+      const said = `bis ${E.formatNumber(rr.distance_m, 1)} m über ${E.formatNumber(rr.width, 0)}°${rr.even ? "" : ` (${E.formatNumber(rr.start_deg, 0)}° bis ${E.formatNumber(rr.end_deg, 0)}°)`}`;
+      if (Math.abs((s.range_m || 6) - rr.range_m) < 0.05 && Math.abs((s.fov_deg || 120) - rr.fov_deg) < 0.5) {
+        return `<p class="hint">Wie im Modul eingestellt: ${said}.</p>`;
+      }
+      return `<div class="notice warn" style="margin-bottom:12px">${icon("alert")}<div class="grow">Das Modul meldet Ziele ${said}, der Plan zeichnet ${E.formatNumber(s.range_m || 6, 1)} m über ${E.formatNumber(s.fov_deg || 120, 0)}°.
+          ${rr.even ? `<div class="actions" style="margin-top:8px"><button class="btn small" type="button" data-module-range>Vom Modul übernehmen</button></div>`
+            : " Einen ungleichen Sektor zeichnet der Plan gleichmäßig — welche Seite das Modul negativ zählt, steht nicht im Handbuch."}</div></div>`;
     },
 
     bindSensorView(host) {
@@ -815,6 +845,12 @@
         this.inspect();
       }));
       this.bindSensorView(host);
+      host.querySelectorAll("[data-module-range]").forEach((b) => b.addEventListener("click", () => {
+        const rr = this.moduleRangeFor();
+        if (!rr) return;
+        this.plan.mutate((room) => { room.sensor.range_m = rr.range_m; room.sensor.fov_deg = rr.fov_deg; });
+        this.inspect();
+      }));
       host.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
         plan.mutate(() => { item.kind = b.dataset.kind; });
         this.inspect();
