@@ -18,6 +18,7 @@ using ::ld2460_protocol::LinkState;
 using ::ld2460_protocol::Mode;
 using ::ld2460_protocol::Mounting;
 using ::ld2460_protocol::Parser;
+using ::ld2460_protocol::Range;
 using ::ld2460_protocol::Report;
 
 class EcholotLd2460;
@@ -38,6 +39,17 @@ class MountNumber : public number::Number, public Parented<EcholotLd2460> {
  protected:
   void control(float value) override;
   bool is_angle_{false};
+};
+
+// One part of the detection range: distance (m), start or end angle (°).
+// Same rule: the state is what the module reads back.
+class RangeNumber : public number::Number, public Parented<EcholotLd2460> {
+ public:
+  void set_part(uint8_t part) { this->part_ = part; }
+
+ protected:
+  void control(float value) override;
+  uint8_t part_{0};
 };
 
 class EcholotLd2460 : public Component, public uart::UARTDevice {
@@ -64,12 +76,24 @@ class EcholotLd2460 : public Component, public uart::UARTDevice {
   void set_mount_mode_select(MountModeSelect *s) { this->mode_select_ = s; }
   void set_mount_height_number(MountNumber *n) { this->height_number_ = n; }
   void set_mount_angle_number(MountNumber *n) { this->angle_number_ = n; }
+  void set_range_number(uint8_t part, RangeNumber *n) {
+    if (part < RANGE_PARTS)
+      this->range_numbers_[part] = n;
+  }
 
   // Ask the module to change its mounting. It is written once and read
   // back; the entities then show what the module holds.
   void request_mode(Mode mode);
   void request_height(float metres);
   void request_angle(float degrees);
+  // The detection range, one part at a time: RANGE_DISTANCE in metres,
+  // RANGE_START and RANGE_END in degrees. The three go to the module
+  // together, as height and angle do.
+  static const uint8_t RANGE_DISTANCE = 0;
+  static const uint8_t RANGE_START = 1;
+  static const uint8_t RANGE_END = 2;
+  static const uint8_t RANGE_PARTS = 3;
+  void request_range(uint8_t part, float value);
 
  protected:
   void read_uart_(uint32_t now);
@@ -82,6 +106,8 @@ class EcholotLd2460 : public Component, public uart::UARTDevice {
   void request_mounting_(uint16_t height_cm, uint16_t angle_centideg);
   void read_back_mounting_();
   void publish_mounting_();
+  void read_back_range_();
+  void publish_range_();
   void queue_command_(const uint8_t *bytes, size_t length);
   void send_queued_(uint32_t now);
 
@@ -124,10 +150,17 @@ class EcholotLd2460 : public Component, public uart::UARTDevice {
   uint8_t mounting_queries_{0};
   uint32_t last_mounting_query_ms_{0};
 
+  Range range_;
+  // Asked for and not yet read back, per part, in the module's units
+  // (decimetres, tenths of a degree) — kept so parts asked for one after
+  // the other all arrive, like height and angle.
+  bool range_pending_[RANGE_PARTS]{false, false, false};
+  int32_t range_wanted_[RANGE_PARTS]{0, 0, 0};
+
   // Commands to the module go out one at a time, a little apart, so an
   // answer is not mixed up with the next command's.
   struct Command {
-    uint8_t bytes[ld2460_protocol::SET_MOUNTING_LENGTH];
+    uint8_t bytes[ld2460_protocol::MAX_COMMAND_LENGTH];
     uint8_t length;
   };
   static const uint8_t OUTBOX_SIZE = 6;
@@ -146,6 +179,7 @@ class EcholotLd2460 : public Component, public uart::UARTDevice {
   MountModeSelect *mode_select_{nullptr};
   MountNumber *height_number_{nullptr};
   MountNumber *angle_number_{nullptr};
+  RangeNumber *range_numbers_[RANGE_PARTS]{nullptr, nullptr, nullptr};
 };
 
 }  // namespace echolot_ld2460

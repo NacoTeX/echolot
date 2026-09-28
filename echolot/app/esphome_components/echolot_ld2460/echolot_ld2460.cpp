@@ -122,6 +122,34 @@ void EcholotLd2460::read_uart_(uint32_t now) {
 
 void EcholotLd2460::handle_ack_(uint32_t now) {
   const proto::Ack &ack = this->parser_.ack();
+  switch (proto::read_range_ack(this->range_, ack)) {
+    case proto::RangeEvent::PARAMS: {
+      const int32_t held[RANGE_PARTS] = {this->range_.distance_dm, this->range_.start_decideg,
+                                         this->range_.end_decideg};
+      for (uint8_t i = 0; i < RANGE_PARTS; ++i) {
+        if (this->range_pending_[i] && this->range_wanted_[i] == held[i])
+          this->range_pending_[i] = false;
+      }
+      ESP_LOGI(TAG, "Module detection range: %u dm, %d to %d decidegrees", this->range_.distance_dm,
+               this->range_.start_decideg, this->range_.end_decideg);
+      this->publish_range_();
+      return;
+    }
+    case proto::RangeEvent::SET_OK:
+      ESP_LOGI(TAG, "Module accepted the detection range");
+      this->read_back_range_();
+      return;
+    case proto::RangeEvent::SET_FAILED:
+      ESP_LOGW(TAG, "Module refused the detection range");
+      for (bool &pending : this->range_pending_)
+        pending = false;
+      this->read_back_range_();
+      this->publish_range_();
+      return;
+    default:
+      break;
+  }
+  const Mode mode_before = this->mounting_.mode;
   switch (proto::read_mounting_ack(this->mounting_, ack)) {
     case proto::MountingEvent::PARAMS:
       if (this->wanted_height_cm_ == this->mounting_.height_cm)
@@ -133,6 +161,14 @@ void EcholotLd2460::handle_ack_(uint32_t now) {
       ESP_LOGI(TAG, "Module mounting: %s, %u cm, %u.%02u deg", proto::mode_name(this->mounting_.mode),
                this->mounting_.height_cm, this->mounting_.angle_centideg / 100, this->mounting_.angle_centideg % 100);
       this->publish_mounting_();
+      if (mode_before != Mode::UNKNOWN && this->mounting_.mode != mode_before) {
+        // Another mode, another detection range (read_back_mounting_):
+        // what was held or asked for belonged to the old one.
+        this->range_ = Range{};
+        for (bool &pending : this->range_pending_)
+          pending = false;
+        this->read_back_range_();
+      }
       break;
     case proto::MountingEvent::SET_OK:
       ESP_LOGI(TAG, "Module accepted the mounting change (function 0x%02X)", ack.function);
@@ -226,7 +262,7 @@ void EcholotLd2460::publish_frame_(uint32_t now, LinkState state) {
 
 void EcholotLd2460::maybe_query_mounting_(uint32_t now) {
   const bool mode_known = this->mounting_.mode != Mode::UNKNOWN;
-  if (mode_known && this->mounting_.params_known)
+  if (mode_known && this->mounting_.params_known && this->range_.known)
     return;
   if (now < MOUNTING_QUERY_DELAY_MS)
     return;
@@ -237,6 +273,8 @@ void EcholotLd2460::maybe_query_mounting_(uint32_t now) {
     this->queue_command_(proto::COMMAND_QUERY_MODE, sizeof(proto::COMMAND_QUERY_MODE));
   if (!this->mounting_.params_known)
     this->queue_command_(proto::COMMAND_QUERY_MOUNTING, sizeof(proto::COMMAND_QUERY_MOUNTING));
+  if (!this->range_.known)
+    this->queue_command_(proto::COMMAND_QUERY_RANGE, sizeof(proto::COMMAND_QUERY_RANGE));
   if (this->mounting_queries_ < 255)
     this->mounting_queries_++;
   this->last_mounting_query_ms_ = now;
@@ -245,6 +283,62 @@ void EcholotLd2460::maybe_query_mounting_(uint32_t now) {
 void EcholotLd2460::read_back_mounting_() {
   this->queue_command_(proto::COMMAND_QUERY_MODE, sizeof(proto::COMMAND_QUERY_MODE));
   this->queue_command_(proto::COMMAND_QUERY_MOUNTING, sizeof(proto::COMMAND_QUERY_MOUNTING));
+  // The module keeps one detection range per mode and answers with the
+  // current mode's; after a change of mode it is another one.
+  this->read_back_range_();
+}
+
+void EcholotLd2460::read_back_range_() {
+  this->queue_command_(proto::COMMAND_QUERY_RANGE, sizeof(proto::COMMAND_QUERY_RANGE));
+}
+
+void EcholotLd2460::request_range(uint8_t part, float value) {
+  if (part >= RANGE_PARTS)
+    return;
+  if (!this->range_.known || this->mounting_.mode == Mode::UNKNOWN) {
+    // The three parts go to the module together, and its limits depend
+    // on the mode: without both read back, nothing honest can be sent.
+    ESP_LOGW(TAG, "Detection range or mode not read from the module yet; asking it first");
+    this->read_back_mounting_();
+    this->publish_range_();
+    return;
+  }
+  const long wanted = lroundf(value * 10.0f);
+  const bool fits = part == RANGE_DISTANCE ? (wanted >= 0 && wanted <= 255) : (wanted >= -32768 && wanted <= 32767);
+  const int32_t held[RANGE_PARTS] = {this->range_.distance_dm, this->range_.start_decideg, this->range_.end_decideg};
+  int32_t send[RANGE_PARTS];
+  for (uint8_t i = 0; i < RANGE_PARTS; ++i)
+    send[i] = this->range_pending_[i] ? this->range_wanted_[i] : held[i];
+  send[part] = int32_t(wanted);
+  uint8_t command[proto::MAX_COMMAND_LENGTH];
+  const size_t length =
+      fits ? proto::encode_set_range(command, sizeof(command), this->mounting_.mode, uint8_t(send[RANGE_DISTANCE]),
+                                     int16_t(send[RANGE_START]), int16_t(send[RANGE_END]))
+           : 0;
+  if (length == 0) {
+    ESP_LOGW(TAG, "Detection range %ld dm / %ld to %ld decidegrees is outside what this firmware writes in %s mode",
+             long(send[RANGE_DISTANCE]), long(send[RANGE_START]), long(send[RANGE_END]),
+             proto::mode_name(this->mounting_.mode));
+    // Back to what the module holds, so nobody is shown the refused value.
+    this->publish_range_();
+    return;
+  }
+  this->range_wanted_[part] = send[part];
+  this->range_pending_[part] = true;
+  ESP_LOGI(TAG, "Asking the module for %ld dm, %ld to %ld decidegrees", long(send[RANGE_DISTANCE]),
+           long(send[RANGE_START]), long(send[RANGE_END]));
+  this->queue_command_(command, length);
+}
+
+void EcholotLd2460::publish_range_() {
+  if (!this->range_.known)
+    return;
+  const float values[RANGE_PARTS] = {this->range_.distance_dm / 10.0f, this->range_.start_decideg / 10.0f,
+                                     this->range_.end_decideg / 10.0f};
+  for (uint8_t i = 0; i < RANGE_PARTS; ++i) {
+    if (this->range_numbers_[i] != nullptr)
+      this->range_numbers_[i]->publish_state(values[i]);
+  }
 }
 
 void EcholotLd2460::request_mode(Mode mode) {
@@ -341,6 +435,8 @@ void MountModeSelect::control(size_t index) {
   this->parent_->request_mode(index == 0 ? Mode::SIDE : Mode::TOP);
 }
 
+void RangeNumber::control(float value) { this->parent_->request_range(this->part_, value); }
+
 void MountNumber::control(float value) {
   if (this->is_angle_)
     this->parent_->request_angle(value);
@@ -376,6 +472,9 @@ void EcholotLd2460::dump_config() {
   LOG_SELECT("  ", "Mount mode", this->mode_select_);
   LOG_NUMBER("  ", "Mount height", this->height_number_);
   LOG_NUMBER("  ", "Mount angle", this->angle_number_);
+  LOG_NUMBER("  ", "Range distance", this->range_numbers_[RANGE_DISTANCE]);
+  LOG_NUMBER("  ", "Range start", this->range_numbers_[RANGE_START]);
+  LOG_NUMBER("  ", "Range end", this->range_numbers_[RANGE_END]);
 }
 
 }  // namespace echolot_ld2460

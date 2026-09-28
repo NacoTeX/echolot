@@ -16,6 +16,9 @@
 //                     through read_mounting_ack into one Mounting that
 //                     carries over, one line per event
 //   mounting-reset
+//   setrange <mode> <distance_dm> <start_decideg> <end_decideg>
+//   range <hex>       like mounting, through read_range_ack into one Range
+//   range-reset
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -64,6 +67,7 @@ static const char *event_name(MountingEvent e) {
 int main() {
   Parser *parser = new Parser();
   Mounting mounting;
+  Range range;
   std::string line;
   while (std::getline(std::cin, line)) {
     std::istringstream in(line);
@@ -134,6 +138,28 @@ int main() {
       in >> height >> angle;
       uint8_t out[SET_MOUNTING_LENGTH];
       print_hex(out, encode_set_mounting(out, sizeof(out), uint16_t(height), uint16_t(angle)));
+    } else if (command == "setrange") {
+      int mode = 0;
+      long distance = 0, start = 0, end = 0;
+      in >> mode >> distance >> start >> end;
+      uint8_t out[MAX_COMMAND_LENGTH];
+      print_hex(out, encode_set_range(out, sizeof(out), Mode(uint8_t(mode)), uint8_t(distance), int16_t(start),
+                                      int16_t(end)));
+    } else if (command == "range-reset") {
+      range = Range{};
+      std::cout << "ok\n";
+    } else if (command == "range") {
+      std::string hex;
+      in >> hex;
+      for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        const uint8_t byte = uint8_t(hex_value(hex[i]) * 16 + hex_value(hex[i + 1]));
+        if (parser->feed(byte) == Event::ACK) {
+          const RangeEvent e = read_range_ack(range, parser->ack());
+          std::cout << event_name(e) << " known=" << range.known << " d=" << int(range.distance_dm)
+                    << " s=" << range.start_decideg << " e=" << range.end_decideg << "\n";
+        }
+      }
+      std::cout << "end rejected=" << parser->rejected << "\n";
     } else if (command == "mounting-reset") {
       mounting = Mounting{};
       std::cout << "ok\n";

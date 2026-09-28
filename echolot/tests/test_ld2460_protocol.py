@@ -56,7 +56,7 @@ def harness(tmp_path_factory):
         while True:
             reply = proc.stdout.readline().rstrip("\n")
             out.append(reply)
-            if not line.startswith(("feed", "mounting ")) or reply.startswith("end "):
+            if not line.startswith(("feed", "mounting ", "range ")) or reply.startswith("end "):
                 return out
 
     yield ask
@@ -307,3 +307,61 @@ def test_the_version_answer_names_the_mode_and_a_strange_mode_is_ignored(harness
     assert mounting(harness, "fdfcfbfa0a0c000704030201") == ["none mode=top known=0 h=0 a=0"]
     # Too short to hold height and angle.
     assert mounting(harness, "fdfcfbfa080d00040104030201") == ["none mode=top known=0 h=0 a=0"]
+
+
+# --- detection range ------------------------------------------------------------
+#
+# Hi-Link protocol V1.0, tables 21-24: 0x11 sets and 0x12 reads the
+# distance (m × 10, one byte) and the sector (start and end angle, ° × 10,
+# two bytes each, signed little-endian) of the current installation mode.
+
+
+def test_the_manuals_example_6_m_and_50_degrees_either_side(harness):
+    # "FD FC FB FA 11 10 00 3C 0C FE F4 01 04 03 02 01"
+    assert harness("setrange 1 60 -500 500") == ["fdfcfbfa1110003c0cfef40104030201"]
+
+
+@pytest.mark.parametrize("args, expected", [
+    ("1 60 -600 600", "fdfcfbfa1110003ca8fd580204030201"),   # side: the factory setting
+    ("1 5 -10 10", "fdfcfbfa11100005f6ff0a0004030201"),       # the shortest, a narrow sector
+    ("2 40 0 3600", "fdfcfbfa111000280000100e04030201"),      # top: the factory setting
+    ("1 61 -600 600", "<empty>"),   # side: farther than 6 m
+    ("1 60 -601 600", "<empty>"),   # side: beyond -60°
+    ("1 60 -600 601", "<empty>"),   # side: beyond +60°
+    ("2 41 0 3600", "<empty>"),     # top: farther than 4 m
+    ("2 40 -1 3600", "<empty>"),    # top: below 0°
+    ("2 40 0 3601", "<empty>"),     # top: beyond 360°
+    ("1 4 -600 600", "<empty>"),    # shorter than half a metre
+    ("1 60 100 100", "<empty>"),    # a sector that ends where it starts
+    ("1 60 300 -300", "<empty>"),   # ... or before
+    ("0 60 -600 600", "<empty>"),   # a mode the module did not name
+    ("3 60 -600 600", "<empty>"),
+])
+def test_the_range_command_and_its_limits(harness, args, expected):
+    assert harness(f"setrange {args}") == [expected]
+
+
+def ranges(ask, hexbytes):
+    return ask(f"range {hexbytes}")[:-1]
+
+
+def test_what_the_module_reads_back_is_the_range(harness):
+    harness("reset")
+    harness("range-reset")
+    # Table 24's example: side-mounted, 6 m, ±50°.
+    assert ranges(harness, "fdfcfbfa1210003c0cfef40104030201") == ["params known=1 d=60 s=-500 e=500"]
+    # Top-mounted, 4 m all round.
+    assert ranges(harness, "fdfcfbfa12100028000010" + "0e04030201") == ["params known=1 d=40 s=0 e=3600"]
+
+
+def test_a_range_acknowledgement_changes_nothing_until_read_back(harness):
+    harness("reset")
+    harness("range-reset")
+    assert ranges(harness, "fdfcfbfa110c000104030201") == ["set-ok known=0 d=0 s=0 e=0"]
+    assert ranges(harness, "fdfcfbfa110c000004030201") == ["set-failed known=0 d=0 s=0 e=0"]
+    # Too short to hold a range; and the other acknowledgements are not its.
+    assert ranges(harness, "fdfcfbfa120e003c0cfe04030201") == ["none known=0 d=0 s=0 e=0"]
+    assert ranges(harness, "fdfcfbfa080f000401b80b04030201") == ["none known=0 d=0 s=0 e=0"]
+    # Nor does the mounting reader take a range for its own.
+    harness("mounting-reset")
+    assert mounting(harness, "fdfcfbfa1210003c0cfef40104030201") == ["none mode=unknown known=0 h=0 a=0"]

@@ -136,6 +136,17 @@ echolot_ld2460:
     name: "Radar Mount Height"
   mount_angle:
     name: "Radar Mount Angle"
+  # How far, and across which sector, the module reports targets — also
+  # kept by the module, also always what it reads back.
+  range_distance:
+    name: "Radar Range"
+    mode: box
+  range_start:
+    name: "Radar Range Start"
+    mode: box
+  range_end:
+    name: "Radar Range End"
+    mode: box
 {% if diagnostics %}
   rx_bytes:
     name: "Radar Bytes Received"

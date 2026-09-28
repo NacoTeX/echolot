@@ -7,32 +7,35 @@
 // bytes in and strings out.
 //
 // Where the facts come from:
-//   * Report frames (radar -> host): Hi-Link "HLK-LD2460 Serial port
-//     communication protocol V1.0", table 2, including its worked example
-//     F4 F3 F2 F1 04 0F 00 0F 00 17 00 F8 F7 F6 F5 for a target at
-//     (1.5 m, 2.3 m).
-//   * Command frames and their acknowledgements: same document, table 3/4,
-//     for 0x06 "open/close reporting". The layout of the 0x06 and 0x0B
-//     acknowledgement payloads is taken from smarthomeshop/ld2460 (MIT,
-//     itself based on ciriousjoker/esphome_ld2460), because the part of
-//     the manual that describes them was not available to us. Treated as
-//     unverified until a real module answers.
-//   * Installation mode and parameters (0x07-0x0A), from the same
-//     smarthomeshop/ld2460 code and its LD2460-UPGRADE guide, which cite
-//     Hi-Link's manual: the module is mounted "side" (on a wall) or "top"
-//     (on the ceiling), and keeps a mounting height and tilt angle across
-//     power cycles. The module uses them itself; what exactly it does with
-//     them is not documented to us. Unverified until a real module answers
-//     — which is why the firmware only ever publishes what the module
-//     reads back, never what was asked for.
+//   * Hi-Link, "HLK-LD2460 Moving Target Detection And Tracking Module
+//     Serial Protocol" V1.0, the complete document: reports
+//     (table 2, with its worked example F4 F3 F2 F1 04 0F 00 0F 00 17 00
+//     F8 F7 F6 F5 for a target at (1.5 m, 2.3 m)); open/close reporting
+//     0x06 (tables 3/4); mounting height and angle 0x07/0x08 (tables 5-8,
+//     "only when side-mounted"); installation mode 0x09/0x0A (tables
+//     9-12); firmware version 0x0B (tables 13/14); detection range
+//     0x11/0x12 (tables 21-24). Every byte layout below is the one those
+//     tables give, including their examples. Earlier versions of this
+//     file took the acknowledgements from smarthomeshop/ld2460 (MIT, after
+//     ciriousjoker/esphome_ld2460) while the document was not at hand;
+//     the document agrees with them.
+//   * A real module: firmware V1.3 (2025-03) answered the version, mode
+//     and mounting queries in the Echolot 1.7.0 hardware test
+//     (2026-09-27: side, 260 cm, 30.00 degrees) and sent reports and,
+//     now and then, empty reports.
 //   * The parser itself is the one from the wohnzimmer-radar prototype
 //     (firmware 0.2.1), which received real frames from a module on
 //     2026-09-23; extended here by the second frame family.
 //
+// What the module does with its mounting and detection range is not
+// documented beyond "the parameters are still saved after power-off";
+// the firmware only ever publishes what the module reads back, never
+// what was asked for.
+//
 // What is not known and therefore not assumed: whether the module keeps
-// sending empty reports in an empty room, or falls silent. See
-// classify() — the answer decides what silence means, and the firmware
-// reports the difference instead of guessing it.
+// sending empty reports in an empty room, or falls silent after the last
+// target has gone. See classify() — the answer decides what silence
+// means, and the firmware reports the difference instead of guessing it.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -58,6 +61,8 @@ static const uint8_t FUNCTION_QUERY_MOUNTING = 0x08;
 static const uint8_t FUNCTION_SET_MODE = 0x09;
 static const uint8_t FUNCTION_QUERY_MODE = 0x0A;
 static const uint8_t FUNCTION_VERSION = 0x0B;
+static const uint8_t FUNCTION_SET_RANGE = 0x11;
+static const uint8_t FUNCTION_QUERY_RANGE = 0x12;
 
 // "Open reporting". Reporting is on by default; sending this changes
 // nothing on a module in its normal state, and the acknowledgement it
@@ -73,6 +78,9 @@ static const uint8_t COMMAND_QUERY_MODE[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_
 // Read-only: the mounting height and angle the module holds.
 static const uint8_t COMMAND_QUERY_MOUNTING[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_QUERY_MOUNTING, 0x0C, 0x00,
                                                    0x01, 0x04, 0x03, 0x02, 0x01};
+// Read-only: the detection range the module holds for its current mode.
+static const uint8_t COMMAND_QUERY_RANGE[12] = {0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_QUERY_RANGE, 0x0C, 0x00,
+                                                0x01, 0x04, 0x03, 0x02, 0x01};
 
 // How the module is mounted, as it numbers it.
 enum class Mode : uint8_t { UNKNOWN = 0, SIDE = 1, TOP = 2 };
@@ -85,6 +93,22 @@ static const uint16_t MAX_HEIGHT_CM = 500;
 static const uint16_t MAX_ANGLE_CENTIDEG = 9000;
 static const size_t SET_MODE_LENGTH = 12;
 static const size_t SET_MOUNTING_LENGTH = 15;
+
+// The detection range: how far, and across which sector, the module
+// reports targets — "only the detection range in the current installation
+// mode" is set or returned. The manual's limits: side-mounted at most
+// 6 m and -60° to +60°, top-mounted at most 4 m and 0° to 360°; both are
+// its factory settings. The firmware writes nothing wider, nothing
+// shorter than half a metre (a slip of the finger must not blind the
+// module), and no sector that ends before it starts.
+static const uint8_t MIN_RANGE_DM = 5;
+static const uint8_t MAX_SIDE_RANGE_DM = 60;
+static const uint8_t MAX_TOP_RANGE_DM = 40;
+static const int16_t SIDE_ANGLE_LIMIT_DECIDEG = 600;
+static const int16_t TOP_ANGLE_LIMIT_DECIDEG = 3600;
+static const size_t SET_RANGE_LENGTH = 16;
+// The longest command the firmware sends.
+static const size_t MAX_COMMAND_LENGTH = SET_RANGE_LENGTH;
 
 struct Target {
   int16_t x_dm;  // decimetres, as reported; sign convention unverified
@@ -227,6 +251,8 @@ struct Mounting {
 };
 
 enum class MountingEvent : uint8_t { NONE, MODE, PARAMS, SET_OK, SET_FAILED };
+// Same meaning for the detection range: PARAMS is a read-back.
+using RangeEvent = MountingEvent;
 
 // Take one acknowledgement into `mounting`. A set is acknowledged, but
 // what the module holds afterwards is only what it reads back: SET_OK and
@@ -259,6 +285,67 @@ inline MountingEvent read_mounting_ack(Mounting &mounting, const Ack &ack) {
       return p[0] == 0x01 ? MountingEvent::SET_OK : MountingEvent::SET_FAILED;
     default:
       return MountingEvent::NONE;
+  }
+}
+
+// What the module has said about its detection range, in its own units:
+// decimetres and tenths of a degree, 0° straight ahead.
+struct Range {
+  bool known = false;
+  uint8_t distance_dm = 0;
+  int16_t start_decideg = 0;
+  int16_t end_decideg = 0;
+};
+
+// The command that sets the detection range for `mode`, the mode the
+// module is in; 0 bytes for an unknown mode or anything outside the
+// limits above. Table 21: distance one byte (m × 10), start and end angle
+// two bytes each (° × 10), little-endian and signed — its example, 6 m
+// and ±50°, is 3C 0C FE F4 01.
+inline size_t encode_set_range(uint8_t *out, size_t capacity, Mode mode, uint8_t distance_dm,
+                               int16_t start_decideg, int16_t end_decideg) {
+  if (capacity < SET_RANGE_LENGTH || distance_dm < MIN_RANGE_DM || start_decideg >= end_decideg)
+    return 0;
+  if (mode == Mode::SIDE) {
+    if (distance_dm > MAX_SIDE_RANGE_DM || start_decideg < -SIDE_ANGLE_LIMIT_DECIDEG ||
+        end_decideg > SIDE_ANGLE_LIMIT_DECIDEG)
+      return 0;
+  } else if (mode == Mode::TOP) {
+    if (distance_dm > MAX_TOP_RANGE_DM || start_decideg < 0 || end_decideg > TOP_ANGLE_LIMIT_DECIDEG)
+      return 0;
+  } else {
+    return 0;
+  }
+  const uint16_t start = uint16_t(start_decideg), end = uint16_t(end_decideg);
+  const uint8_t command[SET_RANGE_LENGTH] = {
+      0xFD, 0xFC, 0xFB, 0xFA, FUNCTION_SET_RANGE, 0x10, 0x00, distance_dm,
+      uint8_t(start & 0xFF), uint8_t(start >> 8), uint8_t(end & 0xFF), uint8_t(end >> 8),
+      0x04, 0x03, 0x02, 0x01};
+  memcpy(out, command, SET_RANGE_LENGTH);
+  return SET_RANGE_LENGTH;
+}
+
+// Take one acknowledgement into `range`, with the rule of
+// read_mounting_ack: a set changes nothing here, only a read-back does.
+inline RangeEvent read_range_ack(Range &range, const Ack &ack) {
+  const uint8_t *p = ack.payload;
+  switch (ack.function) {
+    case FUNCTION_QUERY_RANGE:
+      // Table 24: distance, start angle, end angle.
+      if (ack.payload_length < 5)
+        return RangeEvent::NONE;
+      range.known = true;
+      range.distance_dm = p[0];
+      range.start_decideg = int16_t(uint16_t(p[1] | (p[2] << 8)));
+      range.end_decideg = int16_t(uint16_t(p[3] | (p[4] << 8)));
+      return RangeEvent::PARAMS;
+    case FUNCTION_SET_RANGE:
+      // Table 22: 00 failed, 01 successful.
+      if (ack.payload_length < 1)
+        return RangeEvent::NONE;
+      return p[0] == 0x01 ? RangeEvent::SET_OK : RangeEvent::SET_FAILED;
+    default:
+      return RangeEvent::NONE;
   }
 }
 
