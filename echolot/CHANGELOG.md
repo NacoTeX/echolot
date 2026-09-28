@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.8.0
+
+**Wohin der Sensor blickt, und was das Modul überhaupt meldet.**
+
+- **Blickt der Sensor aus dem Raum hinaus, sagt Echolot es.** Im Test von
+  1.7 stand der Sensor auf dem Plan in einer Ecke und blickte nach rechts,
+  aus dem Raum: Jede Meldung landete an einer falschen Stelle, und weil
+  der Sichtbereich an den Wänden abgeschnitten wird, verschwand er einfach
+  vom Plan. Jetzt steht das über der Karte, mit einem Sprung zum Sensor im
+  Raumeditor. Dort sagt der Inspektor, wohin der Sensor blickt („nach
+  links oben“) und wie viel des Raums er laut Plan sieht, warnt, wenn ein
+  großer Teil seines Blicks hinter der Wand liegt, und *Zum Raum drehen*
+  dreht ihn senkrecht von seiner Wand weg, in einer Ecke schräg hinein.
+- **Erfassungsbereich des Moduls** (Firmware 1.8, Hi-Link-Protokoll
+  Funktion `11`/`12`): wie weit und über welchen Winkel das LD2460
+  überhaupt Ziele meldet, ab Werk 6 m und ±60° an der Wand. Bisher hat
+  niemand gelesen, was die HLK-App dort zuletzt eingestellt hat. Die
+  Firmware liest ihn mit der Montage, veröffentlicht nur, was das Modul
+  zurückliest, und schreibt nichts, was dessen Montageart nicht erlaubt.
+  *Kalibrieren → Filter* zeigt und ändert ihn; der Raumeditor bietet an,
+  ihn als Sichtbereich zu zeichnen. Ausrichtung und Störquellen bleiben
+  dabei.
+- **Das vollständige Schnittstellenprotokoll** von Hi-Link liegt jetzt vor:
+  Alle Befehle und Quittungen der Firmware entsprechen ihm, einschließlich
+  seiner Beispiele Byte für Byte. Bisher stammten die Quittungen aus
+  smarthomeshop/ld2460.
+- **Korrekturen:** Die Beschriftungen des Plans (Maßstab, Zonen, Möbel)
+  waren seit 1.7 zu Klecksen zusammengeschoben: Der Buchstabenabstand der
+  Seite wurde in Pixeln an Schrift vererbt, die im Plan nur Bruchteile
+  eines Meters hoch ist. Im Raumeditor ging der erste Tipp auf einen Knopf
+  verloren, wenn gerade ein Feld bearbeitet wurde — etwa Winkel eintippen
+  und dann auf einen Drehpfeil tippen.
+
 ## 1.7.0
 
 **Ein Raum im Dashboard, Links und Rechts aus zwei Gängen, Aufzeichnen

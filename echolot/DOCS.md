@@ -81,9 +81,13 @@ Zahl je Raum; auf dem Handy wird sie zur Leiste unten.
 - **Zonen** — leuchten auf, sobald jemand darin ist, mit der Zahl in der
   Ecke. Rechts stehen sie mit Zustand und Abwesenheits-Countdown.
 - **Eingänge** — grau gepunktet umrandet (siehe „Eingänge“).
-- **Sensor und Sichtbereich** — der gestrichelte Fächer ist eine
-  Planungshilfe aus Reichweite und Öffnungswinkel, keine Messung. Wie weit
-  das Modul wirklich sieht, zeigen die Punkte.
+- **Sensor und Sichtbereich** — der gestrichelte Fächer zeigt, wohin der
+  Sensor laut Plan blickt, aus Reichweite und Öffnungswinkel, an den
+  Wänden abgeschnitten; eine Planungshilfe, keine Messung. Wie weit das
+  Modul wirklich sieht, zeigen die Punkte. Blickt der Sensor laut Plan aus
+  dem Raum hinaus, verschwindet der Fächer hinter der Wand — dann steht
+  über der Karte, dass die Meldungen so an falschen Stellen landen, mit
+  *Ausrichten* direkt zum Sensor im Raumeditor.
 
 Ist jemand verschwunden, ohne durch einen Eingang zu gehen, steht rechts
 **vermutlich noch da** mit der Zeit, die das höchstens noch gilt, und
@@ -124,6 +128,20 @@ So lässt sich eine Einstellung an echten Meldungen prüfen, bevor sie gilt.
 | Wände | | Der Umriss des Raums, für Nischen, L-Formen, Vorsprünge. Ecken ziehen, über die Punkte dazwischen neue einfügen, Doppelklick entfernt eine. *Neu nachzeichnen* zieht die Wände Ecke für Ecke, etwa über dem Grundrissbild. |
 | Einrasten | | 5-cm-Raster, Drehungen in 15°-Schritten (Sensor 5°). |
 | Rückgängig / Wiederholen | ⌘Z / ⇧⌘Z | |
+
+**Sensor.** Zieh ihn dorthin, wo er hängt, und dreh ihn so, wie er in
+den Raum blickt: 0° blickt auf dem Plan nach unten, positive Winkel drehen
+im Uhrzeigersinn — der Inspektor sagt es auch in Worten („nach links
+oben“). Er zeigt, wie viel des Raums der Sensor laut Plan sieht, und
+warnt, wenn ein großer Teil seines Blicks hinter der Wand liegt oder er
+ganz aus dem Raum hinaus blickt. *Zum Raum drehen* dreht ihn senkrecht von
+der Wand weg, an der er hängt, in einer Ecke schräg in den Raum und, frei
+im Raum, zu dessen Mitte; hängt er anders, mit den Pfeilen nachstellen.
+Meldet das Modul seinen Erfassungsbereich (siehe „Kalibrieren“, *Filter*)
+und zeichnet der Plan etwas anderes, sagt der Inspektor das und bietet bei
+einem gleichmäßigen Sektor *Vom Modul übernehmen* an. Einen ungleichen
+zeichnet der Plan gleichmäßig: Auf welcher Seite er beginnt, steht nicht
+im Handbuch.
 
 **Möbel als Zone.** Wähle ein Möbelstück und stell *Als Zone* auf
 *Erkennung* — für Sofa, Bett, Schreibtisch, Esstisch —, auf
@@ -373,6 +391,16 @@ beim Quergang kaum Bewegung; auch das sagt die Seite.
   (normal) oder ein Viertel (stark) des Wegs, wie vor 1.7. Ruhigere Punkte
   an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas
   später.
+- **Erfassungsbereich des Moduls** (ab Firmware 1.8): wie weit und über
+  welchen Winkel das LD2460 überhaupt Ziele meldet — 0° ist geradeaus.
+  Das Modul hält ihn selbst, je Montageart einen; ab Werk an der Wand
+  6 m und −60° bis +60°, an der Decke 4 m rundum. Was die HLK-App dort
+  zuletzt eingestellt hat, entscheidet, was ankommt; die Seite zeigt, was
+  das Modul zurückliest, und *Ins Modul schreiben* ändert es wie die
+  Montage. Enger stellen hält etwa den Flur hinter einer offenen Tür
+  heraus, bevor er Zielplätze im Modul belegt. Ausrichtung und
+  Störquellen bleiben: Der Bereich entscheidet, *welche* Ziele das Modul
+  meldet, nicht *wo*.
 
 ## Wie gezählt wird
 
@@ -569,6 +597,21 @@ für Höhe in cm und Neigung in 1/100° zusammen), das Modul quittiert, die
 Firmware fragt nach, und erst die Antwort erscheint. Werte außerhalb von
 0,5–5 m und 0–90° schreibt sie nicht. Beim Start schreibt sie nichts.
 
+Ab 1.8 genauso mit dem **Erfassungsbereich** (Funktion `12` liest, `11`
+schreibt): Zahlen „Radar Range“ (m), „Radar Range Start“ und „Radar Range
+End“ (°), gefragt mit der Montage, Werte immer vom Modul zurückgelesen. Die
+drei gehen zusammen hinaus; nacheinander geänderte kommen alle an. Was die
+Montageart des Moduls nicht erlaubt — an der Wand mehr als 6 m oder
+jenseits von ±60°, an der Decke mehr als 4 m oder außerhalb von 0–360° —,
+unter 0,5 m oder ein Sektor, der endet, bevor er beginnt, schreibt sie
+nicht, und die Zahl springt auf den Wert des Moduls zurück. Wechselt die
+Montageart, liest sie den Bereich der neuen.
+
+Alle Befehle und Quittungen sind nach Hi-Links vollständigem
+Schnittstellenprotokoll V1.0 gebaut, einschließlich seiner Beispiele Byte
+für Byte; ein Modul mit Firmware V1.3 hat im Test von 1.7 Version,
+Montageart, Höhe und Neigung so beantwortet.
+
 ## Was offen ist
 
 Nur mit echter Hardware zu klären, und deshalb Einstellungen statt
@@ -590,15 +633,18 @@ Annahmen:
 - **Die Dashboard-Karte** ist gegen eine Nachbildung von Home Assistant
   geprüft, die Ingress-Sitzungen wie der Supervisor behandelt, noch nicht
   in einem echten Home Assistant.
-- **Der Aufbau der Quittungen für `06` und `0B` und der Montage-Befehle
-  `07`–`0A`.** Er stammt aus dem MIT-lizenzierten
-  [smarthomeshop/ld2460](https://github.com/smarthomeshop/ld2460) und
-  dessen Einbauanleitung, weil das Handbuch selbst nicht vorlag.
+- **Der Erfassungsbereich (`11`/`12`)** ist nach Hi-Links Protokoll
+  gebaut und gegen ein nachgebildetes Modul geprüft, an einem echten noch
+  nicht gelesen oder geschrieben. Wie das Modul einen ungleichen Sektor
+  zu links und rechts legt, steht nicht im Protokoll.
 - **Was das Modul mit Montageart, Höhe und Neigung genau rechnet.** Dass es
   sie nutzt, sagt die Anleitung; wie, nicht. Ob die Schrägkorrektur der
   Kalibrierung danach noch nötig ist, entscheidet die Messung im Raum.
 - **Reichweite und Öffnungswinkel** des Sichtbereichs auf der Karte sind
-  Planungswerte (6 m, 120°), keine gemessenen.
+  Planungswerte (6 m, 120°), keine gemessenen; meldet das Modul seinen
+  Erfassungsbereich, bietet der Raumeditor an, den zu zeichnen. Die
+  Warnung „blickt aus dem Raum hinaus“ prüft den Plan, nicht den Raum:
+  Ob der Sensor wirklich so hängt, zeigen die Gänge unter *Achsen*.
 - Raumkarte, Zonen und MQTT-Export sind mit simulierten Sensoren getestet,
   **noch nicht mit einem echten Modul im Raum**.
 - Die Kenngrößen der Zielverfolgung — Zuordnung bis 0,9 m, 1,5 s Gedächtnis,
