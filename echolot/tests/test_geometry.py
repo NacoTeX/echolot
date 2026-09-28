@@ -304,3 +304,108 @@ def test_the_browser_finds_the_same_reports_short():
     for ((x, y), model), js in zip(cases, result["short"]):
         assert js == pytest.approx(geometry.model_shortfall(x, y, model), abs=1e-12)
     assert any(v > geometry.MODEL_TOLERANCE_M for v in result["short"])  # the cases reach past it
+
+
+# --- where the sensor looks on the plan -------------------------------------------
+
+#: The living room from the hardware test: 3.9 × 5 m, a strip along the
+#: left wall cut off below the door, and the sensor in the bottom-right
+#: corner — drawn at -90°, looking right, out of the room.
+LIVING = [[0, 0], [3.9, 0], [3.9, 5], [0.35, 5], [0.35, 1.1], [0, 1.1]]
+
+
+def _js(expressions: dict) -> dict:
+    script = f"""
+      const g = require({json.dumps(str(JS))});
+      const out = {{}};
+      {"".join(f"out[{json.dumps(k)}] = {v};" for k, v in expressions.items())}
+      console.log(JSON.stringify(out));
+    """
+    return json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_a_sensor_drawn_looking_out_of_the_room_is_recognised():
+    """Its field of view, cut at the walls, vanished from the plan, and
+    nothing said why every report landed in the wrong place."""
+    living = json.dumps(LIVING)
+    r = _js({
+        "out": f"g.viewFit({{x: 3.9, y: 5, angle: -90}}, 3.9, 5, {living})",
+        "corner": f"g.viewFit({{x: 3.9, y: 5, angle: 135}}, 3.9, 5, {living})",
+        "flat": f"g.viewFit({{x: 3.9, y: 5, angle: 90}}, 3.9, 5, {living})",
+        "askew": f"g.viewFit({{x: 3.9, y: 5, angle: 60}}, 3.9, 5, {living})",
+        "wall": "g.viewFit({x: 1.95, y: 0, angle: 0}, 3.9, 5, null)",
+        "hall": "g.viewFit({x: 15, y: 0, angle: 0}, 30, 30, null)",
+        "hall_cover": "g.viewCover({x: 15, y: 0, angle: 0}, 30, 30, null)",
+        "hall_out": "g.viewFit({x: 15, y: 0, angle: 180}, 30, 30, null)",
+        "middle": "g.viewFit({x: 3, y: 2, angle: 77}, 6, 4, null)",
+        "small": "g.viewFit({x: 0.5, y: 0, angle: 0}, 1, 1, null)",
+        "out_cover": f"g.viewCover({{x: 3.9, y: 5, angle: -90}}, 3.9, 5, {living})",
+        "corner_cover": f"g.viewCover({{x: 3.9, y: 5, angle: 135}}, 3.9, 5, {living})",
+        "all": "g.viewCover({x: 3, y: 0, angle: 0, fov_deg: 180, range_m: 12}, 6, 4, null)",
+        "limits": "[g.LOOKS_OUT_FIT, g.PARTLY_OUT_FIT]",
+    })
+    looks_out, partly = r["limits"]
+    assert r["out"] <= looks_out and r["hall_out"] <= looks_out
+    # Diagonally out of the corner: the rays along its two walls graze them.
+    assert r["corner"] == pytest.approx(0.76)
+    # Flat on the right wall next to the corner: half its view is the
+    # bottom wall's other side, and that is how it hangs — not a warning.
+    assert r["flat"] >= partly
+    assert looks_out < r["askew"] < partly
+    for key in ("wall", "hall", "middle", "small"):
+        assert r[key] == 1, key
+    # What it sees of the floor is another number: little of a hall.
+    assert r["hall_cover"]["seen"] / r["hall_cover"]["floor"] < 0.05
+    assert r["out_cover"]["seen"] == 0
+    # Counted in ten-centimetre cells: the 35 cm strip is off by half of one.
+    assert r["corner_cover"]["floor"] == pytest.approx(geometry.polygon_area(LIVING), abs=0.25)
+    assert r["corner_cover"]["seen"] / r["corner_cover"]["floor"] > 0.98
+    assert r["all"]["seen"] == pytest.approx(r["all"]["floor"]) == pytest.approx(24)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_the_sensor_is_turned_into_the_room_from_where_it_hangs():
+    living = json.dumps(LIVING)
+    backwards = json.dumps(LIVING[::-1])
+    r = _js({
+        "walls": "[[3, 0], [6, 2], [3, 4], [0, 2]].map(([x, y]) => g.angleIntoRoom({x, y, angle: 17}, 6, 4, null))",
+        "corners": "[[0, 0], [6, 0], [6, 4], [0, 4]].map(([x, y]) => g.angleIntoRoom({x, y}, 6, 4, null))",
+        "living": f"g.angleIntoRoom({{x: 3.9, y: 5, angle: -90}}, 3.9, 5, {living})",
+        "backwards": f"g.angleIntoRoom({{x: 3.9, y: 5, angle: -90}}, 3.9, 5, {backwards})",
+        "notch": f"g.angleIntoRoom({{x: 0.35, y: 3}}, 3.9, 5, {living})",
+        "near": "g.angleIntoRoom({x: 3, y: 0.3}, 6, 4, null)",
+        "free": "g.angleIntoRoom({x: 1, y: 1}, 6, 4, null)",
+        "centre": "g.angleIntoRoom({x: 3, y: 2, angle: 33}, 6, 4, null)",
+        "reflex": "g.angleIntoRoom({x: 1, y: 1}, 4, 4, [[0, 0], [4, 0], [4, 1], [1, 1], [1, 4], [0, 4]])",
+        "turned": f"g.viewFit({{x: 3.9, y: 5, angle: g.angleIntoRoom({{x: 3.9, y: 5}}, 3.9, 5, {living})}}, 3.9, 5, {living})",
+    })
+    # Straight away from the wall: top, right, bottom, left.
+    assert r["walls"] == [0, 90, 180, -90]
+    # Diagonally out of a corner.
+    assert r["corners"] == [-45, 45, 135, -135]
+    # The corner of the hardware test, whichever way the walls were drawn.
+    assert r["living"] == r["backwards"] == 135
+    # On the wall of the cut-off strip: into the room, to the right.
+    assert r["notch"] == -90
+    assert r["near"] == 0
+    # On no wall: towards the middle of the floor; in the middle, as it was.
+    assert r["free"] == pytest.approx(math.degrees(math.atan2(-2, 1)), abs=0.5)
+    assert r["centre"] == 33
+    # The inner corner of an L: into the arm between the two walls.
+    assert r["reflex"] == 135
+    assert r["turned"] > 0.5
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_which_way_an_angle_looks_on_screen():
+    r = _js({"words": "[0, 45, 90, 135, 180, -180, -135, -90, -45, 360, 540, 20, 23].map(g.facingWords)",
+             "norm": "[0, 180, -180, 190, -190, 360, 540, -540].map(g.normalizeAngle)"})
+    assert r["words"] == ["nach unten", "nach links unten", "nach links", "nach links oben", "nach oben", "nach oben",
+                          "nach rechts oben", "nach rechts", "nach rechts unten", "nach unten", "nach oben",
+                          "nach unten", "nach links unten"]
+    assert r["norm"] == [0, 180, 180, -170, 170, 0, 180, 180]
+    # The words agree with where to_room puts "straight ahead".
+    for angle, (dx, dy) in ((0, (0, 1)), (90, (-1, 0)), (-90, (1, 0)), (180, (0, -1))):
+        x, y = geometry.to_room(0.0, 1.0, {"x": 0, "y": 0, "angle": angle})
+        assert (x, y) == pytest.approx((dx, dy), abs=1e-12)

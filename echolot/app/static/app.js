@@ -250,7 +250,8 @@ const Echolot = (() => {
     if (!parts.length) return { view: "home", params: {} };
     if (parts[0] === "room" && parts[1]) {
       const sub = { edit: "editor", calibrate: "calibrate", record: "record" }[parts[2]] || "room";
-      return { view: sub, params: { id: parts[1] } };
+      // #/room/<id>/edit/sensor opens the editor with the sensor picked.
+      return { view: sub, params: { id: parts[1], select: parts[3] } };
     }
     if (parts[0] === "new-room") return { view: "newRoom", params: {} };
     if (parts[0] === "devices") return { view: "devices", params: { action: parts[1] } };

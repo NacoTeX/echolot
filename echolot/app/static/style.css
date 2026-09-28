@@ -303,6 +303,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   padding: 14px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .plan-top .dims { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .plan-stage { position: relative; padding: 18px; background: var(--surface); }
+.plan-notice { padding: 14px 20px 0; }
+.plan-notice:empty { display: none; }
+.plan-notice .notice { align-items: center; }
 .plan-stage svg { display: block; width: 100%; height: auto; max-height: calc(100vh - 230px);
   touch-action: none; user-select: none; -webkit-user-select: none; overflow: visible; }
 .plan-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 13px 20px; border-top: 1px solid var(--line);
