@@ -77,13 +77,20 @@ def room_for(header: dict, settings: dict | None = None, current=None) -> rooms.
 
     None: as recorded. `current`: that room's settings today, on the
     recorded sensor. `settings` then overrides the filters (confirm_s,
-    smoothing) and the room's hold and assume times.
+    smoothing) and the room's hold and assume times — a hold time given
+    is the one played with, not outdone by a learned one — and with
+    `learned` false plays without anything learning took over.
     """
     data = (current.model_dump(mode="json") if current is not None else dict(header["room"]))
     data["sensor"] = {**data["sensor"], "device_id": header["device"]["id"]}
     for key in ("hold_s", "assume_present_s"):
         if settings and settings.get(key) is not None:
             data[key] = settings[key]
+    if data.get("learned"):
+        if settings and settings.get("learned") is False:
+            data["learned"] = None
+        elif settings and settings.get("hold_s") is not None:
+            data["learned"] = {**data["learned"], "hold_s": None}
     calibration = dict(data.get("calibration") or {})
     for key in ("confirm_s", "smoothing"):
         if settings and settings.get(key) is not None:

@@ -20,7 +20,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from app import alignment, axes, builder, dashboard, devices, mqtt_bridge, reachability, recording, replay, rooms
+from app import (alignment, axes, builder, dashboard, devices, ha_presence, learner as learning_manager, mqtt_bridge,
+                 reachability, recording, replay, rooms)
 from app.board_registry import BOARDS
 from app.calibration import Captures
 from app.radar_link import MOUNT_MODES, MountingError, links
@@ -31,7 +32,9 @@ logger = logging.getLogger("echolot")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-engine = RoomEngine(links)
+presence = ha_presence.HomePresence()
+learner = learning_manager.Learner(presence)
+engine = RoomEngine(links, learner=learner)
 links.add_listener(engine.wake)
 captures = Captures(links)
 links.add_listener(captures.on_frame)
@@ -97,6 +100,7 @@ async def refresh() -> None:
     device_list = devices.list_devices()
     await links.sync(device_list)
     room_list = rooms.list_rooms()
+    learner.sync(room_list)
     engine.load(room_list, device_list)
     recorder.sync(room_list)
 
@@ -111,6 +115,8 @@ async def lifespan(_app: FastAPI):
         logger.info("Unterbrochene Aufzeichnungen: %s", ", ".join(cut))
     await refresh()
     engine.start()
+    presence.start()
+    learner.start(refresh)
 
     task = None
     if mqtt_wanted():
@@ -122,6 +128,8 @@ async def lifespan(_app: FastAPI):
     finally:
         recorder.stop_all("Add-on beendet")
         await engine.stop()
+        await learner.stop()
+        await presence.stop()
         await links.stop_all()
         if task:
             task.cancel()
@@ -652,6 +660,7 @@ def _room_view(room: rooms.Room) -> dict:
         "range_entities": bool(snap and snap.range_entities),
         "detection_range": snap.detection_range() if snap else None,
     }
+    data["learning"] = learner.summary(room)
     if room.image:
         data["image"] = {
             "url": f"api/rooms/{room.id}/image?v={room.image.get('version', 0)}",
@@ -712,7 +721,69 @@ async def api_delete_room(room_id: str) -> None:
     if not rooms.delete_room(room_id):
         raise HTTPException(status_code=404, detail="Raum nicht gefunden")
     captures.forget_room(room_id)
+    learner.forget_room(room_id)
     await refresh()
+
+
+# --- learning --------------------------------------------------------------
+#
+# async throughout: the learner is fed on the event loop by the engine.
+
+
+@app.get("/api/learning")
+async def api_learning() -> dict:
+    """The settings, whether anybody is home, and every room in short."""
+    return {"settings": learner.settings.model_dump(), "presence": presence.view(),
+            "rooms": {r.id: learner.summary(r) for r in rooms.list_rooms()}}
+
+
+@app.put("/api/learning/settings")
+async def api_learning_settings(payload: dict) -> dict:
+    """{mode: auto|suggest|off, presence_entity: entity id or null}."""
+    try:
+        settings = learner.set_settings({k: payload[k] for k in ("mode", "presence_entity") if k in payload})
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    await presence.poll()
+    await refresh()
+    return {"settings": settings.model_dump(), "presence": presence.view()}
+
+
+@app.get("/api/rooms/{room_id}/learning")
+async def api_room_learning(room_id: str) -> dict:
+    return learner.view(_room_or_404(room_id))
+
+
+@app.post("/api/rooms/{room_id}/learning/analyse")
+async def api_room_learning_analyse(room_id: str) -> dict:
+    """Work out now what the record says — the placement search included."""
+    _room_or_404(room_id)
+    await learner.analyse_room(room_id, force_fit=True)
+    return learner.view(_room_or_404(room_id))
+
+
+@app.post("/api/rooms/{room_id}/learning/{entry_id}/{action}")
+async def api_room_learning_act(room_id: str, entry_id: str, action: str) -> dict:
+    """`accept` or `decline` a proposal, `undo` what was taken over."""
+    if action not in ("accept", "decline", "undo"):
+        raise HTTPException(status_code=404, detail="Unbekannte Aktion")
+    try:
+        await learner.act(room_id, entry_id, action)
+    except LookupError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except ValidationError as err:
+        raise HTTPException(status_code=422, detail=_validation_detail(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    room = _room_or_404(room_id)
+    return {"learning": learner.view(room), "room": _room_view(room)}
+
+
+@app.delete("/api/rooms/{room_id}/learning", status_code=204)
+async def api_room_learning_reset(room_id: str) -> None:
+    """Forget what was learned about the room, and what was taken over."""
+    _room_or_404(room_id)
+    await learner.reset(room_id)
 
 
 @app.post("/api/rooms/{room_id}/presence/clear")

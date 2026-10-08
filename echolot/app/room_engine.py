@@ -5,7 +5,7 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 7 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 8 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
@@ -13,7 +13,9 @@ The rules, in order — measurement definition 7 (`MEASUREMENT_VERSION`):
      positions are followed from report to report and smoothed with a
      time constant (tracking.SMOOTHING_TAU), and a
      new target is confirmed only once it has been reported for the
-     room's confirmation time outside the learned interference spots.
+     room's confirmation time outside the interference spots — those
+     recorded in the empty room and those learning found while nobody
+     was home (rooms.active_interference).
   2. Each target of the latest report is corrected by the sensor model
      the calibration fitted — distance and angle scale, slant line — and
      turned into room coordinates (geometry.to_room).
@@ -40,6 +42,8 @@ is, the room stays occupied, for at most the room's assume_present_s, and
 until a target first reported away from the entrances counts again. Without entrances
 nothing of this applies. The person count stays what was measured.
 
+Definition 7 (1.7–1.8) had neither learned spots nor learned hold
+times: the spots recorded in the empty room and the hold times as set.
 Definition 6 (1.6) put a report the sensor model cannot place at the
 sensor's foot and counted it there, and smoothed by a fixed share per
 report — the same at five reports a second, five times slower at two
@@ -56,7 +60,9 @@ confirmation time of 0 s, smoothing off and no interference spots,
 definition 2 gives the same answers.
 
 A room or zone is occupied while it has a target, and for its hold time
-after the last one. It is *unavailable* — not empty — whenever there is
+after the last one: as set, or as long as learning found the module's
+lapses with somebody sitting there call for, whichever is longer
+(rooms.effective_hold). It is *unavailable* — not empty — whenever there is
 no current frame to judge by: no sensor placed, no connection, no frame
 for three seconds, or a module that answers without reporting while
 `quiet_means_empty` is off.
@@ -65,12 +71,13 @@ for three seconds, or a module that answers without reporting while
 import asyncio
 import itertools
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 
 from app import geometry
 from app.radar_frame import QUIET, RECEIVING
-from app.rooms import active_interference
+from app.rooms import active_interference, effective_hold, learned_applies
 from app.tracking import SMOOTHING_TAU, Tracker
 
 logger = logging.getLogger("echolot.engine")
@@ -78,7 +85,7 @@ logger = logging.getLogger("echolot.engine")
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 7
+MEASUREMENT_VERSION = 8
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -183,6 +190,10 @@ def filter_settings(room) -> dict:
         "assume_present_s": room.assume_present_s,
         "smoothing": cal.smoothing,
         "interference_spots": len(active_interference(room)),
+        # What learning took over (app/learner.py): spots among those above,
+        # and the hold time the room counts with.
+        "learned_spots": len(room.learned.spots) if learned_applies(room) else 0,
+        "hold_s": effective_hold(room),
         # The sensor model positions are corrected with (geometry.correct).
         "range_scale": room.sensor.range_scale,
         "range_offset_m": room.sensor.range_offset_m,
@@ -209,9 +220,14 @@ class _Follow:
 
 
 class RoomEngine:
-    def __init__(self, links, clock=time.monotonic) -> None:
+    def __init__(self, links, clock=time.monotonic, learner=None) -> None:
         self._links = links
         self._clock = clock
+        #: Watches every room's tracker (app/learner.py): observe(room,
+        #: tracks, generation) after each round, pause(room) while its
+        #: sensor is away. Never decides a count.
+        self._learner = learner
+        self._learn_failed: dict[str, float] = {}
         self._rooms: list = []
         self._devices: dict = {}
         self._holds: dict[str, _Hold] = {}
@@ -352,6 +368,7 @@ class RoomEngine:
             # leaving: unaccounted for, like anybody lost in the room.
             presence.account({}, entries, room.assume_present_s, now)
             self._reset(room)
+            self._learn("pause", room)
             return {
                 "room_id": room.id,
                 "available": False,
@@ -376,6 +393,7 @@ class RoomEngine:
         places = {}
         tracker = self._tracker(room, snap)
         generation = self._follow[room.id].generation
+        self._learn("observe", room, tracker.tracks, generation)
         # With a confirmation time of 0 s the room counts what each report
         # says and nothing else, as definition 1 did: nothing is held.
         held = tracker.held(now) if room.calibration.confirm_s > 0 else []
@@ -424,12 +442,12 @@ class RoomEngine:
         count = sum(1 for t in targets if t["status"] in ("counted", "held"))
         presence.account(places, entries, room.assume_present_s, now)
         assumed = presence.unaccounted > 0
-        occupied, left = self._hold(room.id).update(count > 0, now, room.hold_s)
+        occupied, left = self._hold(room.id).update(count > 0, now, effective_hold(room))
         zone_views = []
         for zone in detect:
             zone_count = sum(1 for t in targets if zone.id in t["zones"])
             zone_occupied, zone_left = self._hold(f"{room.id}/{zone.id}").update(
-                zone_count > 0, now, zone.hold_s
+                zone_count > 0, now, effective_hold(room, zone)
             )
             zone_views.append({
                 "id": zone.id, "name": zone.name, "count": zone_count,
@@ -453,6 +471,20 @@ class RoomEngine:
             "sensor": sensor_view,
             "filter": filter_settings(room),
         }
+
+    def _learn(self, what: str, room, *args) -> None:
+        """Hand the round to learning. Whatever goes wrong there must not
+        cost a count."""
+        if self._learner is None:
+            return
+        try:
+            getattr(self._learner, what)(room, *args)
+        except Exception:  # noqa: BLE001
+            # Once a minute per room, not ten times a second.
+            now = time.monotonic()
+            if now - self._learn_failed.get(room.id, -math.inf) >= 60:
+                self._learn_failed[room.id] = now
+                logger.exception("Lernen in Raum %s fehlgeschlagen", room.id)
 
     def evaluate(self) -> list[dict]:
         now = self._clock()

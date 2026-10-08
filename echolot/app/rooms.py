@@ -301,6 +301,35 @@ class Calibration(BaseModel):
     axes_check: dict | None = None
 
 
+class Learned(BaseModel):
+    """What Echolot took over by itself from watching the room
+    (app/learner.py) — kept apart from what was set by hand, which it
+    never changes: the engine uses the larger hold time, and these spots
+    besides the recorded ones.
+
+    Bound to the sensor and the mounting it was learned with, like a
+    calibration: the spots are in the sensor's own metres, and the hold
+    times are this module's lapses.
+    """
+
+    device_id: str | None = None
+    epoch: int = 0
+    #: Reflectors found while Home Assistant said nobody was home.
+    spots: list[InterferenceSpot] = Field(default_factory=list, max_length=MAX_INTERFERENCE_SPOTS)
+    #: Hold times the module's lapses with somebody sitting call for: the
+    #: room's, and per detection zone.
+    hold_s: float | None = Field(default=None, ge=0, le=600)
+    zone_hold_s: dict[str, float] = Field(default_factory=dict)
+    updated_at: float = 0.0
+
+    @field_validator("zone_hold_s")
+    @classmethod
+    def _hold_range(cls, v: dict[str, float]) -> dict[str, float]:
+        if len(v) > MAX_ZONES or any(not 0 <= s <= 600 for s in v.values()):
+            raise ValueError("Gelernte Haltezeiten: höchstens 600 s je Zone")
+        return v
+
+
 class Room(BaseModel):
     id: str
     name: str = Field(min_length=1, max_length=40)
@@ -327,6 +356,8 @@ class Room(BaseModel):
     #: {"file": ..., "content_type": ..., "opacity": 0..1} or None.
     image: dict | None = None
     calibration: Calibration = Field(default_factory=Calibration)
+    #: What learning took over (Learned); its own, like the calibration.
+    learned: Learned | None = None
     revision: int = 0
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -394,12 +425,35 @@ class Room(BaseModel):
         return self
 
 
+def learned_applies(room: Room) -> bool:
+    """Whether what learning took over belongs to the sensor standing in
+    the room now, in its present mounting."""
+    learned = room.learned
+    return (learned is not None and bool(room.sensor.device_id) and learned.device_id == room.sensor.device_id
+            and learned.epoch == room.calibration.mounting_epoch)
+
+
 def active_interference(room: Room) -> list[InterferenceSpot]:
-    """The learned spots that apply to the sensor standing in the room now."""
+    """The spots that apply to the sensor standing in the room now: those
+    recorded in the empty room, and those learning found."""
     cal = room.calibration
-    if not room.sensor.device_id or cal.interference_device_id != room.sensor.device_id:
-        return []
-    return list(cal.interference)
+    spots = []
+    if room.sensor.device_id and cal.interference_device_id == room.sensor.device_id:
+        spots += cal.interference
+    if learned_applies(room):
+        spots += room.learned.spots
+    return spots
+
+
+def effective_hold(room: Room, zone: "Zone | None" = None) -> float:
+    """How long the room, or a detection zone, stays occupied after its
+    last target: as set, or as long as learning found the module's lapses
+    call for, whichever is longer."""
+    base = zone.hold_s if zone is not None else room.hold_s
+    if not learned_applies(room):
+        return base
+    learned = room.learned.zone_hold_s.get(zone.id) if zone is not None else room.learned.hold_s
+    return max(base, learned or 0.0)
 
 
 class RoomCreate(BaseModel):
@@ -512,6 +566,7 @@ def save_room(room_id: str, payload: dict) -> Room | None:
             "id": room_id,
             "image": stored.image,
             "calibration": stored.calibration.model_dump(),
+            "learned": stored.learned.model_dump() if stored.learned is not None else None,
             "created_at": stored.created_at,
         }
         opacity = (payload.get("image") or {}).get("opacity")
@@ -658,6 +713,8 @@ def invalidate_sensor(room: Room, reason: str) -> None:
     cal.axes_check = None
     cal.invalidated_at = time.time()
     cal.invalidated_reason = reason
+    # Learned with the old one: its spots are in other coordinates.
+    room.learned = None
 
 
 class CalibrationConflict(Exception):
@@ -979,6 +1036,95 @@ def note_module_mounting(device_id: str, mounting: dict) -> Room | None:
             "mode": mounting.get("mode"), "height_m": height, "angle_deg": round(float(mounting["angle_deg"]), 2),
         }
         room = Room.model_validate(room.model_dump())
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+def set_learned(room_id: str, learned: dict | None, *, device_id: str | None, epoch: int) -> Room | None:
+    """Keep what learning took over, if the room still has the sensor and
+    mounting it was learned with (else CalibrationConflict).
+
+    No new revision: it is learning's own, like the standpoints, and an
+    editor open elsewhere must be able to save — save_room keeps it.
+    Returns None when the room does not exist.
+    """
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        if device_id != room.sensor.device_id or epoch != room.calibration.mounting_epoch:
+            raise CalibrationConflict("Gelernt mit einem anderen Sensor oder einer früheren Montage",
+                                      ["anderer Sensor" if device_id != room.sensor.device_id
+                                       else "Sensor neu montiert"], room)
+        if learned is None:
+            room.learned = None
+        else:
+            room.learned = Learned.model_validate({**learned, "device_id": device_id, "epoch": epoch,
+                                                   "updated_at": time.time()})
+            known = {z.id for z in room.zones if z.kind == "detect"}
+            room.learned.zone_hold_s = {k: v for k, v in room.learned.zone_hold_s.items() if k in known}
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room
+
+
+def turn_sensor(room_id: str, *, expect: dict, angle: float, mirror: bool) -> tuple[Room, str] | None:
+    """Turn the sensor on the plan, as learning found it looks — if it is
+    still drawn as `expect` ({x, y, angle, mirror}) says, else
+    CalibrationConflict.
+
+    The state it leaves goes into the alignment history, as before any
+    change of the sensor, so it can be taken back there as well; returns
+    the room and that record's id. A new revision: the editor shows the
+    sensor as it is now.
+    """
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        room = Room.model_validate(rooms[index])
+        s = room.sensor
+        same = (abs(s.x - expect["x"]) < 1e-6 and abs(s.y - expect["y"]) < 1e-6
+                and abs(s.angle - expect["angle"]) < 1e-6 and s.mirror == expect["mirror"])
+        if not same:
+            raise CalibrationConflict("Der Sensor wurde inzwischen anders eingezeichnet", ["Sensor verändert"], room)
+        now = time.time()
+        cal = room.calibration
+        current = next((r for r in cal.alignment_history if r.id == cal.alignment_id), None)
+        _keep_current(room, now)
+        if current is not None and _same_sensor(current.sensor, _sensor_fields(room)):
+            before = current.id
+        else:
+            before = cal.alignment_history[0].id
+        room.sensor.angle = angle
+        room.sensor.mirror = mirror
+        # The sensor is no longer as any record has it.
+        cal.alignment_id = None
+        _trim_history(cal)
+        room = Room.model_validate(room.model_dump())
+        room.revision += 1
+        room.updated_at = now
+        rooms[index] = room.model_dump()
+        _write(rooms)
+        return room, before
+
+
+def add_zone(room_id: str, zone: dict) -> Room | None:
+    """Add a detection zone the way the editor would, with a new revision."""
+    with _lock:
+        rooms = _read()
+        index = _find_room(rooms, room_id)
+        if index is None:
+            return None
+        data = dict(rooms[index])
+        data["zones"] = [*data.get("zones", []), zone]
+        room = Room.model_validate(data)
+        room.revision += 1
+        room.updated_at = time.time()
         rooms[index] = room.model_dump()
         _write(rooms)
         return room
