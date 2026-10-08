@@ -26,6 +26,10 @@ bleiben sie für alle weiteren Builds.
 | `log_level` | Ausführlichkeit des Add-on-Logs. |
 | `mqtt_export` | Räume und Zonen per MQTT-Discovery an Home Assistant geben (Standard `true`). Braucht einen Broker, etwa das Mosquitto-Add-on; ohne läuft alles andere normal. |
 
+Ab 2.0 fragt das Add-on Home Assistant, ob jemand zu Hause ist
+(`homeassistant_api`, nur lesend: die Zustände der `person`-Entitäten oder
+einer genannten Entität) — siehe „Echolot lernt“.
+
 Echolot ist nur über die Seitenleiste von Home Assistant erreichbar
 (Ingress): Home Assistant meldet dich an, und das Add-on antwortet nur
 dessen Ingress-Gateway (`172.30.32.2`). Andere Add-ons im internen Netz
@@ -52,6 +56,12 @@ Das Modul hat zwei UARTs; Ziele und Befehle laufen über UART2 (Pins 7/8).
 | GND | Pin 2 oder 6 · GND |
 | TX (Feld „TX-Pin“) | Pin 8 · Rx2 |
 | RX (Feld „RX-Pin“) | Pin 7 · Tx2 |
+
+Meldet das Modul Ziele, beantwortet aber 90 s lang keine einzige Frage der
+Firmware, sagen Sensor- und Raumseite **„Modul hört den Sensor nicht“**:
+Die Meldungen kommen an, die Befehle nicht — meist sitzt die Leitung vom
+TX des ESP zu Rx2 (Pin 8) nicht. Ohne sie lassen sich Montage und
+Erfassungsbereich weder lesen noch einstellen.
 
 Pin 5 (VDD33) bleibt frei. Vorgeschlagen werden je Chip Pins, die bei
 ESPHomes Standard-Logger frei sind. **Mit echter Verkabelung geprüft ist nur
@@ -402,9 +412,97 @@ beim Quergang kaum Bewegung; auch das sagt die Seite.
   Störquellen bleiben: Der Bereich entscheidet, *welche* Ziele das Modul
   meldet, nicht *wo*.
 
+## Echolot lernt
+
+Ab 2.0 beobachtet Echolot jeden Raum, sobald sein Sensor meldet, und lernt
+aus dem Alltag darin — ohne dass jemand dafür still stehen, Punkte
+abschreiten oder den Raum räumen muss. Was es weiß und tut, steht auf der
+Raumseite in der Karte **Echolot lernt**: wie lange es beobachtet hat, wie
+viele Wege und Lieblingsplätze es kennt, ob der Plan zu den Wegen passt,
+offene Vorschläge und ein Tagebuch.
+
+**Was es aus den Spuren macht.** Jede Spur der Zielverfolgung wird zerlegt
+in Gehen, Ankommen, Sitzen und Weggehen. Ein *Aufenthalt* ist, wo jemand
+still war — samt der Lücken, in denen das Modul ihn verlor und wiederfand.
+Ein Aufenthalt, zu dem ein Weg hinführte, ist der eines Menschen; einer,
+zu dem nie jemand ging, ist verdächtig. Gespeichert wird begrenzt (höchstens
+6000 Wegpunkte, 600 Aufenthalte, 40 Abwesenheiten) in den Koordinaten des
+Sensors, also unabhängig davon, wie der Sensor auf dem Plan liegt — und je
+Sensor und Montage: ein anderer Sensor oder *Neu montiert* beginnt von
+vorn.
+
+**Störquellen, während niemand zu Hause ist.** Home Assistant weiß, ob
+jemand zu Hause ist (alle `person`-Entitäten, oder eine Entität, die du
+unter *System → Selbstlernen* nennst, etwa `zone.home`). Ist seit 10
+Minuten niemand da, sammelt Echolot, was im Raum steht. Bewegt sich dabei
+irgendwo im Haus etwas — ein Haustier, ein Saugroboter, jemand ohne
+Telefon —, zählt diese ganze Abwesenheit nicht. Eine Stelle wird Störquelle,
+wenn dort in **zwei getrennten Abwesenheiten** von zusammen mindestens 30
+Minuten in mindestens 3 % der Zeit ein Ziel stand (die Schwelle der
+Aufnahme im leeren Raum). Nie von selbst dort, wo Menschen sitzen: Liegt
+die Stelle auf einem Sitzmöbel des Plans oder dort, wo mindestens dreimal
+jemand hinging und zusammen 20 Minuten blieb, wird sie nur vorgeschlagen
+— sonst würde etwa ein Kind, das schläft, während die Eltern fort sind, im
+eigenen Bett als Störquelle gelernt. Gelernte Störquellen zählen wie
+aufgenommene (gestrichelt auf dem Plan).
+
+**Haltezeiten aus den Aussetzern.** Aus den Lücken, in denen das Modul
+Sitzende verlor, folgt, wie lange Raum und Zone warten müssen, bevor sie
+sich leer melden: das 99. Perzentil der Lücken, abzüglich der 1,5 s, die die
+Zielverfolgung ein verlorenes Ziel noch zählt, plus Bestätigungszeit und 2 s,
+auf 5 s gerundet, höchstens 3 Minuten. Gilt nur, wenn es länger ist als
+eingestellt — Echolot verkürzt nie, was du gesetzt hast. Ab 3 Aufenthalten
+mit zusammen 20 Lücken; Lücken nach einem Weggehen zählen nicht.
+
+**Der Plan gegen die Wege.** Gehende Menschen bleiben in den Wänden. Liegen
+weniger als 90 % der letzten Wege darin, sucht Echolot, in welche Richtung
+der Sensor schauen muss — von der Stelle aus, an der er eingezeichnet ist,
+jeden Grad, beide Seiten. Übernommen wird eine neue Blickrichtung nur, wenn
+alles stimmt: Weniger als 80 % der Wege lagen im Raum, mit ihr sind es
+mindestens 95 %, sie ist eindeutig, links und rechts sind geklärt (durch
+den Gang-Test unter *Kalibrieren → Achsen*, eine Ausrichtung aus
+Standpunkten, oder weil die andere Seite klar schlechter passt) und die
+Sitzmöbel oder eine Tür auf dem Plan bestätigen sie. Der Grund: In einer
+Ecke passen dieselben Wege gespiegelt oft genauso — ohne Möbel wäre die
+Korrektur ein Raten. Alles andere ist ein Vorschlag: *Seiten vertauscht?*
+mit dem Gang-Test als Prüfung, *Position prüfen*, wenn die Wege zu einem
+Sensor an ganz anderer Stelle viel besser passen, *Wege außerhalb*, wenn
+das Radar durch eine Wand sieht (dann hilft, den Erfassungsbereich zu
+begrenzen). Die Korrektur ist grob, auf wenige Grad; zentimetergenau wird
+es mit Standpunkten. Die vorherige Lage steht im Verlauf der Ausrichtung.
+
+**Zonen vorschlagen.** Wo Menschen zusammen mindestens 30 Minuten in
+mindestens drei Aufenthalten waren und keine Erkennungszone liegt, schlägt
+Echolot eine vor — für das Sitzmöbel dort, sonst ein Quadrat um den Platz.
+*Vorschau* zeichnet sie auf den Plan.
+
+**Aktivität zeigen** legt über den Plan, wo bestätigte Ziele waren — ohne
+die Störquellen.
+
+**Selbstständig, nur vorschlagen, aus** (*System → Selbstlernen*).
+Selbstständig übernimmt Echolot, was die Regeln oben erlauben, und schlägt
+den Rest vor; *Nur vorschlagen* wartet bei allem auf *Übernehmen*; *Aus*
+beobachtet nichts, und Gelerntes gilt nicht mehr. Ausgewertet wird alle
+10 Minuten im Hintergrund, die Suche nach der Blickrichtung höchstens
+stündlich — oder sofort mit *Jetzt auswerten*.
+
+**Alles lässt sich zurücknehmen.** Jede Übernahme steht im Tagebuch mit
+ihrem Grund; *Rückgängig* nimmt sie zurück, und Echolot schlägt sie nicht
+wieder vor, ebenso wenig wie Abgelehntes. *Neu beginnen* vergisst alles
+Gelernte des Raums. Was du selbst eingestellt hast — Haltezeiten,
+aufgenommene Störquellen, Zonen —, ändert das Lernen nie; es hat eine
+eigene Ebene im Raum, die der Editor nicht überschreibt. Eine Drehung des
+Sensors geht durch den Verlauf der Ausrichtung wie jede andere.
+
+**Gespeichert** wird unter `/data/learning`: je Raum eine Datei mit
+Wegpunkten, Aufenthalten, Abwesenheiten, Tagebuch und Abgelehntem, dazu
+die Einstellungen. Nichts davon verlässt Home Assistant. Ohne
+`homeassistant_api` (oder ohne eine einzige `person`) weiß Echolot nicht,
+wer zu Hause ist: Dann lernt es alles außer den Störquellen.
+
 ## Wie gezählt wird
 
-Messdefinition 7 (seit 1.7). Was eine **neue Meldung** ist, entscheidet
+Messdefinition 8 (seit 2.0). Was eine **neue Meldung** ist, entscheidet
 die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
 Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
 sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
@@ -421,7 +519,8 @@ Meldung zugeordnet wird. Jede gemeldete Position wird dann dem nächsten
 bekannten Ziel zugeordnet (bis 0,9 m), sonst entsteht ein neues. Ein Ziel,
 das eine Meldung lang fehlt, bleibt so lange gemerkt, zählt in der Zeit
 aber nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
-**Bestätigungszeit** lang gemeldet hat, außerhalb gelernter Störquellen.
+**Bestätigungszeit** lang gemeldet hat, außerhalb der Störquellen — der
+im leeren Raum aufgenommenen und der gelernten (siehe „Echolot lernt“).
 
 Dann für jedes Ziel der aktuellen Meldung, in dieser Reihenfolge:
 
@@ -456,7 +555,8 @@ dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
-Definition 6 (1.6) setzte solche Meldungen an den Fuß des Sensors und
+Definition 7 (1.7–1.8) kannte keine gelernten Störquellen und keine
+gelernten Haltezeiten. Definition 6 (1.6) setzte solche Meldungen an den Fuß des Sensors und
 zählte sie dort, und glättete je Meldung um einen festen Anteil statt mit
 einer Zeitkonstante. Definition 5 (1.5) kannte keine Eingänge. Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
 ausgefallene Meldung nahm eine Person aus der Zählung und gab sie mit der
@@ -469,9 +569,10 @@ Definition 1 (Echolot 1.0) waren die Schritte 1–3 und 5 auf jede Meldung
 einzeln, mit dem Rechteck als Wänden.
 
 Raum und Zone gelten als belegt, solange ein Ziel darin ist, und danach
-noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar).
-Das ist der ehrliche Regler dafür, dass das Modul still sitzende Menschen
-zeitweise verliert.
+noch für ihre **Abwesenheitsverzögerung** (Raum 10 s, Zone einstellbar) —
+oder so lange, wie das Lernen aus den Aussetzern Sitzender als nötig
+gefunden hat, wenn das länger ist. Das ist der ehrliche Regler dafür, dass
+das Modul still sitzende Menschen zeitweise verliert.
 
 Hat der Raum **Eingänge**, gilt er außerdem als belegt, solange jemand
 nicht abgemeldet ist: Ein gezähltes Ziel, das aus der Zählung fällt, ohne
@@ -512,8 +613,10 @@ und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen und Eingänge werden keine Entitäten. *Anwesenheit* des
 Raums schließt die Annahme an Eingängen ein, *Personen* nicht. Jede Entität
 trägt als Attribute die Regeln, nach denen ihr Wert entstand:
-`definition_version` (jetzt 7), `confirm_s`, `smoothing`, `entrances`,
-`assume_present_s`, `interference_spots` und das Sensormodell
+`definition_version` (jetzt 8), `confirm_s`, `smoothing`, `entrances`,
+`assume_present_s`, `interference_spots` (davon gelernt: `learned_spots`),
+`hold_s` (die Abwesenheitsverzögerung des Raums, wie gezählt wird —
+eingestellt oder gelernt) und das Sensormodell
 (`range_scale`, `range_offset_m`, `azimuth_scale`, `slant`). So lässt sich ein
 Verlauf auch nach einer Kalibrierung richtig lesen. Alle hängen an zwei
 Verfügbarkeiten: dem Add-on und dem Raum. Gelöschte Zonen und Räume
@@ -587,6 +690,11 @@ einschalten“ (Funktion `06`). Das ist der Werkszustand und ändert an einem
 laufenden Modul nichts; die Quittung ist der einzige Weg, ein stilles Modul
 von einem fehlenden zu unterscheiden.
 
+Die **Version** des Moduls fragt sie 2 s nach dem Start ab, dreimal im
+Abstand von 5 s, danach einmal pro Minute, bis es antwortet (bis 1.8:
+dreimal, dann nie wieder — ein Modul, das später anlief, blieb bis zum
+nächsten Neustart ohne Version).
+
 Nach dem Start fragt sie die **Montage** des Moduls ab — Montageart
 (Funktion `0A`), Höhe und Neigung (`08`) —, dreimal im Abstand von 5 s,
 danach einmal pro Minute, solange es nicht geantwortet hat. Sie stehen als
@@ -616,6 +724,16 @@ Montageart, Höhe und Neigung so beantwortet.
 
 Nur mit echter Hardware zu klären, und deshalb Einstellungen statt
 Annahmen:
+
+- **Das Lernen ist an einem simulierten Zuhause geprüft**, nicht an einem
+  echten: ein Wohnzimmer mit zwei Reflektoren, Sitzenden, die das Modul
+  immer wieder verliert, ein Haustier während der Abwesenheit, ein Kind,
+  das schläft, während die Eltern fort sind — alles durch die echte
+  Zielverfolgung. Die Schwellen (zwei Abwesenheiten, 3 %, 20 Minuten
+  Sitzen, 99. Perzentil, 90/80/95 % der Wege) sind daran gewählt. Wie oft
+  ein echtes LD2460 Sitzende verliert, wie seine Reflexionen aussehen und
+  wie gut Home Assistants Anwesenheit stimmt, zeigt erst der Raum — das
+  Tagebuch sagt jedes Mal, worauf eine Übernahme beruht.
 
 - **Ob das LD2460 im leeren Raum leere Meldungen schickt oder verstummt.**
   Verstummt es, sieht ein leerer Raum aus wie `Q`. Bis das beobachtet ist,

@@ -1,5 +1,61 @@
 # Changelog
 
+## 2.0.0
+
+**Echolot lernt (Messdefinition 8).** Bis 1.8 wusste Echolot über einen
+Raum, was man ihm gezeigt hat. Ab jetzt beobachtet es jeden Raum, sobald
+sein Sensor meldet, und lernt aus dem Alltag darin — wo Menschen gehen und
+sitzen, wo Reflexionen stehen, wie lange das Modul Sitzende verliert, ob
+der Plan zu den Wegen passt. Was eindeutig ist, übernimmt es selbst; den
+Rest schlägt es vor. Alles steht in einem Tagebuch je Raum und lässt sich
+zurücknehmen.
+
+- **Störquellen ohne Aufnahme im leeren Raum.** Home Assistant weiß, wann
+  niemand zu Hause ist (`person`-Entitäten oder eine eigene, etwa
+  `zone.home`). Was dann im Raum steht — in zwei getrennten Abwesenheiten,
+  und nur, solange sich im ganzen Haus nichts bewegt —, ist eine
+  Reflexion. Nie von selbst dort, wo Menschen sitzen: weder auf einem
+  Sitzmöbel des Plans noch dort, wo immer wieder jemand hinging und
+  blieb. Dafür braucht das Add-on neu `homeassistant_api` (nur lesend).
+- **Haltezeiten aus den Aussetzern.** Das Modul verliert still Sitzende
+  immer wieder; aus diesen Lücken folgt, wie lange eine Zone warten muss,
+  bevor sie sich leer meldet — damit das Licht nicht über dem Sofa
+  ausgeht. Nur länger als eingestellt, nie kürzer, höchstens 3 Minuten.
+- **Der Plan prüft sich selbst.** Gehende Menschen bleiben in den Wänden;
+  liegen ihre Wege außerhalb, sucht Echolot die Blickrichtung, die passt,
+  und dreht den Sensor auf dem Plan — nur wenn das eindeutig ist und
+  Sitzmöbel oder Tür es bestätigen. Seiten vertauscht, Sensor an anderer
+  Stelle, Radar sieht durch die Wand: als Vorschlag, mit dem Gang-Test oder
+  dem Editor als Prüfung.
+- **Zonen, wo Menschen sitzen.** Ein Platz, an dem sich Menschen
+  regelmäßig aufhalten, ohne dass dort eine Zone liegt, wird vorgeschlagen
+  — mit Vorschau auf dem Plan, auf Wunsch fürs Sitzmöbel dort.
+- **Aktivität zeigen** legt eine Wärmekarte über den Plan: wo in diesem
+  Raum wirklich gelebt wird.
+- **Die Karte „Echolot lernt“** auf jeder Raumseite: was Echolot weiß,
+  offene Vorschläge mit *Übernehmen* / *Ablehnen*, das Tagebuch mit
+  *Rückgängig*. Unter *System → Selbstlernen*: selbstständig, nur
+  vorschlagen oder aus, und wer zu Hause ist. Raumkacheln zeigen offene
+  Vorschläge.
+- **Messdefinition 8:** gelernte Störquellen zählen wie aufgenommene, und
+  Raum und Zone halten mindestens so lange, wie gelernt. Was das Lernen
+  übernimmt, liegt in einer eigenen Ebene des Raums, gebunden an Sensor
+  und Montage; was du einstellst, ändert es nie. Aufzeichnungen tragen
+  sie mit, und eine Wiedergabe kann sie weglassen (`learned: false`).
+- **„Modul hört den Sensor nicht“:** Meldet das Modul Ziele, beantwortet
+  aber keinen Befehl, sagen Sensor- und Raumseite es — meist fehlt die
+  Leitung vom TX des ESP zu Rx2 (Pin 8). Genau das war der Fehler im
+  Hardwaretest nach 1.8.
+- **Firmware:** Die Version des Moduls wird wie die Montage nach drei
+  schnellen Versuchen einmal pro Minute erfragt, bis es antwortet; bisher
+  blieb ein spät angelaufenes Modul bis zum nächsten Neustart ohne
+  Version. Ein Neubau zeigt das als neuen Firmware-Stand an.
+- **Geprüft an einem simulierten Zuhause** — zwei Reflektoren, Sitzende
+  mit Aussetzern, ein Haustier während der Abwesenheit, ein Kind, das
+  schläft, während die Eltern fort sind —, durch die echte
+  Zielverfolgung; jede Schutzregel per Gegenprobe. An einem echten Raum
+  noch nicht: Wie das LD2460 Sitzende verliert, zeigt erst der Alltag.
+
 ## 1.8.0
 
 **Wohin der Sensor blickt, und was das Modul überhaupt meldet.**
