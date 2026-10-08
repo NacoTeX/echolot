@@ -422,8 +422,13 @@ class Learner:
         lr.dirty = True
         # The room may have changed while that ran.
         room = rooms.get_room(room_id)
-        if room is not None and self._for(room) is lr:
-            await self._take(room, lr, result)
+        if room is not None and self._for(room) is lr and await self._take(room, lr, result):
+            # Turned: everything else again, for the plan as it is now.
+            room = rooms.get_room(room_id)
+            result = await asyncio.to_thread(analyse, state, room, fit=False)
+            lr.analysis = result
+            if self._for(room) is lr:
+                await self._take(room, lr, result)
         return result
 
     async def analyse_all(self) -> None:
@@ -447,13 +452,50 @@ class Learner:
             return room.learned.model_dump(include={"spots", "hold_s", "zone_hold_s"})
         return {"spots": [], "hold_s": None, "zone_hold_s": {}}
 
-    async def _take(self, room: rooms.Room, lr: _Room, result: dict) -> None:
-        """Take over what is safe, propose the rest."""
+    async def _take(self, room: rooms.Room, lr: _Room, result: dict) -> bool:
+        """Take over what is safe, propose the rest. True if the sensor was
+        turned: then nothing else is, as it was worked out for the plan
+        before."""
         auto = self.settings.mode == "auto"
         now = self._clock()
         layer = self._layer(room)
         changed = False
         placement = room.sensor.model_dump()
+
+        # The plan.
+        verdict = result.get("verdict") or {}
+        kind = verdict.get("verdict")
+        if kind == "turn" and verdict.get("auto") and auto and not self._declined_turn(lr, verdict["placement"]):
+            target = verdict["placement"]
+            try:
+                turned = rooms.turn_sensor(room.id, expect=placement, angle=target["angle"],
+                                           mirror=target["mirror"])
+            except rooms.CalibrationConflict:
+                turned = None
+            if turned is not None:
+                room, record_id = turned
+                lr.withdraw("placement", set())
+                lr.note("placement", f"Sensor-Blickrichtung korrigiert: {round(placement['angle'])}° → "
+                        f"{round(target['angle'])}°",
+                        f"Nur {round(verdict['inside'] * 100)} % der Wege lagen innerhalb der Wände; so sind es "
+                        f"{round(target['inside'] * 100)} %, und die Plätze, an denen Menschen sitzen, liegen auf "
+                        "den Sitzmöbeln. Grob korrigiert — zentimetergenau wird es mit Standpunkten.",
+                        state="applied", key="placement",
+                        data={"before": {k: placement[k] for k in ("x", "y", "angle", "mirror")},
+                              "after": {k: target[k] for k in ("x", "y", "angle", "mirror")}, "record_id": record_id},
+                        auto=True, now=now)
+                if self._refresh is not None:
+                    await self._refresh()
+                # Everything else was worked out for the plan as it was.
+                return True
+        elif kind in ("turn", "mirror", "ambiguous", "elsewhere", "unclear"):
+            text = _placement_text(kind, verdict, placement)
+            if text and not (verdict.get("placement") and self._declined_turn(lr, verdict["placement"])):
+                lr.propose("placement", "placement", text[0], text[1],
+                           {"verdict": kind, "placement": verdict.get("placement"),
+                            "before": {k: placement[k] for k in ("x", "y", "angle", "mirror")}}, now)
+        elif kind == "fits":
+            lr.withdraw("placement", set())
 
         # Reflectors.
         declined = [tuple(p) for p in lr.declined["spots"]]
@@ -551,38 +593,6 @@ class Learner:
         if changed:
             self._set_learned(room, layer)
 
-        # The plan.
-        verdict = result.get("verdict") or {}
-        kind = verdict.get("verdict")
-        if kind == "turn" and verdict.get("auto") and auto and not self._declined_turn(lr, verdict["placement"]):
-            target = verdict["placement"]
-            try:
-                turned = rooms.turn_sensor(room.id, expect=placement, angle=target["angle"],
-                                           mirror=target["mirror"])
-            except rooms.CalibrationConflict:
-                turned = None
-            if turned is not None:
-                room, record_id = turned
-                lr.withdraw("placement", set())
-                lr.note("placement", f"Sensor-Blickrichtung korrigiert: {round(placement['angle'])}° → "
-                        f"{round(target['angle'])}°",
-                        f"Nur {round(verdict['inside'] * 100)} % der Wege lagen innerhalb der Wände; so sind es "
-                        f"{round(target['inside'] * 100)} %, und die Plätze, an denen Menschen sitzen, liegen auf "
-                        "den Sitzmöbeln. Grob korrigiert — zentimetergenau wird es mit Standpunkten.",
-                        state="applied", key="placement",
-                        data={"before": {k: placement[k] for k in ("x", "y", "angle", "mirror")},
-                              "after": {k: target[k] for k in ("x", "y", "angle", "mirror")}, "record_id": record_id},
-                        auto=True, now=now)
-                changed = True
-        elif kind in ("turn", "mirror", "ambiguous", "elsewhere", "unclear"):
-            text = _placement_text(kind, verdict, placement)
-            if text and not (verdict.get("placement") and self._declined_turn(lr, verdict["placement"])):
-                lr.propose("placement", "placement", text[0], text[1],
-                           {"verdict": kind, "placement": verdict.get("placement"),
-                            "before": {k: placement[k] for k in ("x", "y", "angle", "mirror")}}, now)
-        elif kind == "fits":
-            lr.withdraw("placement", set())
-
         # Zones.
         keep = set()
         for z in result["zones"]:
@@ -597,6 +607,7 @@ class Learner:
 
         if changed and self._refresh is not None:
             await self._refresh()
+        return False
 
     @staticmethod
     def _declined_turn(lr: _Room, placement: dict) -> bool:
@@ -763,7 +774,7 @@ class Learner:
             "since": st["started_at"],
             "observed_s": round(st["observed_s"]),
             "walks": st["walks"],
-            "places": len(learning.person_stays(st)),
+            "stays": len(learning.person_stays(st)),
             "proposals": sum(1 for e in lr.journal if e["state"] == "open"),
             "verdict": verdict.get("verdict"),
             "inside": verdict.get("inside"),

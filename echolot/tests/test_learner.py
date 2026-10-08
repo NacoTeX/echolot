@@ -7,6 +7,7 @@ and what was taken back, or turned down, stays out.
 
 import asyncio
 import copy
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,17 @@ def day():
 @pytest.fixture(scope="module")
 def busy():
     return drive(living_room(hours=3, home=[(0, 3 * HOUR)], busy=True), 3, seed=2)
+
+
+@pytest.fixture(scope="module")
+def both(day, busy):
+    """Days with empty stretches and plenty of walks."""
+    state = copy.deepcopy(day)
+    for key in ("moves", "ends", "stays"):
+        state[key] = busy[key] + day[key]
+    for key in ("walks", "tracks"):
+        state[key] += busy[key]
+    return state
 
 
 @pytest.fixture
@@ -311,6 +323,22 @@ def test_a_wrongly_turned_sensor_is_turned_and_can_be_turned_back(data, busy):
     # Taken back: not turned again.
     run(ln.analyse_room(room.id, force_fit=True))
     assert rooms.get_room(room.id).sensor.angle == -90.0
+
+
+def test_after_a_turn_everything_else_is_worked_out_for_the_turned_plan(data, both):
+    """Reflectors, hold times and zones depend on where the plan puts the
+    module's positions: worked out for the plan before the turn, they
+    would describe places outside the room."""
+    room = stored_room(angle=-90.0, furniture=[SOFA, DESK, DOOR], zones=[SOFA_ZONE])
+    ln, lr = learner_with(room, both)
+    run(ln.analyse_room(room.id))
+    room = rooms.get_room(room.id)
+    assert learning._angle_diff(room.sensor.angle, 135.0) <= 5
+    assert room.learned.zone_hold_s == {"zsofa": 35.0}
+    spots = next(e for e in lr.journal if e["kind"] == "spots")
+    places = [tuple(float(v.replace(",", ".")) for v in m) for m in re.findall(r"bei (\d+,\d) m / (\d+,\d) m", spots["title"])]
+    assert places and all(0 <= x <= 3.9 and 0 <= y <= 5.0 for x, y in places)
+    assert lr.analysis["verdict"]["verdict"] == "fits"
 
 
 def test_without_seats_a_turn_is_proposed_not_made(data, busy):
