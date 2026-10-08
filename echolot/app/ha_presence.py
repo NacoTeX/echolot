@@ -23,8 +23,11 @@ from app import supervisor
 
 logger = logging.getLogger("echolot.presence")
 
-#: How often Home Assistant is asked.
+#: How often Home Assistant is asked; and how often it is asked for every
+#: state, to find the persons — between, only theirs are fetched: a big
+#: installation's full state list is megabytes.
 POLL_S = 30.0
+DISCOVER_S = 600.0
 #: States of an entity that mean somebody is home, and nobody is.
 HOME_STATES = {"home", "on", "true", "anwesend"}
 AWAY_STATES = {"not_home", "off", "false", "away", "abwesend"}
@@ -81,13 +84,19 @@ def whereabouts(states: list[dict], entity: str | None = None) -> dict:
     return {**out, "home": False, "since": max(times) if times else None}
 
 
+class _Failed(Exception):
+    """Home Assistant did not answer the question."""
+
+
 class HomePresence:
     """Polls Home Assistant; `home` and `away_for` are what learning reads."""
 
     def __init__(self, clock=time.time) -> None:
         self._clock = clock
-        #: The entity to ask instead of the persons; None for the persons.
-        self.entity: str | None = None
+        self._entity: str | None = None
+        #: The person entities, as last found, and when.
+        self._persons: list[str] | None = None
+        self._discovered_at = 0.0
         self.state: dict = {"home": None, "since": None, "persons": None, "persons_home": None, "source": None}
         self.error: str | None = None
         self.checked_at: float | None = None
@@ -95,6 +104,17 @@ class HomePresence:
         #: Home Assistant gives no time for.
         self._empty_seen: float | None = None
         self._task: asyncio.Task | None = None
+
+    @property
+    def entity(self) -> str | None:
+        """The entity to ask instead of the persons; None for the persons."""
+        return self._entity
+
+    @entity.setter
+    def entity(self, value: str | None) -> None:
+        if value != self._entity:
+            self._entity = value
+            self._persons = None
 
     @property
     def home(self) -> bool | None:
@@ -136,24 +156,54 @@ class HomePresence:
         if not token:
             self.lost("Nur als Home-Assistant-Add-on verfügbar")
             return
+        headers = {"Authorization": f"Bearer {token}"}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{base}/core/api/states", headers={"Authorization": f"Bearer {token}"})
+                states = await self._fetch(client, f"{base}/core/api/states", headers)
+        except _Failed as err:
+            self.lost(str(err))
+            return
         except httpx.HTTPError as err:
             self.lost(f"Home Assistant nicht erreichbar: {err.__class__.__name__}")
             return
+        self.take(states)
+
+    async def _fetch(self, client, url: str, headers: dict) -> list[dict]:
+        """The states that answer the question: the one entity, or every
+        person — found anew every DISCOVER_S, else each fetched alone."""
+        now = self._clock()
+        if self._entity:
+            state = await self._get(client, f"{url}/{self._entity}", headers, missing_ok=True)
+            return [state] if state is not None else []
+        if self._persons is None or now - self._discovered_at >= DISCOVER_S:
+            states = await self._get(client, url, headers)
+            states = states if isinstance(states, list) else []
+            self._persons = [s.get("entity_id") for s in states if str(s.get("entity_id", "")).startswith("person.")]
+            self._discovered_at = now
+            return states
+        found = []
+        for entity in self._persons:
+            state = await self._get(client, f"{url}/{entity}", headers, missing_ok=True)
+            if state is None:
+                # Removed meanwhile: find them all again next time.
+                self._persons = None
+                continue
+            found.append(state)
+        return found
+
+    @staticmethod
+    async def _get(client, url: str, headers: dict, missing_ok: bool = False):
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 404 and missing_ok:
+            return None
         if resp.status_code in (401, 403):
-            self.lost("Echolot darf Home Assistant nicht fragen (homeassistant_api)")
-            return
+            raise _Failed("Echolot darf Home Assistant nicht fragen (homeassistant_api)")
         if resp.status_code != 200:
-            self.lost(f"Home Assistant antwortet mit HTTP {resp.status_code}")
-            return
+            raise _Failed(f"Home Assistant antwortet mit HTTP {resp.status_code}")
         try:
-            states = resp.json()
-        except ValueError:
-            self.lost("Home Assistant lieferte keine lesbare Antwort")
-            return
-        self.take(states if isinstance(states, list) else [])
+            return resp.json()
+        except ValueError as err:
+            raise _Failed("Home Assistant lieferte keine lesbare Antwort") from err
 
     async def _loop(self) -> None:
         while True:

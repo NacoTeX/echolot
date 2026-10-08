@@ -420,9 +420,15 @@ class Learner:
                 result[key] = lr.analysis.get(key)
         lr.analysis = result
         lr.dirty = True
-        # The room may have changed while that ran.
+        # The room may have changed while that ran: then what was worked
+        # out is for a room that no longer is — nothing is taken over
+        # this round, the next one works it out again. (Learning's own
+        # writes keep the revision.)
+        revision = room.revision
         room = rooms.get_room(room_id)
-        if room is not None and self._for(room) is lr and await self._take(room, lr, result):
+        if room is None or room.revision != revision:
+            return result
+        if self._for(room) is lr and await self._take(room, lr, result):
             # Turned: everything else again, for the plan as it is now.
             room = rooms.get_room(room_id)
             result = await asyncio.to_thread(analyse, state, room, fit=False)
@@ -561,6 +567,15 @@ class Learner:
             base = zone.hold_s if zone is not None else room.hold_s
             old = layer["zone_hold_s"].get(target) if zone is not None else layer["hold_s"]
             new = rec["hold_s"] if rec is not None and rec["hold_s"] > base else None
+            if old is not None and base >= old:
+                # Set by hand to at least as long: what was learned no
+                # longer changes anything, and goes without a word.
+                if zone is not None:
+                    layer["zone_hold_s"].pop(target, None)
+                else:
+                    layer["hold_s"] = None
+                changed = True
+                old = None
             if (old is None) == (new is None) and (new is None or abs(new - old) < HOLD_STEP_S):
                 continue
             if rec is None:

@@ -278,6 +278,39 @@ def test_reflectors_and_hold_times_are_taken_over_and_journalled(data, day):
     assert len(lr.journal) == before
 
 
+def test_a_hold_set_by_hand_beyond_the_learned_one_retires_it_quietly(data, day):
+    room = stored_room(zones=[SOFA_ZONE])
+    ln, lr = learner_with(room, day)
+    run(ln.analyse_room(room.id))
+    data_ = rooms.get_room(room.id).model_dump()
+    data_["zones"][0]["hold_s"] = 60
+    rooms.save_room(room.id, data_)
+    before = len(lr.journal)
+    run(ln.analyse_room(room.id))
+    room = rooms.get_room(room.id)
+    assert room.learned.zone_hold_s == {} and rooms.effective_hold(room, room.zones[0]) == 60
+    assert len(lr.journal) == before
+
+
+def test_nothing_is_taken_over_for_a_room_changed_while_it_was_worked_out(data, busy, monkeypatch):
+    room = stored_room(angle=-90.0, furniture=[SOFA, DESK, DOOR])
+    ln, lr = learner_with(room, busy)
+    real = learner_mod.analyse
+
+    def meanwhile(state, r, *, fit):
+        out = real(state, r, fit=fit)
+        # Somebody turns the sensor in the editor while this runs.
+        changed = rooms.get_room(r.id).model_dump()
+        changed["sensor"]["angle"] = 100.0
+        rooms.save_room(r.id, changed)
+        return out
+
+    monkeypatch.setattr(learner_mod, "analyse", meanwhile)
+    run(ln.analyse_room(room.id))
+    assert rooms.get_room(room.id).sensor.angle == 100.0
+    assert not any(e["kind"] == "placement" for e in lr.journal)
+
+
 def test_what_is_taken_back_stays_out(data, day):
     room = stored_room(zones=[SOFA_ZONE])
     ln, lr = learner_with(room, day)
@@ -454,3 +487,100 @@ def test_engine_and_learner_together(data):
     for _ in range(20):
         rig.report("-15,30")
     assert ln._rooms[room.id].state["observed_s"] > 0
+
+
+# --- asking Home Assistant ------------------------------------------------------
+
+
+class HomeAssistant:
+    """The Supervisor's proxy to Home Assistant's API, as httpx sees it."""
+
+    def __init__(self, states):
+        self.states = {s["entity_id"]: s for s in states}
+        self.asked: list[str] = []
+        self.status = 200
+
+    def __call__(self, request):
+        import httpx
+
+        path = request.url.path
+        self.asked.append(path)
+        if request.headers.get("authorization") != "Bearer tok":
+            return httpx.Response(401)
+        if self.status != 200:
+            return httpx.Response(self.status)
+        if path == "/core/api/states":
+            return httpx.Response(200, json=list(self.states.values()))
+        entity = path.rsplit("/", 1)[-1]
+        if entity in self.states:
+            return httpx.Response(200, json=self.states[entity])
+        return httpx.Response(404, json={"message": "Entity not found."})
+
+
+@pytest.fixture
+def ha(monkeypatch):
+    import httpx
+
+    server = HomeAssistant([person("a", "not_home"), person("b", "home"), {"entity_id": "light.x", "state": "on"},
+                            {"entity_id": "zone.home", "state": "0", "last_changed": None}])
+    monkeypatch.setenv("ECHOLOT_SUPERVISOR_TOKEN", "tok")
+    monkeypatch.setenv("ECHOLOT_SUPERVISOR_URL", "http://supervisor")
+    real = httpx.AsyncClient
+    monkeypatch.setattr(ha_presence.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(server), **kw))
+    return server
+
+
+def test_the_persons_are_found_once_and_then_asked_alone(ha):
+    clock = Clock()
+    presence = ha_presence.HomePresence(clock=clock)
+    run(presence.poll())
+    assert presence.home is True and ha.asked == ["/core/api/states"]
+    ha.states["person.b"]["state"] = "not_home"
+    clock.now += ha_presence.POLL_S
+    run(presence.poll())
+    assert presence.home is False
+    assert ha.asked[1:] == ["/core/api/states/person.a", "/core/api/states/person.b"]
+    # Every DISCOVER_S the full list again: a person added since is found.
+    ha.states["person.c"] = person("c", "home")
+    clock.now += ha_presence.DISCOVER_S
+    run(presence.poll())
+    assert ha.asked[-1] == "/core/api/states" and presence.home is True
+
+
+def test_a_person_gone_meanwhile_is_looked_for_again(ha):
+    clock = Clock()
+    presence = ha_presence.HomePresence(clock=clock)
+    run(presence.poll())
+    del ha.states["person.b"]
+    run(presence.poll())
+    assert presence.home is False  # the one left is away
+    run(presence.poll())
+    assert ha.asked[-1] == "/core/api/states"
+
+
+def test_one_entity_is_asked_alone(ha):
+    presence = ha_presence.HomePresence(clock=Clock())
+    presence.entity = "zone.home"
+    run(presence.poll())
+    assert ha.asked == ["/core/api/states/zone.home"] and presence.home is False
+    presence.entity = "binary_sensor.nope"
+    run(presence.poll())
+    assert presence.home is None and "binary_sensor.nope" in presence.error
+
+
+def test_without_permission_it_says_so(ha):
+    ha.status = 403
+    presence = ha_presence.HomePresence(clock=Clock())
+    run(presence.poll())
+    assert presence.home is None and "homeassistant_api" in presence.error
+
+
+def test_back_from_one_entity_the_persons_are_found_afresh(ha):
+    presence = ha_presence.HomePresence(clock=Clock())
+    run(presence.poll())
+    presence.entity = "zone.home"
+    run(presence.poll())
+    presence.entity = None
+    run(presence.poll())
+    assert ha.asked[-1] == "/core/api/states"
