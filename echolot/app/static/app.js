@@ -315,7 +315,11 @@ const Echolot = (() => {
     setInterval(() => { if (!document.hidden) loadData().catch(() => {}); }, DATA_MS);
   }
 
+  // A module that reports but answers no command (radar_link.LinkSnapshot.commands_unanswered).
+  const deafText = "Das Modul meldet Ziele, antwortet aber auf keinen Befehl. Meist erreicht die Leitung vom ESP das Modul nicht: TX des ESP gehört an Rx2 (Pin 8) des Moduls. Ohne sie lassen sich Montage und Reichweite weder lesen noch einstellen.";
+
   return {
+    deafText,
     state, api, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
     people, roomStatus, register, go, start, loadInfo, ROOM_ICONS,
     refresh: loadData,

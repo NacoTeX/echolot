@@ -25,6 +25,14 @@ fans and curtains.
 align the sensor from standpoints marked on the plan, and set how long a new
 target has to be reported before it counts.
 
+**Learning.** Echolot watches every room from its first report and learns
+from everyday life: reflectors while Home Assistant says nobody is home,
+hold times from how long the module loses people sitting still, whether
+the plan fits the walks (and which way the sensor really looks), and where
+zones are missing. What is unambiguous it takes over, the rest it proposes
+— everything journalled, everything undoable, nothing it does changes
+what you set yourself.
+
 **Home Assistant.** One device per room with *Anwesenheit* (occupancy) and
 *Personen* (count), and another pair per detection zone, over MQTT
 discovery.

@@ -18,7 +18,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from app.radar_frame import RadarFrame, parse_frame
+from app.radar_frame import RECEIVING, RadarFrame, parse_frame
 
 logger = logging.getLogger("echolot.radar")
 
@@ -55,6 +55,10 @@ ENTITY_ROLES = {
     "radar range end": "range_end",
 }
 MOUNT_ROLES = ("mount_mode", "mount_height", "mount_angle")
+#: The firmware asks the module for its mounting 3, 8 and 13 seconds after
+#: boot and once a minute after that. Connected this long with reports
+#: and still no answer, the module does not hear the ESP.
+COMMAND_SILENCE_S = 90.0
 #: The module's detection range: how far, and across which sector, it
 #: reports targets (ld2460_protocol.h, 0x11/0x12).
 RANGE_ROLES = ("range_distance", "range_start", "range_end")
@@ -133,6 +137,26 @@ class LinkSnapshot:
     #: device info): {"project", "version", "esphome", "compiled"}. None
     #: until it has answered, or when it did not.
     node: dict | None = None
+    #: A report with targets or without arrived on this connection: the
+    #: line from the module to the ESP works.
+    reports_seen: bool = False
+
+    def commands_unanswered(self, now: float | None = None) -> bool:
+        """The module reports, but has answered none of the firmware's
+        questions in COMMAND_SILENCE_S of this connection — neither its
+        mounting nor its mode. Reports reach the ESP; commands do not
+        reach the module: the line from the ESP's TX to the module's RX
+        (Rx2, pin 8) is missing, loose or swapped.
+
+        Only said of a firmware that asks (1.7 and later: it has the
+        mounting entities); an older one never asks.
+        """
+        if not (self.connected and self.reports_seen and self.mounting_entities):
+            return False
+        if self.mount_mode is not None or self.mount_height_m is not None:
+            return False
+        since = self.connected_since
+        return since is not None and (now if now is not None else time.time()) - since >= COMMAND_SILENCE_S
 
     def mounting(self) -> dict | None:
         """The module's mounting, once all three are known."""
@@ -178,6 +202,8 @@ class LinkSnapshot:
         self.frame = frame
         self.measured_at = now
         self.frames_received += 1
+        if frame.state == RECEIVING:
+            self.reports_seen = True
         self.index += 1
         if len(self.queue) == self.queue.maxlen:
             self.dropped += 1
@@ -194,6 +220,7 @@ class LinkSnapshot:
         self.duplicates = self.out_of_order = self.reports_skipped = self.dropped = 0
         self.mount_mode = self.mount_height_m = self.mount_angle_deg = None
         self.range_distance_m = self.range_start_deg = self.range_end_deg = None
+        self.reports_seen = False
 
     def pending(self, after_index: int) -> list:
         """New measurements after `after_index`, oldest first."""
@@ -231,6 +258,7 @@ class LinkSnapshot:
             "range_entities": self.range_entities,
             "detection_range": self.detection_range(),
             "node": self.node,
+            "commands_unanswered": self.commands_unanswered(),
         }
 
 

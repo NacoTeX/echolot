@@ -339,7 +339,7 @@ def test_live_names_the_measurement_definition(client):
     c, _ = client
     _, room = room_with_sensor(c)
     live = next(r for r in c.get("/api/live").json()["rooms"] if r["room_id"] == room["id"])
-    assert live["filter"]["definition_version"] == 7
+    assert live["filter"]["definition_version"] == 8
 
 
 def test_taking_single_spots_away_keeps_the_learning_date(client):
@@ -763,7 +763,7 @@ def test_the_module_mounting_is_written_read_back_and_drops_what_was_measured(cl
     # The room page shows what the module says, live.
     assert c.get(f"/api/rooms/{rid}").json()["module"] == {
         "connected": True, "entities": True, "mounting": {"mode": "side", "height_m": 2.2, "angle_deg": 30.0},
-        "range_entities": False, "detection_range": None}
+        "range_entities": False, "detection_range": None, "commands_unanswered": False}
     r = c.put(f"/api/devices/{device['id']}/mounting", json={"mode": "side", "height_m": 2.6, "angle_deg": 25})
     assert r.status_code == 200, r.text
     assert r.json()["confirmed"] and r.json()["mounting"] == {"mode": "side", "height_m": 2.6, "angle_deg": 25.0}

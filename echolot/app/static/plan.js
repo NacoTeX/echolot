@@ -303,7 +303,7 @@ const Plan = (() => {
       html += `</g>`;
       for (const item of r.furniture) html += this.furnitureSvg(item);
       r.zones.forEach((zone) => { html += this.zoneSvg(zone, uid); });
-      if (this.mode !== "thumb") html += this.spotsSvg();
+      if (this.mode !== "thumb") html += this.spotsSvg() + this.spotsSvg(this.learnedSpots(), this.room.sensor, "learned");
       const wallSel = this.mode === "edit" && this.selection && this.selection.kind === "outline";
       html += `<polygon class="pl-wall ${crossed ? "invalid" : ""} ${wallSel ? "selected" : ""}" points="${wallPts}" pointer-events="none"/>`;
       if (this.mode !== "thumb") {
@@ -325,6 +325,16 @@ const Plan = (() => {
       const cal = r.calibration;
       if (!cal || !r.sensor.device_id || cal.interference_device_id !== r.sensor.device_id) return [];
       return cal.interference || [];
+    }
+
+    // Reflectors learning found while nobody was home (rooms.Learned):
+    // only for the sensor and mounting they were learned with.
+    learnedSpots() {
+      const r = this.room;
+      const l = r.learned;
+      if (!l || !r.sensor.device_id || l.device_id !== r.sensor.device_id) return [];
+      if ((l.epoch || 0) !== ((r.calibration && r.calibration.mounting_epoch) || 0)) return [];
+      return l.spots || [];
     }
 
     spotsSvg(spots = this.activeSpots(), placement = this.room.sensor, cls = "") {

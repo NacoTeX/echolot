@@ -98,8 +98,10 @@
         tile.querySelector(".tile-count").textContent = status.count ? status.count : "";
         const live = state.live[room.id];
         const zones = (live && live.available ? live.zones : []).filter((z) => z.occupied);
+        const proposals = (room.learning && room.learning.proposals) || 0;
         tile.querySelector(".tile-zones").innerHTML = zones
-          .map((z) => `<span class="chip present">${escapeHtml(z.name)}${z.count ? ` · ${z.count}` : ""}</span>`).join("");
+          .map((z) => `<span class="chip present">${escapeHtml(z.name)}${z.count ? ` · ${z.count}` : ""}</span>`).join("")
+          + (proposals ? `<span class="chip plain learn-chip">${icon("spark")}${proposals} Vorschlag${proposals === 1 ? "" : "e"}</span>` : "");
       }
       const sub = this.el.querySelector("#home-sub");
       if (sub && state.rooms.length) {
@@ -123,7 +125,9 @@
       ["WLAN", s && s.wifi_signal !== null ? `${Math.round(s.wifi_signal)} dBm` : "—"],
       ["Radarchip-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
     ];
-    return `<div class="stat-lines">${rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")}</div>`;
+    const deaf = room.module && room.module.commands_unanswered
+      ? `<div class="notice warn" style="margin-top:12px">${icon("alert")}<div class="grow"><strong>Modul hört den Sensor nicht</strong>${E.deafText}</div></div>` : "";
+    return `<div class="stat-lines">${rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")}</div>${deaf}`;
   }
 
   const roomView = {
@@ -132,13 +136,19 @@
       this.id = params.id;
       this.render();
     },
-    unmount() { if (this.plan) this.plan.destroy(); this.plan = null; },
+    unmount() {
+      if (this.learn) this.learn.destroy();
+      this.learn = null;
+      if (this.plan) this.plan.destroy();
+      this.plan = null;
+    },
     onData() {
       const room = state.rooms.find((r) => r.id === this.id);
       if (!room) { this.render(); return; }
       if (this.plan && JSON.stringify(room) !== this.roomJson) {
         this.roomJson = JSON.stringify(room);
         this.plan.setRoom(room);
+        if (this.learn) this.learn.drawPlan();
         this.renderHead(room);
       }
     },
@@ -173,6 +183,7 @@
             <div class="card"><div class="eyebrow">Gerade im Raum</div>
               <div class="big-row"><div class="big-number" id="room-count">–</div><div id="room-state" class="state-stack"></div></div>
               <p class="hint" id="room-reason" style="margin-top:10px"></p></div>
+            <div id="learn-card"></div>
             <div class="card"><h2>Zonen</h2><div class="zone-list" id="zone-list"></div></div>
             <div class="card"><h2>Sensor</h2><div id="sensor-lines"></div></div>
           </aside>
@@ -180,6 +191,7 @@
       this.renderHead(room);
       this.plan = new Plan.PlanView(this.el.querySelector("#stage"), { mode: "live" });
       this.plan.setRoom(room);
+      this.learn = new EcholotLearn.RoomCard(this.el.querySelector("#learn-card"), room.id, { plan: this.plan });
       this.update();
     },
     renderHead(room) {
@@ -1084,6 +1096,7 @@
             <div class="stat-line"><span>MQTT-Export</span><span>${mqtt.wanted === false ? "abgeschaltet" : mqtt.connected ? '<span class="chip ok">verbunden</span>' : `<span class="chip warn">nicht verbunden</span>`}</span></div>
           </div>
           <p class="hint" style="margin-top:12px">Je Raum entsteht ein Gerät mit „Anwesenheit“ und „Personen“, je Erkennungszone ein weiteres Paar. ${mqtt.error ? escapeHtml(mqtt.error) : ""}</p></div>
+          <div class="card pad" id="learn-settings"><h2>Selbstlernen</h2><p class="hint">Lädt …</p></div>
           <div class="card pad"><h2>Darstellung</h2><div class="segmented" id="theme">
             <button data-theme="auto" class="${theme === "auto" ? "active" : ""}">Automatisch</button>
             <button data-theme="light" class="${theme === "light" ? "active" : ""}">Hell</button>
@@ -1095,6 +1108,7 @@
         applyTheme(b.dataset.theme);
         el.querySelectorAll("[data-theme]").forEach((x) => x.classList.toggle("active", x === b));
       }));
+      EcholotLearn.systemCard(el.querySelector("#learn-settings"));
     },
   };
 

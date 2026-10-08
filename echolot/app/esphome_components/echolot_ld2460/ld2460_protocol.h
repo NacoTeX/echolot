@@ -393,6 +393,27 @@ inline LinkState classify(const LinkClock &clock, uint32_t now_ms, uint32_t stal
   return LinkState::UNKNOWN;
 }
 
+// When to ask the module for something it has not answered yet: first
+// `delay_ms` after boot (the module needs a moment after power-up, and
+// the ESP usually boots faster), then `fast` times `fast_gap_ms` apart,
+// then every `slow_gap_ms` for as long as no answer has come — a module
+// powered up after the ESP, or wired up later, still gets asked.
+struct QuerySchedule {
+  uint32_t delay_ms;
+  uint8_t fast;
+  uint32_t fast_gap_ms;
+  uint32_t slow_gap_ms;
+};
+
+// `sent` queries so far, the last at `last_ms`. Unsigned 32-bit
+// arithmetic, as for classify: the gap survives the millis() wrap.
+inline bool query_due(const QuerySchedule &schedule, uint8_t sent, uint32_t last_ms, uint32_t now_ms) {
+  if (sent == 0)
+    return now_ms >= schedule.delay_ms;
+  const uint32_t gap = sent < schedule.fast ? schedule.fast_gap_ms : schedule.slow_gap_ms;
+  return uint32_t(now_ms - last_ms) >= gap;
+}
+
 inline char state_letter(LinkState state) {
   switch (state) {
     case LinkState::RECEIVING:

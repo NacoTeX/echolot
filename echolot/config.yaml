@@ -1,5 +1,5 @@
 name: Echolot
-version: "1.8.0"
+version: "2.0.0"
 slug: echolot
 description: >-
   Room presence with HLK-LD2460 radar: build the firmware, flash it from the
@@ -12,6 +12,9 @@ arch:
 init: false
 # Supervisor API: needed to look up the managed MQTT broker.
 hassio_api: true
+# Home Assistant API: whether anybody is home (person entities), so
+# learning can tell reflectors from people while the house is empty.
+homeassistant_api: true
 # Zones are published to Home Assistant over MQTT when a broker exists;
 # 'want' means the add-on still starts fine without one.
 services:
