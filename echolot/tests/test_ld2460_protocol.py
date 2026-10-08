@@ -226,6 +226,28 @@ def test_classify(harness, args, expected):
     assert harness(f"classify {args}") == [expected]
 
 
+# --- asking until the module answers ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        # delay fast fast_gap slow_gap sent last now — the firmware's schedule
+        ("2000 3 5000 60000 0 0 1999", "no"),       # too soon after boot
+        ("2000 3 5000 60000 0 0 2000", "yes"),      # the first query
+        ("2000 3 5000 60000 1 2000 6999", "no"),    # fast: five seconds apart
+        ("2000 3 5000 60000 1 2000 7000", "yes"),
+        ("2000 3 5000 60000 3 12000 17000", "no"),  # three sent: now once a minute
+        ("2000 3 5000 60000 3 12000 72000", "yes"),
+        ("2000 3 5000 60000 255 72000 132000", "yes"),  # and for good, not three and done
+        ("2000 3 5000 60000 5 4294960000 52704", "yes"),  # across the millis() wrap
+        ("2000 3 5000 60000 5 4294960000 52703", "no"),
+    ],
+)
+def test_query_schedule(harness, args, expected):
+    assert harness(f"due {args}") == [expected]
+
+
 # --- the reader refuses what it does not know ---------------------------
 
 

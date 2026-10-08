@@ -17,22 +17,19 @@ static const char *const TAG = "echolot_ld2460";
 // 512 per pass is several frames of headroom while keeping one loop()
 // from starving Wi-Fi and the API if the line fills with noise.
 static const size_t READ_BUDGET = 512;
-// Seconds after boot before the first version query: the module needs a
-// moment after power-up, and the ESP usually boots faster than it.
-static const uint32_t VERSION_QUERY_DELAY_MS = 2000;
-static const uint32_t VERSION_QUERY_RETRY_MS = 5000;
-static const uint8_t VERSION_QUERY_ATTEMPTS = 3;
+// The version is asked for two seconds after boot, three times five
+// seconds apart, then once a minute until the module answers
+// (proto::query_due). Before 2.0 it was asked three times and then never
+// again: a module that came up late stayed without a version until the
+// ESP restarted.
+static const proto::QuerySchedule VERSION_QUERIES{2000, 3, 5000, 60000};
 // Even with nothing new to say, the frame line is refreshed this often,
 // so Echolot can tell a silent device from a lost connection.
 static const uint32_t FRAME_HEARTBEAT_MS = 1000;
 static const uint32_t FIRST_DIAGNOSTICS_MS = 10000;
-// Mounting is asked for after the version, three times five seconds
-// apart, then once a minute for as long as the module has not answered
-// — a module powered up after the ESP still gets asked.
-static const uint32_t MOUNTING_QUERY_DELAY_MS = 3000;
-static const uint32_t MOUNTING_QUERY_RETRY_MS = 5000;
-static const uint32_t MOUNTING_QUERY_SLOW_MS = 60000;
-static const uint8_t MOUNTING_QUERY_FAST = 3;
+// Mounting and range are asked for after the version, on the same
+// schedule, for as long as the module has not answered.
+static const proto::QuerySchedule MOUNTING_QUERIES{3000, 3, 5000, 60000};
 static const uint32_t COMMAND_GAP_MS = 200;
 
 static const char *state_name(LinkState state) {
@@ -63,10 +60,11 @@ void EcholotLd2460::loop() {
 
   this->maybe_probe_(now, state);
 
-  if (!this->version_known_ && this->version_queries_ < VERSION_QUERY_ATTEMPTS && now >= VERSION_QUERY_DELAY_MS &&
-      (this->version_queries_ == 0 || now - this->last_version_query_ms_ >= VERSION_QUERY_RETRY_MS)) {
+  if (!this->version_known_ &&
+      proto::query_due(VERSION_QUERIES, this->version_queries_, this->last_version_query_ms_, now)) {
     this->write_array(proto::COMMAND_QUERY_VERSION, sizeof(proto::COMMAND_QUERY_VERSION));
-    this->version_queries_++;
+    if (this->version_queries_ < 255)
+      this->version_queries_++;
     this->last_version_query_ms_ = now;
   }
 
@@ -264,10 +262,7 @@ void EcholotLd2460::maybe_query_mounting_(uint32_t now) {
   const bool mode_known = this->mounting_.mode != Mode::UNKNOWN;
   if (mode_known && this->mounting_.params_known && this->range_.known)
     return;
-  if (now < MOUNTING_QUERY_DELAY_MS)
-    return;
-  const uint32_t gap = this->mounting_queries_ < MOUNTING_QUERY_FAST ? MOUNTING_QUERY_RETRY_MS : MOUNTING_QUERY_SLOW_MS;
-  if (this->mounting_queries_ > 0 && now - this->last_mounting_query_ms_ < gap)
+  if (!proto::query_due(MOUNTING_QUERIES, this->mounting_queries_, this->last_mounting_query_ms_, now))
     return;
   if (!mode_known)
     this->queue_command_(proto::COMMAND_QUERY_MODE, sizeof(proto::COMMAND_QUERY_MODE));

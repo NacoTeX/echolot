@@ -403,6 +403,50 @@ def test_a_new_connection_forgets_the_mounting_until_the_module_says_it_again():
     assert snap.mounting() is None and snap.detection_range() is None
 
 
+# --- a module that does not hear the ESP ---------------------------------------
+
+
+def _reporting(now=10_000.0, mounting_entities=True):
+    snap = radar_link.LinkSnapshot(device_id="dev", connected=True)
+    snap.mounting_entities = mounting_entities
+    snap.connected_since = now - radar_link.COMMAND_SILENCE_S
+    snap.record(parse_frame("1|R|1|15,23"), 1.0)
+    return snap
+
+
+def test_reports_without_any_answer_say_the_module_does_not_hear_the_esp():
+    now = 10_000.0
+    snap = _reporting(now)
+    assert snap.commands_unanswered(now)
+    assert snap.as_dict()["commands_unanswered"] in (True, False)
+    # Too early on the connection to say.
+    assert not snap.commands_unanswered(now - 1)
+
+
+def test_one_answer_is_enough_to_hear():
+    now = 10_000.0
+    snap = _reporting(now)
+    snap.mount_mode = "side"
+    assert not snap.commands_unanswered(now)
+    snap = _reporting(now)
+    snap.mount_height_m = 1.8
+    assert not snap.commands_unanswered(now)
+
+
+def test_without_reports_or_without_asking_nothing_is_said():
+    now = 10_000.0
+    quiet = radar_link.LinkSnapshot(device_id="dev", connected=True, mounting_entities=True,
+                                    connected_since=now - 600)
+    quiet.record(parse_frame("1|Q|0|"), 1.0)
+    assert not quiet.commands_unanswered(now)
+    # A firmware before 1.7 never asks the module anything.
+    assert not _reporting(now, mounting_entities=False).commands_unanswered(now)
+    # A new connection starts the question afresh.
+    snap = _reporting(now)
+    snap.new_session()
+    assert not snap.commands_unanswered(now)
+
+
 # --- the module's detection range -------------------------------------------
 
 RANGE_ENTITIES = MOUNT_ENTITIES + [Info(8, "Radar Range"), Info(9, "Radar Range Start"), Info(10, "Radar Range End")]

@@ -19,6 +19,8 @@
 //   setrange <mode> <distance_dm> <start_decideg> <end_decideg>
 //   range <hex>       like mounting, through read_range_ack into one Range
 //   range-reset
+//   due <delay> <fast> <fast_gap> <slow_gap> <sent> <last> <now>
+//                     query_due: "yes" or "no"
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -185,6 +187,11 @@ int main() {
       clock.last_ack_ms = uint32_t(last_ack);
       clock.reporting_enabled = enabled;
       std::cout << state_letter(classify(clock, uint32_t(now), uint32_t(stale), uint32_t(ack_valid))) << "\n";
+    } else if (command == "due") {
+      unsigned long delay, fast, fast_gap, slow_gap, sent, last, now;
+      in >> delay >> fast >> fast_gap >> slow_gap >> sent >> last >> now;
+      const QuerySchedule schedule{uint32_t(delay), uint8_t(fast), uint32_t(fast_gap), uint32_t(slow_gap)};
+      std::cout << (query_due(schedule, uint8_t(sent), uint32_t(last), uint32_t(now)) ? "yes" : "no") << "\n";
     }
     std::cout.flush();
   }

@@ -125,7 +125,9 @@
       ["WLAN", s && s.wifi_signal !== null ? `${Math.round(s.wifi_signal)} dBm` : "—"],
       ["Radarchip-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
     ];
-    return `<div class="stat-lines">${rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")}</div>`;
+    const deaf = room.module && room.module.commands_unanswered
+      ? `<div class="notice warn" style="margin-top:12px">${icon("alert")}<div class="grow"><strong>Modul hört den Sensor nicht</strong>${E.deafText}</div></div>` : "";
+    return `<div class="stat-lines">${rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")}</div>${deaf}`;
   }
 
   const roomView = {

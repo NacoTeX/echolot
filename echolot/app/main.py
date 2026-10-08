@@ -659,6 +659,7 @@ def _room_view(room: rooms.Room) -> dict:
         "mounting": snap.mounting() if snap else None,
         "range_entities": bool(snap and snap.range_entities),
         "detection_range": snap.detection_range() if snap else None,
+        "commands_unanswered": bool(snap and snap.commands_unanswered()),
     }
     data["learning"] = learner.summary(room)
     if room.image:

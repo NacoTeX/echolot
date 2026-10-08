@@ -265,7 +265,8 @@
     },
 
     chips(d) {
-      return `${firmwareChip(d)}${linkChip(d)}${d.room ? `<a class="chip plain" href="#/room/${encodeURIComponent(d.room.id)}">${escapeHtml(d.room.name)}</a>` : ""}`;
+      const deaf = d.link && d.link.commands_unanswered ? '<span class="chip warn">Modul hört nicht</span>' : "";
+      return `${firmwareChip(d)}${linkChip(d)}${deaf}${d.room ? `<a class="chip plain" href="#/room/${encodeURIComponent(d.room.id)}">${escapeHtml(d.room.name)}</a>` : ""}`;
     },
 
     liveLines(d) {
@@ -283,7 +284,12 @@
         ["Adresse", escapeHtml(l.address || d.address || `${d.config.name}.local`)],
       ];
       const note = firmwareNote(d.firmware_running);
+      // Reports arrive, answers do not: the line from the ESP to the
+      // module (radar_link.LinkSnapshot.commands_unanswered).
+      const deaf = l.commands_unanswered
+        ? `<div class="notice warn" style="margin-top:10px" data-deaf>${icon("alert")}<div class="grow"><strong>Modul hört den Sensor nicht</strong>${E.deafText}</div></div>` : "";
       return rows.map(([a, b]) => `<div class="stat-line"><span>${a}</span><span>${b}</span></div>`).join("")
+        + deaf
         + (note ? `<p class="hint" style="margin-top:8px" data-firmware-note>${note}</p>` : "")
         + (l.error ? `<p class="hint" style="margin-top:8px">${escapeHtml(l.error)}</p>` : "");
     },
