@@ -47,16 +47,49 @@ def vertices(part: Manifold) -> np.ndarray:
 def parts_valid() -> None:
     for name, part in g.print_parts().items():
         pieces = len(part.decompose())
-        check(part.status().name == "NoError" and part.volume() > 0 and pieces == 1,
+        single = pieces == 1 or name == "5_schriftzug_einlage"   # einzelne Buchstaben
+        check(part.status().name == "NoError" and part.volume() > 0 and single,
               f"{name}: geschlossen, {pieces} Körper, {part.volume() / 1000:.1f} cm³")
+
+
+def look() -> None:
+    """Name und Wände: der Name im Kinn, nicht im Radarfenster; die Einlage
+    füllt die Prägung genau; nirgends zu dünne Wände."""
+    shell = g.shell()
+    outer = g.shell_outer()
+    # seitlich gemessen: ohne die Front (das Fenster ist gewollt 1 mm) und
+    # ohne die Rückseite (dort sitzt die 45°-Lippe über den Rastrillen)
+    outside = g.box(-100, 100, -100, 100, 0.0, g.D - 0.01) - outer
+    pocket = g.box(-g.IW / 2, g.IW / 2, g.RADAR_Y - g.IH / 2, g.RADAR_Y + g.IH / 2, g.FRONT, g.Z_POCKET_END)
+    wall = pocket.min_gap(outside, 5.0)
+    check(wall >= 1.2, f"Wand um die Radartasche mindestens {wall:.2f} mm")
+    zs = g.D - g.LID_T / 2
+    grooves = g.union([g.ridge_x(x0, x1, y, zs, g.SNAP_GROOVE)
+                       for x0, x1 in ((-g.STRAIGHT + 1, -8), (8, g.STRAIGHT - 1)) for y in (g.CAV_H / 2, -g.CAV_H / 2)])
+    rim = grooves.min_gap(outside, 5.0)
+    check(rim >= 0.8, f"Wand neben den Rastrillen mindestens {rim:.2f} mm")
+    if not g.NAME:
+        return
+    inlay = g.name_inlay()
+    x0, y0, _, x1, y1, _ = inlay.bounding_box()
+    window = g.RADAR_Y - g.IH / 2
+    check(y1 <= window - 1.0, f"Name liegt im Kinn, {window - y1:.1f} mm unter dem Radarfenster")
+    flat = g.outline(g.EDGE_R)                       # wo die Front noch eben ist
+    fx0, fy0, fx1, fy1 = flat.bounds()
+    check(x0 >= fx0 + 1 and x1 <= fx1 - 1 and y0 >= fy0 + 0.5,
+          f"Name auf der ebenen Front ({x1 - x0:.1f} × {y1 - y0:.1f} mm)")
+    check(overlap(inlay, shell) < 1e-3 and abs((g.shell_outer() ^ inlay).volume() - inlay.volume()) < 1e-3,
+          f"Einlage füllt die Prägung genau ({inlay.volume():.1f} mm³)")
 
 
 def dummies() -> dict[str, Manifold]:
     """Was ins Gehäuse kommt, in Gehäusekoordinaten."""
     return {
-        "radar": g.box(-g.RADAR_W / 2, g.RADAR_W / 2, -g.RADAR_H / 2, g.RADAR_H / 2, g.Z_RADAR_FRONT, g.Z_RADAR_BACK),
+        "radar": g.box(-g.RADAR_W / 2, g.RADAR_W / 2, g.RADAR_Y - g.RADAR_H / 2, g.RADAR_Y + g.RADAR_H / 2,
+                       g.Z_RADAR_FRONT, g.Z_RADAR_BACK),
         # Bauteile, Lötstellen und Kabel hinter dem Radar, innerhalb der Stützen
-        "behind": g.box(-g.RADAR_W / 2 + 3.2, g.RADAR_W / 2 - 3.2, -g.RADAR_H / 2 + 3.2, g.RADAR_H / 2 - 3.2,
+        "behind": g.box(-g.RADAR_W / 2 + 3.2, g.RADAR_W / 2 - 3.2, g.RADAR_Y - g.RADAR_H / 2 + 3.2,
+                        g.RADAR_Y + g.RADAR_H / 2 - 3.2,
                         g.Z_RADAR_BACK, g.Z_RADAR_BACK + g.RADAR_BACK),
         "esp": g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_Y0, g.ESP_Y0 + g.ESP_L, g.Z_ESP_BOTTOM - g.ESP_PCB, g.Z_ESP_BOTTOM),
         "usb": g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_Y0 - g.USB_OVERHANG, g.ESP_Y0 + 7.3,
@@ -217,6 +250,7 @@ def main() -> int:
     print(f"Gehäuse {g.W:.1f} × {g.H:.1f} × {g.D:.1f} mm, Radar {g.RADAR_W} × {g.RADAR_H} mm, "
           f"Neigung {g.TILT:.0f}°")
     parts_valid()
+    look()
     assembly()
     mount()
     printability()

@@ -1,7 +1,8 @@
 """Echolot-Sensorgehäuse: HLK-LD2460 + Waveshare ESP32-C5-Zero.
 
-Eine schlanke Kachel. Vorn das Radar hinter einem gleichmäßig dünnen
-Fenster, dahinter der ESP, unten das USB-C-Kabel. Der Rückdeckel rastet
+Eine schlanke Kachel mit Squircle-Ecken und weichen Kanten. Vorn das
+Radar hinter einem gleichmäßig dünnen Fenster, darunter im „Kinn“ der
+eingeprägte Name, dahinter der ESP, unten das USB-C-Kabel. Der Rückdeckel rastet
 ein und trägt eine Schwalbenschwanz-Nut; der Halter — an der Wand oder
 in einer Raumecke — hat die passende Schiene und gibt die Neigung vor.
 Der Sensor wird von oben aufgeschoben.
@@ -25,7 +26,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from manifold3d import CrossSection, JoinType, Manifold, OpType, set_min_circular_angle, set_min_circular_edge_length
+from manifold3d import (CrossSection, FillRule, JoinType, Manifold, OpType, set_min_circular_angle,
+                        set_min_circular_edge_length)
 
 set_min_circular_angle(3.0)
 set_min_circular_edge_length(0.3)
@@ -58,10 +60,18 @@ FRONT = 1.0         # Radarfenster: gleichmäßig, ohne Muster, ohne Metall
 GAP = 1.0           # Luft zwischen Fenster und Antennen
 LID_T = 2.0         # Rückdeckel
 SPINE_T = 2.4       # Rücken des Deckels: trägt die Nut und den ESP
-R_OUT = 8.0         # Eckenradius außen
-EDGE_R = 2.0        # Rundung der Vorderkante, am Bett unter 45° angefast
-BACK_R = 0.8        # Rundung der Hinterkante
+R_OUT = 10.0        # Ecken außen: Squircle (Superellipse), so groß wie ein Kreisradius
+SQUIRCLE = 5.0      # Exponent der Superellipse; 2 wäre ein Kreisbogen
+EDGE_R = 3.0        # Rundung der Vorderkante, am Bett unter 45° angefast
+BACK_R = 0.8        # Rundung der Hinterkante (mehr nähme der Rastlippe Material)
 MARGIN = 3.7        # außen minus Radartasche, je Seite
+CHIN = 8.0          # Kinn: so viel mehr Rand unter dem Fenster, für den Namen
+
+# Name auf der Front: eingeprägt im Kinn, nicht im Radarfenster
+NAME = "Echolot"    # "" für keinen
+NAME_CAP = 4.5      # Höhe der Großbuchstaben
+NAME_DEPTH = 0.4    # Prägetiefe (zwei Schichten à 0,2 mm)
+NAME_FONT = "schrift/InterDisplay-SemiBold.ttf"   # Inter, SIL Open Font License
 LID_FIT = 0.15      # Spiel des Deckels, je Seite
 SNAP = 0.5          # Rastnase: Rautenprofil, halbe Diagonale (ragt 0,35 mm über)
 SNAP_GROOVE = 0.6   # Rille dafür im Gehäuse; 45°-Flanken, ohne Stütze druckbar
@@ -89,7 +99,9 @@ DRIVER_R = 18.0     # Eckhalter: Platz für den Griff des Schraubendrehers neben
 # --- abgeleitet -----------------------------------------------------------------
 
 IW, IH = RADAR_W + 2 * FIT, RADAR_H + 2 * FIT          # Radartasche
-W, H = IW + 2 * MARGIN, IH + 2 * MARGIN                 # außen
+W, H = IW + 2 * MARGIN, IH + 2 * MARGIN + CHIN          # außen
+RADAR_Y = CHIN / 2                                      # Mitte des Radars über der Mitte
+NAME_Y = (-H / 2 + RADAR_Y - IH / 2) / 2                # Mitte des Kinns
 Z_RADAR_FRONT = FRONT + GAP + RADAR_FRONT
 Z_RADAR_BACK = Z_RADAR_FRONT + RADAR_PCB
 Z_POCKET_END = Z_RADAR_BACK + 1.0                       # ab hier weiter Innenraum
@@ -98,7 +110,8 @@ Z_ESP_BOTTOM = Z_ESP_TOP + ESP_H                        # Platinenunterseite = R
 D = Z_ESP_BOTTOM + SPINE_T + LID_T                      # Tiefe
 Z_LID_IN = D - LID_T                                    # Innenseite des Deckels
 Z_USB = Z_ESP_BOTTOM - ESP_PCB - USB_T / 2              # Mitte der Buchse
-CAV_W, CAV_H, CAV_R = W - 2 * WALL, H - 2 * WALL, R_OUT - WALL
+CAV_W, CAV_H = W - 2 * WALL, H - 2 * WALL
+STRAIGHT = W / 2 - R_OUT                                # bis hier sind Ober- und Unterkante gerade
 ESP_Y0 = -CAV_H / 2 + USB_OVERHANG                      # Platinenkante am USB-Ende
 SPINE_HALF = DT_HEAD / 2 + DT_PLAY + 2.0
 RAIL_Y0 = -CAV_H / 2 + LID_FIT + 0.5                    # wo das untere Schienenende sitzt
@@ -108,9 +121,48 @@ Y_SCREW = Y_WEDGE + HEAD_R + 1.0
 Y_TOP = Y_SCREW + HEAD_R + 2.0
 
 
-def rounded(w: float, h: float, r: float) -> CrossSection:
-    r = max(min(r, w / 2 - 0.01, h / 2 - 0.01), 0.01)
-    return CrossSection.square((w - 2 * r, h - 2 * r), center=True).offset(r, JoinType.Round)
+def squircle(w: float, h: float, r: float, n: float = SQUIRCLE, steps: int = 40) -> CrossSection:
+    """Rechteck mit Superellipsen-Ecken: Die Krümmung setzt sanft ein statt
+    mit einem Sprung wie beim Kreisbogen."""
+    pts = []
+    for cx, cy, a0 in ((1, 1, 0), (-1, 1, 90), (-1, -1, 180), (1, -1, 270)):
+        ox, oy = cx * (w / 2 - r), cy * (h / 2 - r)
+        for k in range(steps + 1):
+            t = math.radians(a0 + 90 * k / steps)
+            c, s = math.cos(t), math.sin(t)
+            pts.append((ox + r * math.copysign(abs(c) ** (2 / n), c), oy + r * math.copysign(abs(s) ** (2 / n), s)))
+    return CrossSection([pts])
+
+
+def outline(inset: float = 0.0) -> CrossSection:
+    """Der Umriss des Gehäuses, um `inset` nach innen versetzt."""
+    cs = squircle(W, H, R_OUT)
+    return cs.offset(-inset, JoinType.Round) if inset > 0 else cs
+
+
+def name_outline() -> CrossSection:
+    """Der Name als Fläche, wie er von vorn zu lesen ist, mittig im Kinn.
+    In Gehäusekoordinaten blickt man von -z: rechts ist dort -x, deshalb
+    gespiegelt."""
+    if not NAME:
+        return CrossSection()
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import TextPath
+
+    font = FontProperties(fname=str(Path(__file__).parent / NAME_FONT))
+    cap = TextPath((0, 0), "H", size=100, prop=font).get_extents().height
+    path = TextPath((0, 0), NAME, size=100 * NAME_CAP / cap, prop=font)
+    rings = [np.asarray(ring)[:-1] for ring in path.to_polygons(closed_only=True)]
+    cs = CrossSection([r.tolist() for r in rings if len(r) >= 3], FillRule.EvenOdd)
+    x0, y0, x1, y1 = cs.bounds()
+    cap_mid = NAME_CAP / 2
+    return cs.translate((-(x0 + x1) / 2, -cap_mid)).scale((-1, 1)).translate((0, NAME_Y))
+
+
+def name_inlay() -> Manifold:
+    """Der eingeprägte Name als eigener Körper: für den Druck in zweiter
+    Farbe, genau in die Prägung."""
+    return Manifold.extrude(name_outline(), NAME_DEPTH) if NAME else Manifold()
 
 
 def slab(cs: CrossSection, z0: float, z1: float) -> Manifold:
@@ -139,26 +191,26 @@ def shell_outer() -> Manifold:
     # Vorn eine Rundung, deren unteres Stück eine 45°-Fase ist: Die Front
     # liegt auf dem Bett, und eine volle Rundung hinge dort frei in der Luft.
     flat = EDGE_R * (2 - math.sqrt(2))
-    layers = [slab(rounded(W - 2 * flat, H - 2 * flat, R_OUT - flat), 0.0, 0.01)]
+    layers = [slab(outline(flat), 0.0, 0.01)]
     steps = 10
     for k in range(steps + 1):
         a = math.pi / 4 + math.pi / 4 * k / steps
         inset = EDGE_R * (1 - math.sin(a))
         z = EDGE_R * (1 - math.cos(a))
-        layers.append(slab(rounded(W - 2 * inset, H - 2 * inset, R_OUT - inset), z, z + 0.01))
+        layers.append(slab(outline(inset), z, z + 0.01))
     for k in range(steps + 1):
         a = math.pi / 2 * k / steps
         inset = BACK_R * (1 - math.cos(a))
         z = D - BACK_R + BACK_R * math.sin(a)
-        layers.append(slab(rounded(W - 2 * inset, H - 2 * inset, R_OUT - inset), z - 0.01, z))
+        layers.append(slab(outline(inset), z - 0.01, z))
     return Manifold.batch_hull(layers)
 
 
 def shell() -> Manifold:
     body = shell_outer()
     cut = [
-        box(-IW / 2, IW / 2, -IH / 2, IH / 2, FRONT, Z_POCKET_END + 0.01),
-        slab(rounded(CAV_W, CAV_H, CAV_R), Z_POCKET_END, D + 1),
+        box(-IW / 2, IW / 2, RADAR_Y - IH / 2, RADAR_Y + IH / 2, FRONT, Z_POCKET_END + 0.01),
+        slab(outline(WALL), Z_POCKET_END, D + 1),
         # USB-C: von hinten offener Schlitz in der unteren Wand
         box(-PLUG_W / 2, PLUG_W / 2, -H / 2 - 1, -CAV_H / 2 + 0.01, Z_USB - PLUG_H / 2, D + 1),
         # Einfahrt der Schiene von unten
@@ -167,24 +219,25 @@ def shell() -> Manifold:
         # Hebelkerbe oben, um den Deckel zu lösen
         box(-3, 3, CAV_H / 2 - 0.01, CAV_H / 2 + 0.8, D - 1.2, D + 1),
     ]
-    # Lüftung: Schlitze oben und unten, hinter dem Radar
+    # Lüftung: Schlitze nur unten (Zuluft) und im Deckel (Abluft) — Front
+    # und Oberseite bleiben glatt.
     z0, z1 = Z_POCKET_END + 1.0, Z_LID_IN - 1.2
-    for x in (-18, -9, 0, 9, 18):
-        cut.append(box(x - 0.9, x + 0.9, CAV_H / 2 - 0.01, H / 2 + 1, z0, z1))
     for x in (-18, -12, 12, 18):
         cut.append(box(x - 0.9, x + 0.9, -H / 2 - 1, -CAV_H / 2 + 0.01, z0, z1))
     # Rillen für die Rastnasen des Deckels
     zs = D - LID_T / 2
-    for x0, x1 in ((-20, -8), (8, 20)):
+    for x0, x1 in ((-STRAIGHT + 1, -8), (8, STRAIGHT - 1)):
         for y in (CAV_H / 2, -CAV_H / 2):
             cut.append(ridge_x(x0, x1, y, zs, SNAP_GROOVE))
+    if NAME:
+        cut.append(Manifold.extrude(name_outline(), NAME_DEPTH + 1).translate((0, 0, -1)))
     body = body - union(cut)
     # Auflagen fürs Radar in den Ecken der Tasche, außerhalb der Antennen
     pads = []
     for sx in (-1, 1):
         for sy in (-1, 1):
             x0, x1 = sorted((sx * IW / 2, sx * (IW / 2 - 3.0)))
-            y0, y1 = sorted((sy * IH / 2, sy * (IH / 2 - 3.0)))
+            y0, y1 = sorted((RADAR_Y + sy * IH / 2, RADAR_Y + sy * (IH / 2 - 3.0)))
             pads.append(box(x0, x1, y0, y1, FRONT - 0.01, Z_RADAR_FRONT))
     return union([body] + pads) if Z_RADAR_FRONT > FRONT + 0.05 else body
 
@@ -214,17 +267,17 @@ def groove() -> Manifold:
 
 
 def lid() -> Manifold:
-    plate = slab(rounded(CAV_W - 2 * LID_FIT, CAV_H - 2 * LID_FIT, CAV_R - LID_FIT), Z_LID_IN, D)
+    plate = slab(outline(WALL + LID_FIT), Z_LID_IN, D)
     spine = box(-SPINE_HALF, SPINE_HALF, -CAV_H / 2 + LID_FIT, CAV_H / 2 - LID_FIT, Z_ESP_BOTTOM, Z_LID_IN + 0.01)
     parts = [plate, spine]
     # Rastnasen
-    for x0, x1 in ((-19, -9), (9, 19)):
+    for x0, x1 in ((-STRAIGHT + 2, -9), (9, STRAIGHT - 2)):
         for y in (CAV_H / 2 - LID_FIT, -(CAV_H / 2 - LID_FIT)):
             parts.append(ridge_x(x0, x1, y, D - LID_T / 2, SNAP))
     # Stützen, die das Radar in den Ecken gegen die Auflagen drücken
     for sx in (-1, 1):
         for sy in (-1, 1):
-            cx, cy = sx * (IW / 2 - 1.6), sy * (IH / 2 - 1.6)
+            cx, cy = sx * (IW / 2 - 1.6), RADAR_Y + sy * (IH / 2 - 1.6)
             parts.append(box(cx - 1.4, cx + 1.4, cy - 1.4, cy + 1.4, Z_RADAR_BACK, Z_LID_IN + 0.01))
     # Führung für den ESP am Antennenende: Anschlag und zwei Seitenstücke.
     # Dort liegen die ersten Lötpads 6 mm vom Rand (Zeichnung) — die
@@ -237,8 +290,8 @@ def lid() -> Manifold:
         xa, xb = sorted((sx * ex, sx * (ex + 1.2)))
         parts.append(box(xa, xb, y1 - 4.0, y1 + 0.01, z0, z1))
     body = union(parts) - groove()
-    # Lüftung im Deckel, neben dem Rücken
-    vents = [box(x - 0.9, x + 0.9, -9, 9, Z_LID_IN - 1, D + 1) for x in (-21, -17, 17, 21)]
+    # Lüftung im Deckel, neben dem Rücken: lange Schlitze, oben Abluft
+    vents = [box(x - 0.9, x + 0.9, -CAV_H / 2 + 6, CAV_H / 2 - 7, Z_LID_IN - 1, D + 1) for x in (-21, -17, 17, 21)]
     return body - union(vents)
 
 
@@ -396,13 +449,18 @@ def print_parts() -> dict[str, Manifold]:
     turn = np.vstack([lay["f"], lay["ex"], lay["ey"]])
     corner_print = corner.transform(np.column_stack([turn, np.zeros(3)]).tolist())
     probe = s.trim_by_plane((0, 0, -1), -(Z_POCKET_END + 0.6))
-    return {
+    lo = s.bounding_box()[:3]
+    parts = {
         "1_gehaeuse": to_bed(s),
         "2_rueckdeckel": to_bed(lid_print),
         "3_wandhalter": to_bed(wall_print),
         "4_eckhalter": to_bed(corner_print),
         "0_passprobe_radar": to_bed(probe),
     }
+    if NAME:
+        # an derselben Stelle wie im Gehäuse: zusammen laden, zweite Farbe zuweisen
+        parts["5_schriftzug_einlage"] = name_inlay().translate((-lo[0], -lo[1], -lo[2]))
+    return parts
 
 
 def main(argv) -> int:

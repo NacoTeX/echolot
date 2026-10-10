@@ -1,13 +1,23 @@
 # Gehäuse für LD2460 + ESP32-C5-Zero
 
-Eine schlanke Kachel (58 × 43 × 17,9 mm) für das HLK-LD2460 und den Waveshare
-ESP32-C5-Zero. Hinter einem gleichmäßig 1 mm dünnen Fenster sitzt das Radar,
-dahinter der ESP; das USB-C-Kabel geht unten heraus. Der Rückdeckel rastet
+Eine schlanke Kachel (58 × 51 × 17,9 mm) für das HLK-LD2460 und den Waveshare
+ESP32-C5-Zero, gestaltet in der Art von Apple-Geräten:
+
+- Squircle-Ecken: Die Krümmung setzt sanft ein, ohne Knick.
+- Eine weich gerundete Vorderkante.
+- Front und Oberseite ohne Schlitze oder Schrauben.
+- Unter dem Radarfenster ein schmales „Kinn“ mit dem eingeprägten Namen
+  **Echolot** in Inter Display.
+
+Hinter einem gleichmäßig 1 mm dünnen Fenster sitzt das Radar, dahinter der
+ESP; das USB-C-Kabel geht unten heraus. Der Rückdeckel rastet
 ein und trägt eine Schwalbenschwanz-Nut. Der Sensor wird von oben auf den
 Halter geschoben, entweder an der Wand oder in einer Raumecke. Der Halter
 gibt die Neigung vor und ist von vorn hinter dem Sensor verborgen.
 
 ![Ansicht](bilder/ansicht.png)
+
+![Front, ein- und zweifarbig](bilder/front.png)
 
 | | |
 | --- | --- |
@@ -29,6 +39,7 @@ steht.
 | `stl/2_rueckdeckel.stl` | Rückdeckel | Außenseite unten |
 | `stl/3_wandhalter.stl` | Wandhalter, 30° nach unten | Wandseite unten |
 | `stl/4_eckhalter.stl` | Eckhalter, 45° in den Raum, 30° nach unten | auf der Unterseite, Schiene senkrecht |
+| `stl/5_schriftzug_einlage.stl` | nur für zweifarbigen Druck: der Name, 0,4 mm | genau in der Prägung des Gehäuses |
 
 Die Dateien liegen schon richtig herum auf dem Bett. Alle Teile drucken
 ohne Stützen: Kein Überhang ist steiler als 50°, die einzige längere
@@ -57,9 +68,33 @@ Die Maße des **ESP32-C5-Zero** (28 × 18 mm, 1,6 mm Platine, 4,85 mm bis
 Oberkante USB-C, Buchse 1,24 mm über der Kante) stammen aus Waveshares
 Maßzeichnung.
 
+## Der Name
+
+Der Name ist 0,4 mm tief in die Front eingeprägt, also zwei Schichten. Er
+liegt im Kinn, nicht im Radarfenster: Das Fenster bleibt überall gleich
+dick. Die Front liegt beim Druck auf dem Bett, deshalb werden die
+Buchstaben so glatt wie die Druckplatte. Eine glatte Platte gibt eine
+feine, saubere Prägung; eine strukturierte Platte prägt ihr Muster mit.
+
+- **Eine Farbe:** nur `1_gehaeuse.stl` drucken.
+- **Zwei Farben** (Drucker mit mehreren Filamenten):
+  - `1_gehaeuse.stl` und `5_schriftzug_einlage.stl` zusammen laden.
+  - Die Frage nach „einem Objekt mit mehreren Teilen“ bejahen. Die
+    Einlage liegt dann schon an der richtigen Stelle.
+  - Der Einlage die zweite Farbe geben, etwa Weiß mit Space Grau.
+  - Die Einlage liegt nur in den ersten zwei Schichten; der Farbwechsel
+    kostet also wenig.
+- **Ohne Mehrfarbdrucker:** die Prägung mit etwas Acrylfarbe füllen und
+  die Front abwischen, solange die Farbe feucht ist.
+- Anderer Name oder keiner: `NAME` oben in `gehaeuse.py`.
+
+Schrift: [Inter](https://github.com/rsms/inter) Display SemiBold von
+Rasmus Andersson, frei unter der SIL Open Font License (`schrift/`).
+
 ## Druckeinstellungen
 
-- **Material:** PLA oder PETG.
+- **Material:** PLA oder PETG, matt, für den Apple-Look in Weiß oder
+  Hellgrau.
 - **Kein Filament mit Metall- oder Kohlefaseranteil**, auch keine
   Glitzer- oder Metallicfarbe. Das Radar sendet bei 24 GHz durch die Front.
 - **Front massiv:** Die Front ist 1,0 mm dick. Mit 0,2 mm Schichten also
@@ -127,6 +162,8 @@ Alle Maße stehen oben in `gehaeuse.py`. Zum Beispiel:
 | `FIT` | Spiel ums Radar |
 | `DT_PLAY` | Spiel der Schiene in der Nut |
 | `LID_FIT` | Spiel des Deckels |
+| `NAME`, `NAME_CAP`, `NAME_DEPTH` | Name, Schrifthöhe, Prägetiefe |
+| `R_OUT`, `SQUIRCLE`, `EDGE_R`, `CHIN` | Form: Ecken, Kantenrundung, Kinn |
 
 Danach:
 
@@ -148,6 +185,10 @@ python pruefen.py             # muss mit „Alles passt.“ enden
   - Er bleibt mindestens 2 mm von den Wänden weg.
   - Der Halter ist von vorn verdeckt.
   - Die Schrauben sind frei erreichbar.
+- **Form:**
+  - Der Name liegt im Kinn und auf der ebenen Front.
+  - Die Einlage füllt die Prägung genau.
+  - Die Wände sind nirgends zu dünn.
 - **Druck:** In der Drucklage gibt es keinen steileren Überhang als 50°.
 
 ## Grenzen
@@ -161,8 +202,10 @@ python pruefen.py             # muss mit „Alles passt.“ enden
   ihre Massefläche das WLAN des ESP ab, nach hinten und zur Seite nicht.
   Ist der Empfang schwach, hilft die U.FL-Buchse des C5-Zero mit externer
   Antenne. Für deren Kabel ist im Gehäuse aber kein Durchlass vorgesehen.
-- **Wärme:** Das LD2460 zieht bis gut 1 W. Lüftungsschlitze oben, unten
-  und im Deckel lassen die Wärme heraus.
+- **Wärme:** Das LD2460 zieht bis gut 1 W.
+  - Damit Front und Oberseite glatt bleiben, gibt es nur unten Schlitze
+    (Zuluft) und lange Schlitze im Deckel (Abluft nach hinten).
+  - Wie warm es innen wird, ist nicht gemessen.
 
 ## Quellen
 

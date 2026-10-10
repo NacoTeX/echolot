@@ -28,6 +28,7 @@ RADAR = (0.22, 0.47, 0.33)
 ESP = (0.16, 0.18, 0.24)
 USB = (0.72, 0.72, 0.74)
 WALL = (0.96, 0.95, 0.93)
+INLAY = (0.30, 0.31, 0.33)
 INK = np.array([0.18, 0.19, 0.21])
 
 
@@ -113,7 +114,7 @@ def render(items, azim: float, elev: float, width=1200, height=900, ss=2, margin
     for dy, dx in ((0, 1), (1, 0)):
         a = (slice(0, h - dy), slice(0, w - dx))
         b = (slice(dy, h), slice(dx, w))
-        jump = np.abs(finite[a] - finite[b]) > 0.8
+        jump = np.abs(finite[a] - finite[b]) > 0.25
         bend = np.sum(normal[a] * normal[b], axis=2) < math.cos(math.radians(32))
         part = ident[a] != ident[b]
         e = (jump | bend | part) & ((ident[a] >= 0) | (ident[b] >= 0))
@@ -146,7 +147,8 @@ def upright(part):
 
 def parts():
     shell, lid = g.shell(), g.lid()
-    radar = g.box(-g.RADAR_W / 2, g.RADAR_W / 2, -g.RADAR_H / 2, g.RADAR_H / 2, g.Z_RADAR_FRONT, g.Z_RADAR_BACK)
+    radar = g.box(-g.RADAR_W / 2, g.RADAR_W / 2, g.RADAR_Y - g.RADAR_H / 2, g.RADAR_Y + g.RADAR_H / 2,
+                  g.Z_RADAR_FRONT, g.Z_RADAR_BACK)
     esp = g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_Y0, g.ESP_Y0 + g.ESP_L, g.Z_ESP_BOTTOM - g.ESP_PCB, g.Z_ESP_BOTTOM)
     usb = g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_Y0 - g.USB_OVERHANG, g.ESP_Y0 + 7.3,
                 g.Z_ESP_BOTTOM - g.ESP_H, g.Z_ESP_BOTTOM - g.ESP_PCB)
@@ -156,7 +158,28 @@ def parts():
 def front_view(out: Path) -> None:
     shell, lid, *_ = parts()
     img = render([mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)], azim=-58, elev=16)
-    save(img, out / "ansicht.png", f"{g.W:.0f} × {g.H:.0f} × {g.D:.1f} mm · Front: gleichmäßig {g.FRONT:.1f} mm")
+    save(img, out / "ansicht.png", f"{g.W:.0f} × {g.H:.0f} × {g.D:.1f} mm · Fenster gleichmäßig {g.FRONT:.1f} mm, "
+         f"Name im Kinn {g.NAME_DEPTH:.1f} mm tief eingeprägt")
+
+
+def straight_front(out: Path) -> None:
+    """Von vorn: einfarbig mit Prägung, und zweifarbig mit der Einlage."""
+    shell, lid, *_ = parts()
+    plain = render([mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)], azim=-90, elev=0,
+                   width=800, height=760)
+    items = [mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)]
+    if g.NAME:
+        items.append(mesh_of(upright(g.name_inlay()), INLAY))
+    inlaid = render(items, azim=-90, elev=0, width=800, height=760)
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.4), dpi=150)
+    for ax, img, title in ((axes[0], plain, "eine Farbe: Name eingeprägt"),
+                           (axes[1], inlaid, "zwei Farben: Einlage in der Prägung")):
+        ax.imshow(img)
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=11, color="0.3")
+    fig.tight_layout()
+    fig.savefig(out / "front.png", facecolor="white")
+    plt.close(fig)
 
 
 def back_view(out: Path) -> None:
@@ -246,7 +269,7 @@ def section(out: Path) -> None:
 
 def render_all(out: Path) -> None:
     out.mkdir(exist_ok=True)
-    for draw in (front_view, back_view, exploded, mounted, section):
+    for draw in (front_view, straight_front, back_view, exploded, mounted, section):
         draw(out)
         print(f"Bild: {out.name}/{draw.__name__}")
 
