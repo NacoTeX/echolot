@@ -204,6 +204,11 @@ const Echolot = (() => {
     return { kind: "empty", text: "niemand da", count: 0 };
   }
 
+  // What is happening in a room, as a sentence (story.js).
+  function describe(room, live) {
+    return window.EcholotStory.describe(room, live, formatSeconds);
+  }
+
   // ---------------------------------------------------------------- nav
 
   function renderNav() {
@@ -321,7 +326,7 @@ const Echolot = (() => {
   return {
     deafText,
     state, api, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
-    people, roomStatus, register, go, start, loadInfo, ROOM_ICONS,
+    people, roomStatus, describe, register, go, start, loadInfo, ROOM_ICONS,
     refresh: loadData,
   };
 })();

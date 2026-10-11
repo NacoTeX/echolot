@@ -1,5 +1,46 @@
 # Changelog
 
+## 3.0.0
+
+**Zielverfolgung mit Kalman-Filter (Messdefinition 9).** Bis 2.0 lief der
+Punkt einer gehenden Person ihr hinterher — bei „normal“ rund 0,3 m, bei
+„stark“ einen halben Meter und mehr — und verlor sie dabei immer wieder.
+Jetzt kennt jedes Ziel seine Geschwindigkeit.
+
+- **Vorhersage statt letzter Position.** Jede Meldung wird dem Ziel
+  zugeordnet, an dessen *vorhergesagter* Stelle sie liegt — alle Ziele
+  einer Meldung zugleich (ungarische Methode). Zwei Personen, die
+  aneinander vorbeigehen, behalten ihre Ziele.
+- **Ruhig, wenn jemand ruht.** Wer langsamer als 0,25 m/s ist, wird
+  ruhiger gemittelt, bis er wieder losgeht — auch langsam.
+- **Gemessen:** auf einer Teststrecke (`tests/trackbench.py`: Gänge,
+  Kehren, Schlendern, Kreuzungen, Sitzen) sinkt der Fehler beim Gehen von
+  24 auf 12 cm („normal“) und von 47 auf 13 cm („stark“), beim Sitzen von
+  12 auf 8,5 cm; Verwechslungen beim Kreuzen fast keine mehr. Die Werte
+  sind Tests.
+- **Glättung** heißt jetzt: wie viel Streuung einer Meldung zugetraut wird
+  (0,2 / 0,3 m). Die Einstellungen bleiben.
+- Jedes Ergebnis trägt die Geschwindigkeit jedes Ziels im Raum und ob es
+  ruht.
+
+**Firmware: jede Meldung, mit Gerätezeit (Frame-Format 2).** Bisher ging
+eine Zeile höchstens alle 100 ms hinaus; meldete das Modul schneller, ging
+eine Meldung verloren, und jede bekam die Zeit, zu der sie über WLAN
+ankam. Jetzt trägt jede Zeile alle Meldungen seit der letzten, jede mit der
+Uhrzeit des ESP; Echolot gleicht die Uhren ab. Abstände und
+Geschwindigkeiten stimmen auch, wenn das WLAN bündelt und verzögert.
+Firmware vor 3.0 wird weiter gelesen — für das neue Format den Sensor
+neu bauen und aufspielen (die Sensorseite zeigt ihn als veraltet).
+
+**Neue Oberfläche.**
+
+- **Zuhause jetzt** oben in der Übersicht: wie viele, in welchen Räumen.
+- **Der Raum in Worten** unter jedem Raumnamen und auf jeder Kachel: „Eine
+  Person verweilt im Bereich „Sofa“.“ — nur, was die Daten tragen.
+- **Die Karte lebt:** jedes Ziel mit eigener Spur, ein Richtungspfeil beim
+  Gehen, ein ruhiger Atem beim Verweilen; der Sichtbereich des Sensors
+  blasst zum Rand hin aus, ein Echo läuft hindurch.
+
 ## 2.0.0
 
 **Echolot lernt (Messdefinition 8).** Bis 1.8 wusste Echolot über einen

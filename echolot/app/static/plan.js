@@ -18,7 +18,10 @@ const Plan = (() => {
   const { escapeHtml } = Echolot;
   const PAD = 0.5;
   const SNAP = 0.05;
-  const TRAIL = 14;
+  // How far back a target's path is drawn, and from what speed it shows
+  // where it is heading (m/s).
+  const TRAIL_MS = 2500;
+  const WALK_SPEED = 0.3;
   const NS = "http://www.w3.org/2000/svg";
 
   const FURNITURE = {
@@ -100,7 +103,7 @@ const Plan = (() => {
       this.drag = null;
       this.history = [];
       this.historyIndex = -1;
-      this.trails = [];
+      this.trails = new Map();
       this.lastFrames = null;
       this.targetEls = [];
 
@@ -299,7 +302,7 @@ const Plan = (() => {
         for (let y = 0.5; y < r.height; y += 0.5) d += `M0 ${fmt(y)}H${r.width}`;
         html += `<path class="pl-grid-line" d="${d}" pointer-events="none"/>`;
       }
-      html += this.fovPath();
+      html += this.fovPath(uid);
       html += `</g>`;
       for (const item of r.furniture) html += this.furnitureSvg(item);
       r.zones.forEach((zone) => { html += this.zoneSvg(zone, uid); });
@@ -361,7 +364,11 @@ const Plan = (() => {
         </g>`;
     }
 
-    fovPath() {
+    // The sensor's field: a cone that fades with distance, as the radar's
+    // sensitivity does; on the live map an echo runs out from the sensor
+    // every few seconds — the name, made visible. (None with reduced
+    // motion; style.css.)
+    fovPath(uid = "x") {
       const s = this.room.sensor;
       const half = (s.fov_deg || 120) / 2;
       const range = s.range_m || 6;
@@ -372,7 +379,17 @@ const Plan = (() => {
         const p = G.toRoom(range * Math.sin(t), range * Math.cos(t), { ...s, mirror: false });
         d += ` L${fmt(p.x)} ${fmt(p.y)}`;
       }
-      return `<path class="pl-fov" d="${d} Z" pointer-events="none"/>`;
+      const gradient = `<defs>
+          <radialGradient id="fov-${uid}" gradientUnits="userSpaceOnUse" cx="${fmt(s.x)}" cy="${fmt(s.y)}" r="${fmt(range)}">
+            <stop offset="0" class="pl-fov-near"/><stop offset="1" class="pl-fov-far"/></radialGradient>
+          <clipPath id="fovclip-${uid}"><path d="${d} Z"/></clipPath></defs>`;
+      const ping = this.mode === "live" && s.device_id
+        ? `<g class="pl-ping" clip-path="url(#fovclip-${uid})" pointer-events="none">
+             <circle cx="${fmt(s.x)}" cy="${fmt(s.y)}" r="0">
+               <animate attributeName="r" values="0;${fmt(range)}" dur="4s" repeatCount="indefinite"/>
+               <animate attributeName="opacity" values=".55;0" dur="4s" repeatCount="indefinite"/>
+             </circle></g>` : "";
+      return `${gradient}<path class="pl-fov" d="${d} Z" fill="url(#fov-${uid})" pointer-events="none"/>${ping}`;
     }
 
     furnitureSvg(item) {
@@ -439,27 +456,40 @@ const Plan = (() => {
       const targets = result && result.available ? result.targets : [];
       const frames = result && result.sensor ? result.sensor.frames_received : null;
 
-      // A trail of where targets were, frame by frame — no identities
-      // needed, the module does not have any.
+      // Where each target has been, by its id (the server follows targets
+      // since 3.0's tracker): a fading path behind everybody counted.
       if (frames !== null && frames !== this.lastFrames) {
         this.lastFrames = frames;
-        this.trails.push(targets.filter((t) => t.status === "counted").map((t) => [t.x, t.y]));
-        if (this.trails.length > TRAIL) this.trails.shift();
+        const now = performance.now();
+        const seen = new Set();
+        for (const t of targets) {
+          if (t.status !== "counted" || t.id === undefined) continue;
+          seen.add(t.id);
+          const path = this.trails.get(t.id) || [];
+          path.push([t.x, t.y, now]);
+          while (path.length && now - path[0][2] > TRAIL_MS) path.shift();
+          this.trails.set(t.id, path);
+        }
+        for (const id of [...this.trails.keys()]) if (!seen.has(id)) this.trails.delete(id);
       }
-      if (!result || !result.available) this.trails = [];
+      if (!result || !result.available) this.trails.clear();
 
       let ghosts = "";
       if (this.mode !== "thumb") {
-        this.trails.slice(0, -1).forEach((frame, i) => {
-          const opacity = ((i + 1) / this.trails.length) * 0.22;
-          for (const [x, y] of frame) ghosts += `<circle class="pl-ghost" cx="${fmt(x)}" cy="${fmt(y)}" r="0.05" opacity="${opacity.toFixed(3)}"/>`;
-        });
+        for (const path of this.trails.values()) {
+          for (let i = 1; i < path.length; i++) {
+            const opacity = (i / path.length) * 0.5;
+            const width = 0.03 + (i / path.length) * 0.07;
+            ghosts += `<line class="pl-trail" x1="${fmt(path[i - 1][0])}" y1="${fmt(path[i - 1][1])}"
+              x2="${fmt(path[i][0])}" y2="${fmt(path[i][1])}" stroke-width="${width.toFixed(3)}" opacity="${opacity.toFixed(3)}"/>`;
+          }
+        }
       }
       let ghostLayer = this.gLive.querySelector(".ghosts");
       if (!ghostLayer) {
         ghostLayer = document.createElementNS(NS, "g");
         ghostLayer.setAttribute("class", "ghosts");
-        this.gLive.appendChild(ghostLayer);
+        this.gLive.prepend(ghostLayer);
       }
       ghostLayer.innerHTML = ghosts;
 
@@ -482,12 +512,20 @@ const Plan = (() => {
         else {
           el = document.createElementNS(NS, "g");
           const r = this.mode === "thumb" ? 0.16 : 0.11;
-          el.innerHTML = `<circle class="halo" r="${r * 2}"/><circle class="pulse" r="${r * 1.6}"/><circle class="dot" r="${r}"/>`;
+          el.innerHTML = `<circle class="halo" r="${r * 2}"/><circle class="pulse" r="${r * 1.6}"/>
+            <circle class="rest" r="${r * 1.9}"/><path class="heading" d="M${r * 1.35} ${-r * 0.75} L${r * 2.3} 0 L${r * 1.35} ${r * 0.75}"/>
+            <circle class="dot" r="${r}"/>`;
           el.style.transform = `translate(${t.x}px, ${t.y}px)`;
           this.gLive.appendChild(el);
         }
         el._x = t.x; el._y = t.y; el._id = t.id;
-        el.setAttribute("class", `pl-target ${t.status}`);
+        // Heading while walking (definition 9 knows the velocity), a calm
+        // breathing ring while resting.
+        const v = t.velocity || [0, 0];
+        const speed = Math.hypot(v[0], v[1]);
+        const walking = !t.resting && speed >= WALK_SPEED;
+        if (walking) el.querySelector(".heading").setAttribute("transform", `rotate(${(Math.atan2(v[1], v[0]) * 180) / Math.PI})`);
+        el.setAttribute("class", `pl-target ${t.status}${walking ? " walking" : ""}${t.resting ? " resting" : ""}`);
         el.style.transform = `translate(${t.x}px, ${t.y}px)`;
         const title = {
           outside: "außerhalb des Raums — zählt nicht",

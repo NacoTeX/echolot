@@ -65,6 +65,11 @@
           <div class="head-actions"><a class="btn primary" href="#/new-room">${icon("plus")}Raum</a></div>
         </div>
         ${notices.join("")}${onboarding}
+        ${rooms.length ? `<section class="hero" id="home-hero" aria-live="polite">
+          <div class="hero-ring"><span id="hero-count">–</span></div>
+          <div class="grow"><div class="eyebrow">Zuhause jetzt</div>
+            <div class="hero-line" id="hero-line"></div><div class="hero-rooms" id="hero-rooms"></div></div>
+        </section>` : ""}
         <div class="tiles" id="tiles">
           ${rooms.map((r) => `
             <button class="room-tile" data-room="${escapeHtml(r.id)}">
@@ -94,7 +99,8 @@
         const status = E.roomStatus(room.id);
         total += status.count || 0;
         tile.classList.toggle("present", status.kind === "present");
-        tile.querySelector(".tile-state").textContent = status.kind === "present" ? `Anwesend · ${status.text}` : status.text;
+        tile.querySelector(".tile-state").textContent = E.describe(room, state.live[room.id])
+          || (status.kind === "present" ? `Anwesend · ${status.text}` : status.text);
         tile.querySelector(".tile-count").textContent = status.count ? status.count : "";
         const live = state.live[room.id];
         const zones = (live && live.available ? live.zones : []).filter((z) => z.occupied);
@@ -103,11 +109,36 @@
           .map((z) => `<span class="chip present">${escapeHtml(z.name)}${z.count ? ` · ${z.count}` : ""}</span>`).join("")
           + (proposals ? `<span class="chip plain learn-chip">${icon("spark")}${proposals} Vorschlag${proposals === 1 ? "" : "e"}</span>` : "");
       }
+      this.updateHero();
       const sub = this.el.querySelector("#home-sub");
       if (sub && state.rooms.length) {
         sub.textContent = `${state.rooms.length} ${state.rooms.length === 1 ? "Raum" : "Räume"} · ${total ? `${E.people(total)} erkannt` : "niemand erkannt"}`;
       }
     },
+  };
+
+  // What the home is doing, in one glance: how many, where, and how sure.
+  home.updateHero = function updateHero() {
+    const hero = this.el.querySelector("#home-hero");
+    if (!hero) return;
+    let total = 0;
+    let unknown = 0;
+    const present = [];
+    for (const room of state.rooms) {
+      const status = E.roomStatus(room.id);
+      if (status.count === null) { unknown++; continue; }
+      total += status.count;
+      if (status.kind === "present") present.push({ room, status });
+    }
+    hero.classList.toggle("present", total > 0 || present.length > 0);
+    hero.querySelector("#hero-count").textContent = unknown === state.rooms.length ? "–" : total;
+    const line = total ? `${E.people(total)} zu Hause erkannt`
+      : present.length ? `Gerade niemand zu sehen · ${present.length === 1 ? "ein Raum" : `${present.length} Räume`} noch belegt`
+      : unknown === state.rooms.length ? "Noch keine Live-Daten" : "Alles ruhig — niemand erkannt";
+    hero.querySelector("#hero-line").textContent = unknown && unknown < state.rooms.length
+      ? `${line} · ${unknown} ${unknown === 1 ? "Raum" : "Räume"} ohne Daten` : line;
+    hero.querySelector("#hero-rooms").innerHTML = present.map(({ room, status }) =>
+      `<a class="chip present" href="#/room/${encodeURIComponent(room.id)}">${icon(room.icon)}${escapeHtml(room.name)}${status.count ? ` · ${status.count}` : ""}</a>`).join("");
   };
 
   // ------------------------------------------------------------ live room
@@ -196,7 +227,8 @@
     },
     renderHead(room) {
       this.el.querySelector("#room-head").innerHTML = `
-        <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1></div>
+        <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1>
+          <p class="story" id="room-story" aria-live="polite"></p></div>
         <div class="head-actions">
           <button class="btn" type="button" id="room-dashboard">${icon("dashboard")}Im Dashboard</button>
           <a class="btn" href="#/room/${encodeURIComponent(room.id)}/record">${icon("record")}Aufzeichnen</a>
@@ -231,6 +263,9 @@
       chip.className = `chip ${status.kind === "present" ? "present" : status.kind === "empty" ? "ok" : "warn"}`;
       chip.textContent = status.assumed ? "Vermutlich belegt" : status.kind === "present" ? "Anwesend" : status.kind === "empty" ? "Leer" : "Nicht verfügbar";
       this.el.querySelector("#room-count").textContent = status.count === null ? "–" : status.count;
+      const story = this.el.querySelector("#room-story");
+      const said = E.describe(room, live);
+      if (story && story.textContent !== (said || "")) story.textContent = said || "";
       const assumed = live && live.available && live.assumed_present;
       const roomState = this.el.querySelector("#room-state");
       const holding = live && live.available && live.occupied && !live.count;

@@ -72,15 +72,28 @@ LOW die Antenne auf der Platine aktiv.
 
 Gebaut wie die Raum-Apps von mmWave-Sensoren: der Grundriss ist die Seite.
 
-**Übersicht.** Eine Kachel je Raum mit Mini-Karte, Live-Punkten, der Zahl
-erkannter Personen und den belegten Zonen. Die Seitenleiste zeigt dieselbe
-Zahl je Raum; auf dem Handy wird sie zur Leiste unten.
+**Übersicht.** Oben **Zuhause jetzt**: wie viele Personen gerade erkannt
+sind und in welchen Räumen. Darunter eine Kachel je Raum mit Mini-Karte,
+Live-Punkten, der Zahl erkannter Personen, den belegten Zonen und einem
+Satz, was im Raum geschieht. Die Seitenleiste zeigt dieselbe Zahl je Raum;
+auf dem Handy wird sie zur Leiste unten.
+
+**Der Raum in Worten.** Unter dem Raumnamen steht, was gerade geschieht —
+etwa „Eine Person verweilt im Bereich „Sofa“.“ oder „Zwei Personen: eine
+ruhig im Bereich „Schreibtisch“ und eine in Bewegung.“ Der Satz sagt nur,
+was die Zielverfolgung weiß: wie viele, ob jemand ruht oder sich bewegt
+(ab 0,3 m/s), und in welcher Zone. Ob jemand sitzt oder steht, kann das
+Radar nicht sagen, also sagt es der Satz auch nicht.
 
 **Raum.** Die Karte in Metern, Raster 0,5 m. Darauf:
 
-- **Punkte** — gezählte Ziele, mit einer kurzen Spur der letzten Meldungen.
+- **Punkte** — gezählte Ziele, jedes mit seiner Spur der letzten 2,5 s.
+  Wer geht, zeigt mit einem Pfeil, wohin; wer ruht, atmet langsam.
   Das Modul vergibt keine Personen-IDs; Echolot folgt jedem Ziel von
   Meldung zu Meldung selbst (siehe „Wie gezählt wird“).
+- **Sichtbereich** — der Kegel des Sensors, zum Rand hin blasser, mit
+  einem Echo, das alle paar Sekunden hindurchläuft (nicht bei „Bewegung
+  reduzieren“ im System).
 - **Gestrichelte Punkte** — neue Ziele, noch nicht bestätigt. Sie zählen,
   sobald das Radar sie die Bestätigungszeit lang gemeldet hat.
 - **Hohle Punkte** — Ziele, die nicht zählen: hinter der Wand, in einer
