@@ -204,6 +204,17 @@ const Echolot = (() => {
     return { kind: "empty", text: "niemand da", count: 0 };
   }
 
+  // The radar's reports as the link carries them (frame format 2): how
+  // many a second, and how much later than the quickest a line typically
+  // arrives. Firmware before 3.0 does not say.
+  function linkRate(link) {
+    if (!link || !link.connected) return "—";
+    if (!link.timed) return "— (Firmware vor 3.0)";
+    if (link.report_rate_hz === null || link.report_rate_hz === undefined) return "wird gemessen…";
+    const delay = link.link_delay_ms;
+    return `${formatNumber(link.report_rate_hz, 1)} / s${delay !== null && delay !== undefined ? ` · WLAN-Verzug ${delay} ms` : ""}`;
+  }
+
   // What is happening in a room, as a sentence (story.js).
   function describe(room, live) {
     return window.EcholotStory.describe(room, live, formatSeconds);
@@ -326,7 +337,7 @@ const Echolot = (() => {
   return {
     deafText,
     state, api, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
-    people, roomStatus, describe, register, go, start, loadInfo, ROOM_ICONS,
+    people, roomStatus, describe, linkRate, register, go, start, loadInfo, ROOM_ICONS,
     refresh: loadData,
   };
 })();

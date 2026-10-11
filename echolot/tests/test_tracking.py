@@ -787,3 +787,17 @@ def test_a_target_carries_its_velocity_in_the_room():
     for _ in range(25):
         result = rig.report("0,30")
     assert result["targets"][0]["resting"] is True
+
+
+def test_somebody_walking_is_motion_and_it_holds_a_moment():
+    """The room's "Bewegung": a counted target walking, held for
+    MOTION_HOLD_S after it stops — not somebody resting."""
+    from app.room_engine import MOTION_HOLD_S
+
+    rig = Rig(room(calibration={"confirm_s": 1.0, "smoothing": "normal"}))
+    for i in range(15):
+        result = rig.report(f"{-15 + i},30")
+    assert result["moving"] == 1 and result["motion"] is True and result["targets"][0]["moving"] is True
+    for _ in range(int(MOTION_HOLD_S / 0.2) + 25):
+        result = rig.report("0,30")
+    assert result["moving"] == 0 and result["motion"] is False and result["count"] == 1

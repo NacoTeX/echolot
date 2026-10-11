@@ -32,10 +32,18 @@ Geschwindigkeiten stimmen auch, wenn das WLAN bündelt und verzögert.
 Firmware vor 3.0 wird weiter gelesen — für das neue Format den Sensor
 neu bauen und aufspielen (die Sensorseite zeigt ihn als veraltet).
 
+**Neu in Home Assistant: „Bewegung“** je Raum (`binary_sensor`, Geräteklasse
+`motion`): an, solange jemand geht, 2 s darüber hinaus — für Licht beim
+Durchgehen statt beim Dasitzen. Bestehende Entitäten bleiben, wie sie sind.
+
+**Funkdiagnose:** Sensor- und Raumseite zeigen Meldungen je Sekunde und den
+WLAN-Verzug (ab Firmware 3.0).
+
 **Neue Oberfläche.**
 
 - **Zuhause jetzt** oben in der Übersicht: wie viele, in welchen Räumen.
-- **Der Raum in Worten** unter jedem Raumnamen und auf jeder Kachel: „Eine
+- **Der Raum in Worten** unter jedem Raumnamen, auf jeder Kachel und in der
+  Dashboard-Karte: „Eine
   Person verweilt im Bereich „Sofa“.“ — nur, was die Daten tragen.
 - **Die Karte lebt:** jedes Ziel mit eigener Spur, ein Richtungspfeil beim
   Gehen, ein ruhiger Atem beim Verweilen; der Sichtbereich des Sensors

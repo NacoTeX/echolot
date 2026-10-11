@@ -639,3 +639,19 @@ def test_a_new_session_forgets_the_device_clock():
     snap.new_session()
     snap.take_line("2|R|1@900000:10,20", 20.0)
     assert snap.pending(0)[-1][1] == pytest.approx(20.0)
+
+
+def test_format_2_tells_the_report_rate_and_the_link_s_delay():
+    """Ten reports a second by the device's clock; lines arrive between 20
+    and 60 ms later than the quickest: the median is told."""
+    snap = radar_link.LinkSnapshot(device_id="d")
+    assert snap.as_dict()["report_rate_hz"] is None and snap.as_dict()["timed"] is False
+    late = [0.0, 0.02, 0.04, 0.06, 0.04, 0.02, 0.04, 0.06, 0.04, 0.02] * 3
+    for i, extra in enumerate(late):
+        snap.take_line(f"2|R|{i + 1}@{1000 + 100 * i}:10,20", 50.0 + 0.1 * i + extra)
+    view = snap.as_dict()
+    assert view["timed"] is True
+    assert view["report_rate_hz"] == pytest.approx(10.0)
+    assert view["link_delay_ms"] == 40
+    snap.new_session()
+    assert snap.as_dict()["report_rate_hz"] is None

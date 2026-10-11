@@ -59,9 +59,9 @@ def make_room(zones=None, room_id="r1", name="Wohnzimmer"):
     })
 
 
-def result(available=True, count=1, occupied=True, zone_count=1, zone_occupied=True, room_id="r1"):
+def result(available=True, count=1, occupied=True, zone_count=1, zone_occupied=True, room_id="r1", motion=False):
     return {"room_id": room_id, "available": available, "count": count if available else None,
-            "occupied": occupied if available else None,
+            "occupied": occupied if available else None, "motion": motion if available else None,
             "zones": [{"id": "zsofa", "count": zone_count, "occupied": zone_occupied}] if available else
                      [{"id": "zsofa", "count": None, "occupied": None}]}
 
@@ -74,13 +74,14 @@ def payload_of(client, topic):
     return [m[1] for m in client.messages if m[0] == topic][-1]
 
 
-def test_a_room_becomes_two_entities_and_each_detect_zone_two_more(env):
+def test_a_room_becomes_three_entities_and_each_detect_zone_two_more(env):
     bridge, client, _ = env
     mqtt_bridge.RoomPublisher(bridge).publish([make_room()], [result()])
     discovery = [t for t in topics(client) if t.endswith("/config")]
     assert discovery == [
         "homeassistant/binary_sensor/echolot/room_r1_occupancy/config",
         "homeassistant/sensor/echolot/room_r1_count/config",
+        "homeassistant/binary_sensor/echolot/room_r1_motion/config",
         "homeassistant/binary_sensor/echolot/room_r1_zone_zsofa_occupancy/config",
         "homeassistant/sensor/echolot/room_r1_zone_zsofa_count/config",
     ]
@@ -89,7 +90,7 @@ def test_a_room_becomes_two_entities_and_each_detect_zone_two_more(env):
     assert config["device"]["identifiers"] == ["echolot_room_r1"]
     assert config["device"]["suggested_area"] == "Wohnzimmer"
     assert config["availability_mode"] == "all"
-    assert json.loads(payload_of(client, discovery[3]))["name"] == "Sofa Personen"
+    assert json.loads(payload_of(client, discovery[4]))["name"] == "Sofa Personen"
 
 
 def test_an_entrance_is_no_entity(env):
@@ -100,6 +101,7 @@ def test_an_entrance_is_no_entity(env):
     assert [t for t in topics(client) if t.endswith("/config")] == [
         "homeassistant/binary_sensor/echolot/room_r1_occupancy/config",
         "homeassistant/sensor/echolot/room_r1_count/config",
+        "homeassistant/binary_sensor/echolot/room_r1_motion/config",
     ]
 
 
@@ -139,9 +141,9 @@ def test_a_reconnect_republishes_everything(env):
     bridge._sent.clear()  # what on_connect does
     before = len(client.messages)
     publisher.publish([make_room()], [result()])
-    # Four entities: discovery, attributes and state each, then the room's
+    # Five entities: discovery, attributes and state each, then the room's
     # availability.
-    assert len(client.messages) - before == 13
+    assert len(client.messages) - before == 16
 
 
 def test_every_entity_carries_the_rules_behind_its_value(env):
@@ -271,3 +273,17 @@ def test_a_room_is_turned_into_entities_once_not_every_round(env, monkeypatch):
     # A room that is gone is not held on to.
     publisher.publish([], [])
     assert publisher._prepared == {}
+
+
+def test_the_room_says_whether_somebody_walks(env):
+    """3.0: "Bewegung" — a motion binary_sensor per room, from the
+    engine's `motion` (somebody walking, held for MOTION_HOLD_S)."""
+    bridge, client, _ = env
+    publisher = mqtt_bridge.RoomPublisher(bridge)
+    publisher.publish([make_room()], [result(motion=True)])
+    config = json.loads(payload_of(client, "homeassistant/binary_sensor/echolot/room_r1_motion/config"))
+    assert config["device_class"] == "motion" and config["name"] == "Bewegung"
+    assert config["unique_id"] == "echolot_room_r1_motion"
+    assert payload_of(client, "echolot/room_r1_motion/state") == "ON"
+    publisher.publish([make_room()], [result(motion=False)])
+    assert payload_of(client, "echolot/room_r1_motion/state") == "OFF"

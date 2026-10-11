@@ -784,3 +784,4 @@ body.embed { color: var(--text); }
   .hero-line { font-size: 18px; }
   .story { font-size: 15px; }
 }
+.embed-story { font-size: 14px; margin: 2px 0 8px; }

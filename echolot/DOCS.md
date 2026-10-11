@@ -636,6 +636,11 @@ vorgeschlagenem Bereich) mit
 
 - `binary_sensor` *Anwesenheit* (Geräteklasse `occupancy`)
 - `sensor` *Personen*
+- `binary_sensor` *Bewegung* (Geräteklasse `motion`, seit 3.0): an, solange
+  jemand im Raum geht — ein gezähltes Ziel, gerade gemeldet, nicht ruhend,
+  mindestens 0,3 m/s —, und 2 s darüber hinaus. Für Automationen, die auf
+  Bewegung statt auf Anwesenheit reagieren sollen: Licht im Flur beim
+  Durchgehen, nicht über dem Sofa.
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen und Eingänge werden keine Entitäten. *Anwesenheit* des
@@ -712,7 +717,11 @@ verloren; passen nicht alle in eine Zeile (255 Zeichen, die Grenze von
 Home Assistant für einen Zustand), bleiben die neuesten, und die fehlenden
 Nummern zählen als übersprungen. Das Lebenszeichen jede Sekunde wiederholt
 nur die neueste Meldung. X und Y eines Ziels stammen immer aus derselben
-Meldung — das Modul liefert keine Ziel-IDs. Eine Firmware vor 3.0 schreibt
+Meldung — das Modul liefert keine Ziel-IDs. Eine Die Sensorseite zeigt dazu, wie viele
+Meldungen je Sekunde ankommen (nach der Uhr des ESP) und um wie viel eine
+Zeile typischerweise später ankommt als die schnellste (*WLAN-Verzug*,
+Median über 10 s) — wie lange die schnellste selbst brauchte, lässt sich
+ohne gemeinsame Uhr nicht wissen. Eine Firmware vor 3.0 schreibt
 Format 1 (`1|R|42|15,23;-1,39`: eine Meldung je Zeile, ohne Zeit); Echolot
 liest beide. Der Zustand:
 

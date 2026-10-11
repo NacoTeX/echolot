@@ -90,15 +90,36 @@ class DeviceClock:
     """
 
     WINDOW_S = 30.0
+    #: Over how long the report rate and the delay are told.
+    STATS_S = 10.0
 
     def __init__(self) -> None:
         #: (received, offset) with offsets increasing: the sliding minimum.
         self._window: deque = deque()
         self._last_ms: int | None = None
+        #: (received, device ms, offset) of the last STATS_S, for stats().
+        self._recent: deque = deque()
 
     def reset(self) -> None:
         self._window.clear()
+        self._recent.clear()
         self._last_ms = None
+
+    def stats(self) -> dict:
+        """The link as format 2 shows it: reports a second, by the device's
+        own clock, and how much later than the quickest a line typically
+        arrives (the median, ms) — Wi-Fi's bunching and delay. How long
+        the quickest took is not knowable without a shared clock."""
+        recent = self._recent
+        if len(recent) < 3 or not self._window:
+            return {"report_rate_hz": None, "link_delay_ms": None}
+        stamps = sorted({ms for _r, ms, _o in recent})
+        span = (stamps[-1] - stamps[0]) / 1000.0
+        rate = (len(stamps) - 1) / span if span >= 1.0 else None
+        best = self._window[0][1]
+        late = sorted(o - best for _r, _ms, o in recent)
+        return {"report_rate_hz": round(rate, 1) if rate is not None else None,
+                "link_delay_ms": round(late[len(late) // 2] * 1000)}
 
     def time_of(self, device_ms: int, received: float) -> float:
         if self._last_ms is not None and device_ms < self._last_ms:
@@ -110,6 +131,9 @@ class DeviceClock:
         self._window.append((received, offset))
         while self._window[0][0] < received - self.WINDOW_S:
             self._window.popleft()
+        self._recent.append((received, device_ms, offset))
+        while self._recent[0][0] < received - self.STATS_S:
+            self._recent.popleft()
         return min(received, device_ms / 1000.0 + self._window[0][1])
 
 
@@ -315,6 +339,9 @@ class LinkSnapshot:
             "detection_range": self.detection_range(),
             "node": self.node,
             "commands_unanswered": self.commands_unanswered(),
+            # Format 2 only (firmware 3.0): None before, and with older firmware.
+            "timed": self.timed,
+            **self.clock.stats(),
         }
 
 

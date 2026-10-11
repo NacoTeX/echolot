@@ -94,6 +94,13 @@ logger = logging.getLogger("echolot.engine")
 #: read with the rules that made it. Raise it whenever the rules change.
 MEASUREMENT_VERSION = 9
 
+#: A counted target moves while it is reported, does not rest and is at
+#: least this fast (m/s) — the room's "Bewegung", and what the page calls
+#: "in Bewegung" (static/story.js reads `moving`). It stays on this long
+#: after the last, so a speed estimate around the threshold does not flicker.
+MOVING_SPEED_M_S = 0.3
+MOTION_HOLD_S = 2.0
+
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
 MIN_INTERVAL = 0.1
@@ -451,12 +458,16 @@ class RoomEngine:
                 # 9): what the map draws as heading and as calm.
                 "velocity": [round(vx, 2), round(vy, 2)],
                 "resting": track.rest_since is not None,
+                "moving": (status == "counted" and track.rest_since is None
+                           and math.hypot(vx, vy) >= MOVING_SPEED_M_S),
             })
 
         count = sum(1 for t in targets if t["status"] in ("counted", "held"))
         presence.account(places, entries, room.assume_present_s, now)
         assumed = presence.unaccounted > 0
         occupied, left = self._hold(room.id).update(count > 0, now, effective_hold(room))
+        moving = sum(1 for t in targets if t["moving"])
+        motion, _ = self._hold(f"{room.id}#motion").update(moving > 0, now, MOTION_HOLD_S)
         zone_views = []
         for zone in detect:
             zone_count = sum(1 for t in targets if zone.id in t["zones"])
@@ -480,6 +491,9 @@ class RoomEngine:
             "assumed_present": assumed,
             "assumed_remaining": round(presence.remaining(room.assume_present_s, now), 1),
             "unaccounted": presence.unaccounted,
+            # Somebody walking, now or within MOTION_HOLD_S.
+            "moving": moving,
+            "motion": motion,
             "targets": targets,
             "zones": zone_views,
             "sensor": sensor_view,

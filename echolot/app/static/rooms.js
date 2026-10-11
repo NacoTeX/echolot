@@ -153,6 +153,7 @@
       ["Verbindung", s ? (s.connected ? '<span class="chip ok">verbunden</span>' : '<span class="chip err">getrennt</span>') : "—"],
       ["Radar", s && s.link_state ? escapeHtml(linkState[s.link_state] || s.link_state) : "—"],
       ["Letzte Meldung", s && s.frame_age_s !== null ? `vor ${E.formatNumber(s.frame_age_s, 1)} s` : "—"],
+      ["Meldungen", E.linkRate(s)],
       ["WLAN", s && s.wifi_signal !== null ? `${Math.round(s.wifi_signal)} dBm` : "—"],
       ["Radarchip-Firmware", s && s.firmware ? escapeHtml(s.firmware) : "—"],
     ];

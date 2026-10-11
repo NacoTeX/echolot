@@ -12,8 +12,11 @@
   const WALK_SPEED = 0.3;
 
   function activity(target, zoneNames) {
+    // The server says (room_engine.MOVING_SPEED_M_S); worked out here only
+    // for a result from before it did.
     const v = target.velocity || [0, 0];
-    const moving = !target.resting && target.status === "counted" && Math.hypot(v[0], v[1]) >= WALK_SPEED;
+    const moving = target.moving !== undefined ? !!target.moving
+      : !target.resting && target.status === "counted" && Math.hypot(v[0], v[1]) >= WALK_SPEED;
     const zone = (target.zones || []).map((id) => zoneNames[id]).find(Boolean);
     return { moving, zone };
   }

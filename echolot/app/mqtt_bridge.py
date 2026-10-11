@@ -130,7 +130,7 @@ class Entity:
     #: The rules behind the value (room_engine.filter_settings), retained
     #: next to it, so a history can be read with the rules that made it.
     attributes_topic: str = ""
-    #: "occupancy" or "count".
+    #: "occupancy", "count" or "motion" (the room only: somebody walking).
     measure: str = "occupancy"
     #: None for the room itself.
     zone_id: str | None = None
@@ -234,6 +234,32 @@ def room_entities(room) -> list[Entity]:
         ))
 
     pair(room.id, "Anwesenheit", None, [availability_topic])
+    # Somebody walking in the room (3.0): for automations that should
+    # react to movement rather than to presence — a light on the way
+    # through, not over the sofa.
+    motion_key = f"room_{room.id}_motion"
+    motion_state = f"{BASE_TOPIC}/{motion_key}/state"
+    motion_attributes = f"{BASE_TOPIC}/{motion_key}/attributes"
+    out.append(Entity(
+        key=motion_key,
+        component="binary_sensor",
+        discovery={
+            "name": "Bewegung",
+            "unique_id": f"echolot_{motion_key}",
+            "state_topic": motion_state,
+            "json_attributes_topic": motion_attributes,
+            "device_class": "motion",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "availability": _availability(room.id),
+            "availability_mode": "all",
+            "device": device,
+        },
+        state_topic=motion_state,
+        availability_topic=availability_topic,
+        attributes_topic=motion_attributes,
+        measure="motion",
+    ))
     for zone in room.zones:
         if zone.kind == "detect":
             pair(f"{room.id}_zone_{zone.id}", zone.name, zone.id, [])
@@ -455,6 +481,8 @@ class RoomPublisher:
                     continue
                 if entity.measure == "occupancy":
                     self.bridge.publish(entity.state_topic, "ON" if source["occupied"] else "OFF")
+                elif entity.measure == "motion":
+                    self.bridge.publish(entity.state_topic, "ON" if source.get("motion") else "OFF")
                 else:
                     self.bridge.publish(entity.state_topic, str(int(source["count"])))
             # Availability last, so Home Assistant never shows a room as
