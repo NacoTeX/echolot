@@ -78,6 +78,8 @@ be converted in place. See [DOCS.md][docs].
 - [`echolot/DOCS.md`][docs] — wiring, the interface, how counting works,
   Home Assistant, troubleshooting, what is open
 - [`echolot/CHANGELOG.md`](echolot/CHANGELOG.md) — what changed, and why
+- [`hardware/gehaeuse`](hardware/gehaeuse) — a 3D-printable enclosure for the
+  LD2460 and the ESP32-C5-Zero, with wall and corner mounts (in German)
 
 ## Development
 

@@ -5,13 +5,16 @@ One loop, one clock. It runs when a frame arrives (at most every
 a lost sensor turns unavailable without anybody watching. Everything else
 — the live map, the Home Assistant entities — reads its results.
 
-The rules, in order — measurement definition 8 (`MEASUREMENT_VERSION`):
+The rules, in order — measurement definition 9 (`MEASUREMENT_VERSION`):
 
   1. Every new report goes through the room's tracker (app/tracking.py),
      each at the time it arrived and in order — a repeat of the last line
      (the firmware's heartbeat) is no new report (radar_link):
-     positions are followed from report to report and smoothed with a
-     time constant (tracking.SMOOTHING_TAU), and a
+     positions are followed from report to report by a Kalman filter
+     with velocity — each report matched to the target whose predicted
+     position it fits, all of a report at once — smoothed by the scatter
+     the room's setting assumes (tracking.SMOOTHING_NOISE_M) and averaged
+     calmly while a target rests; and a
      new target is confirmed only once it has been reported for the
      room's confirmation time outside the interference spots — those
      recorded in the empty room and those learning found while nobody
@@ -42,6 +45,10 @@ is, the room stays occupied, for at most the room's assume_present_s, and
 until a target first reported away from the entrances counts again. Without entrances
 nothing of this applies. The person count stays what was measured.
 
+Definition 8 (2.0) followed a target by its last smoothed position, each
+report to the nearest target in turn, and smoothed by a time constant: a
+walker trailed by their speed times that constant (strong: about half a
+metre) and could be lost and confirmed afresh.
 Definition 7 (1.7–1.8) had neither learned spots nor learned hold
 times: the spots recorded in the empty room and the hold times as set.
 Definition 6 (1.6) put a report the sensor model cannot place at the
@@ -78,14 +85,21 @@ from dataclasses import dataclass, field
 from app import geometry
 from app.radar_frame import QUIET, RECEIVING
 from app.rooms import active_interference, effective_hold, learned_applies
-from app.tracking import SMOOTHING_TAU, Tracker
+from app.tracking import SMOOTHING_NOISE_M, Tracker
 
 logger = logging.getLogger("echolot.engine")
 
 #: Which rules produced a count. Goes out with every result and as an
 #: attribute of every Home Assistant entity, so a recorded history can be
 #: read with the rules that made it. Raise it whenever the rules change.
-MEASUREMENT_VERSION = 8
+MEASUREMENT_VERSION = 9
+
+#: A counted target moves while it is reported, does not rest and is at
+#: least this fast (m/s) — the room's "Bewegung", and what the page calls
+#: "in Bewegung" (static/story.js reads `moving`). It stays on this long
+#: after the last, so a speed estimate around the threshold does not flicker.
+MOVING_SPEED_M_S = 0.3
+MOTION_HOLD_S = 2.0
 
 #: Frames arrive up to ten times a second per sensor; evaluating more
 #: often than that is work nobody sees.
@@ -350,7 +364,7 @@ class RoomEngine:
             follow.tracker.update(
                 points, received_at,
                 confirm_s=room.calibration.confirm_s,
-                tau=SMOOTHING_TAU[room.calibration.smoothing],
+                noise=SMOOTHING_NOISE_M[room.calibration.smoothing],
                 spots=spots,
             )
         return follow.tracker
@@ -420,6 +434,9 @@ class RoomEngine:
                 )
             rep_x, rep_y = track.reported
             mx, my = geometry.to_room(rep_x, rep_y, placement)
+            # Velocity in the room: where the estimate would be a second on.
+            ax, ay = geometry.to_room(track.x + track.vx, track.y + track.vy, placement)
+            vx, vy = ax - x, ay - y
             targets.append({
                 "id": track.id,
                 # Four positions, kept apart (review P0-03):
@@ -437,12 +454,20 @@ class RoomEngine:
                 # under a name that suggested otherwise. Kept for readers of it.
                 "raw_x": round(track.x, 3), "raw_y": round(track.y, 3),
                 "status": status, "zones": zone_ids,
+                # m/s in the room, and whether the target rests (definition
+                # 9): what the map draws as heading and as calm.
+                "velocity": [round(vx, 2), round(vy, 2)],
+                "resting": track.rest_since is not None,
+                "moving": (status == "counted" and track.rest_since is None
+                           and math.hypot(vx, vy) >= MOVING_SPEED_M_S),
             })
 
         count = sum(1 for t in targets if t["status"] in ("counted", "held"))
         presence.account(places, entries, room.assume_present_s, now)
         assumed = presence.unaccounted > 0
         occupied, left = self._hold(room.id).update(count > 0, now, effective_hold(room))
+        moving = sum(1 for t in targets if t["moving"])
+        motion, _ = self._hold(f"{room.id}#motion").update(moving > 0, now, MOTION_HOLD_S)
         zone_views = []
         for zone in detect:
             zone_count = sum(1 for t in targets if zone.id in t["zones"])
@@ -466,6 +491,9 @@ class RoomEngine:
             "assumed_present": assumed,
             "assumed_remaining": round(presence.remaining(room.assume_present_s, now), 1),
             "unaccounted": presence.unaccounted,
+            # Somebody walking, now or within MOTION_HOLD_S.
+            "moving": moving,
+            "motion": motion,
             "targets": targets,
             "zones": zone_views,
             "sensor": sensor_view,

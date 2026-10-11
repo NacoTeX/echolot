@@ -30,7 +30,6 @@ import statistics
 
 from app import rooms
 from app.devices import Device, DeviceCreate
-from app.radar_frame import parse_frame
 from app.radar_link import LinkSnapshot
 from app.room_engine import IDLE_INTERVAL, RoomEngine
 
@@ -114,7 +113,7 @@ def run(header: dict, events: list[dict], room: rooms.Room) -> list[dict]:
     last = header.get("last_line")
     if last and snap.connected:
         try:
-            snap.record(parse_frame(last["text"]), -float(last.get("age_s") or 0.0))
+            snap.take_line(last["text"], -float(last.get("age_s") or 0.0))
         except ValueError:
             pass
     engine.load([room], [device])
@@ -135,13 +134,12 @@ def run(header: dict, events: list[dict], room: rooms.Room) -> list[dict]:
             evaluate(last_eval)
         clock.now = t
         if event["type"] == "line":
-            try:
-                frame = parse_frame(event["text"])
-            except ValueError:
-                continue
             if not snap.connected:
                 continue  # a line with no connection cannot be; as live
-            snap.record(frame, t)
+            try:
+                snap.take_line(event["text"], t)
+            except ValueError:
+                continue
         elif event["type"] == "link":
             if event["connected"]:
                 snap.new_session()

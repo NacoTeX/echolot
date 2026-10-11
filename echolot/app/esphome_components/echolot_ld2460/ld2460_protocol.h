@@ -464,4 +464,81 @@ inline size_t encode_frame(char *out, size_t capacity, LinkState state, uint32_t
 // "1|U|4294967295|" plus five "-32768,-32768" and four separators.
 static const size_t FRAME_TEXT_CAPACITY = 16 + MAX_TARGETS * 13 + (MAX_TARGETS - 1) + 1;
 
+// A report as the device took it in: its number and the device's clock
+// (millis()) when it arrived over the UART.
+struct Stamped {
+  uint32_t seq = 0;
+  uint32_t ms = 0;
+  Report report;
+};
+
+// Format version 2 (Echolot 3.0):
+//
+//     2|<state>|<report>[/<report>...]
+//     <report> = <seq>@<ms>:<targets>
+//
+// Every report since the last line, oldest first, each with its number and
+// the device time it arrived — the module may report faster than lines go
+// out, and Wi-Fi delivers lines late and in bunches; with the device time
+// Echolot knows when each was measured. As many of the newest as fit in a
+// line of FRAME2_LINE_MAX characters (Home Assistant's limit for a state);
+// those left out show as skipped numbers. targets as in version 1, only
+// for R.
+static const size_t FRAME2_LINE_MAX = 255;
+static const size_t FRAME2_TEXT_CAPACITY = FRAME2_LINE_MAX + 1;
+
+inline size_t encode_report2_(char *out, size_t capacity, LinkState state, const Stamped &r) {
+  int written = snprintf(out, capacity, "%lu@%lu:", (unsigned long) r.seq, (unsigned long) r.ms);
+  if (written < 0 || size_t(written) >= capacity)
+    return 0;
+  size_t used = size_t(written);
+  if (state == LinkState::RECEIVING) {
+    for (uint8_t i = 0; i < r.report.count && i < MAX_TARGETS; ++i) {
+      written = snprintf(out + used, capacity - used, "%s%d,%d", i ? ";" : "", int(r.report.targets[i].x_dm),
+                         int(r.report.targets[i].y_dm));
+      if (written < 0 || size_t(written) >= capacity - used)
+        return 0;
+      used += size_t(written);
+    }
+  }
+  return used;
+}
+
+// `reports` oldest first, `count` at least 1. Returns the length, 0 on
+// failure (then `out` is empty).
+inline size_t encode_frame2(char *out, size_t capacity, LinkState state, const Stamped *reports, size_t count) {
+  if (capacity == 0)
+    return 0;
+  out[0] = '\0';
+  if (count == 0)
+    return 0;
+  const size_t limit = capacity - 1 < FRAME2_LINE_MAX ? capacity - 1 : FRAME2_LINE_MAX;
+  // Each report alone, to see how many of the newest fit.
+  char piece[FRAME_TEXT_CAPACITY + 24];
+  size_t lengths[8] = {};
+  const size_t n = count < 8 ? count : 8;
+  const Stamped *first = reports + (count - n);
+  for (size_t i = 0; i < n; ++i) {
+    lengths[i] = encode_report2_(piece, sizeof(piece), state, first[i]);
+    if (lengths[i] == 0)
+      return 0;
+  }
+  size_t start = n - 1;
+  size_t total = 4 + lengths[start];  // "2|R|" and the newest
+  if (total > limit)
+    return 0;
+  while (start > 0 && total + 1 + lengths[start - 1] <= limit) {
+    total += 1 + lengths[start - 1];
+    start--;
+  }
+  size_t used = size_t(snprintf(out, capacity, "2|%c|", state_letter(state)));
+  for (size_t i = start; i < n; ++i) {
+    if (i > start)
+      out[used++] = '/';
+    used += encode_report2_(out + used, capacity - used, state, first[i]);
+  }
+  out[used] = '\0';
+  return used;
+}
+
 }  // namespace ld2460_protocol

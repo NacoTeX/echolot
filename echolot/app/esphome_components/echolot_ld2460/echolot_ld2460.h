@@ -131,6 +131,13 @@ class EcholotLd2460 : public Component, public uart::UARTDevice {
   uint32_t last_version_query_ms_{0};
   bool version_known_{false};
 
+  // The newest reports with their device time, oldest first: what the
+  // next frame line carries (format 2), so none is lost between lines.
+  static const uint8_t RECENT_SIZE = 4;
+  ld2460_protocol::Stamped recent_[RECENT_SIZE];
+  uint8_t recent_used_{0};
+  uint32_t last_report_ms_{0};
+
   uint32_t last_frame_publish_ms_{0};
   uint32_t published_seq_{0};
   bool frame_published_{false};

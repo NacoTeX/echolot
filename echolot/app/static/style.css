@@ -112,6 +112,8 @@ a.btn:hover, a.chip:hover, a.room-tile:hover, a.nav-item:hover, .tabbar a:hover,
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* SMIL ignores the rule above: the plan's echo goes entirely. */
+  .pl-ping { display: none; }
 }
 
 /* ---------- shell ---------- */
@@ -393,8 +395,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pl-canvas { fill: var(--surface-2); }
 .pl-outside { fill: var(--surface-2); fill-opacity: .72; }
 .pl-ruler { font-size: .16px; fill: var(--faint); font-variant-numeric: tabular-nums; }
-.pl-fov { fill: var(--accent); fill-opacity: .06; stroke: var(--accent); stroke-opacity: .45;
-  stroke-width: .018; stroke-dasharray: .08 .07; }
+.pl-fov { stroke: var(--accent); stroke-opacity: .35; stroke-width: .016; stroke-dasharray: .08 .07; }
+.pl-fov-near { stop-color: var(--accent); stop-opacity: .16; }
+.pl-fov-far { stop-color: var(--accent); stop-opacity: .015; }
+/* The echo: a ring running out from the sensor through its field. */
+.pl-ping circle { fill: none; stroke: var(--accent); stroke-width: .025; }
 .pl-sensor-body { fill: var(--surface); stroke: var(--accent); stroke-width: .035; }
 .pl-sensor-nose { fill: var(--accent); }
 .pl-sensor.missing .pl-sensor-body { stroke: var(--faint); }
@@ -417,7 +422,17 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pl-target.outside .halo, .pl-target.excluded .halo, .pl-target.invalid .halo,
 .pl-target.outside .pulse, .pl-target.excluded .pulse, .pl-target.invalid .pulse { display: none; }
 .pl-target .pulse { fill: none; stroke: var(--target); stroke-width: .02; opacity: 0;
-  animation: pulse 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+  transform-box: fill-box; transform-origin: center; }
+/* Walking: where to, and a pulse. Resting: a slow breath. */
+.pl-target.walking .pulse { animation: pulse 2s ease-out infinite; }
+.pl-target .heading { fill: none; stroke: var(--target); stroke-width: .035; stroke-linecap: round;
+  stroke-linejoin: round; opacity: 0; transition: opacity .3s; }
+.pl-target.walking .heading { opacity: .9; }
+.pl-target .rest { fill: var(--target); opacity: 0; transform-box: fill-box; transform-origin: center; }
+.pl-target.resting.counted .rest, .pl-target.resting.held .rest { animation: breathe 4.5s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: .05; transform: scale(.8); } 50% { opacity: .2; transform: scale(1.05); } }
+.pl-target.resting .halo { opacity: .1; }
+.pl-trail { stroke: var(--target); stroke-linecap: round; }
 @keyframes pulse { 0% { opacity: .5; transform: scale(.6); } 100% { opacity: 0; transform: scale(2.1); } }
 .pl-target.pending .dot { fill: var(--surface); stroke: var(--target); stroke-width: .035; stroke-dasharray: .05 .035; }
 .pl-target.interference .dot { fill: var(--surface); stroke: var(--present); stroke-width: .03; }
@@ -427,6 +442,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pl-target.held .pulse { display: none; }
 .pl-target.pending .halo, .pl-target.pending .pulse,
 .pl-target.interference .halo, .pl-target.interference .pulse { display: none; }
+/* Only a counted target shows where it is heading. */
+.pl-target:not(.counted) .heading { display: none; }
 .pl-spot circle { fill: var(--present); fill-opacity: .08; stroke: var(--present); stroke-opacity: .7;
   stroke-width: .025; stroke-dasharray: .07 .05; }
 .pl-spot path { stroke: var(--present); stroke-opacity: .7; stroke-width: .025; stroke-linecap: round; }
@@ -733,3 +750,38 @@ body.embed { color: var(--text); }
 .pl-proposal-fov { fill: var(--accent); fill-opacity: .07; stroke: var(--accent); stroke-width: .02; stroke-dasharray: .08 .06; }
 .pl-proposal-zone { fill: var(--accent); fill-opacity: .14; stroke: var(--accent); stroke-width: .035; stroke-dasharray: .08 .06; }
 @media (max-width: 420px) { .learn-stats { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---------- 3.0: the home at a glance, and the room in words ---------- */
+
+.story { margin: 6px 0 0; font-size: 17px; line-height: 1.4; color: var(--muted); font-weight: 500;
+  letter-spacing: -.01em; max-width: 60ch; min-height: 1.4em; transition: color .3s; }
+.story:empty { display: none; }
+
+.hero { display: flex; align-items: center; gap: 22px; margin: 0 0 18px; padding: 22px 24px;
+  border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow);
+  position: relative; overflow: hidden; }
+/* A soft echo behind the count while anybody is home. */
+.hero::before { content: ""; position: absolute; left: -60px; top: 50%; width: 240px; height: 240px;
+  transform: translateY(-50%); border-radius: 50%; pointer-events: none; opacity: 0; transition: opacity .6s;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 68%); }
+.hero.present::before { opacity: 1; }
+.hero-ring { position: relative; flex: none; width: 84px; height: 84px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 34px; font-weight: 700; letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums; color: var(--muted);
+  background: var(--surface-2); box-shadow: inset 0 0 0 2px var(--line); transition: color .4s, box-shadow .4s; }
+.hero.present .hero-ring { color: var(--accent-strong); box-shadow: inset 0 0 0 3px var(--accent); }
+.hero.present .hero-ring::after { content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  border: 2px solid var(--accent); opacity: 0; animation: echo 3.2s ease-out infinite; }
+@keyframes echo { 0% { opacity: .55; transform: scale(1); } 100% { opacity: 0; transform: scale(1.55); } }
+.hero-line { font-size: 22px; font-weight: 650; letter-spacing: -.02em; line-height: 1.25; margin-top: 2px; }
+.hero-rooms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.hero-rooms:empty { display: none; }
+.hero-rooms .chip svg.icon { width: 1em; height: 1em; margin-right: 4px; vertical-align: -2px; }
+.room-tile .tile-state { line-height: 1.35; }
+@media (max-width: 720px) {
+  .hero { padding: 18px; gap: 16px; }
+  .hero-ring { width: 64px; height: 64px; font-size: 27px; }
+  .hero-line { font-size: 18px; }
+  .story { font-size: 15px; }
+}
+.embed-story { font-size: 14px; margin: 2px 0 8px; }

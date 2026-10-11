@@ -72,15 +72,28 @@ LOW die Antenne auf der Platine aktiv.
 
 Gebaut wie die Raum-Apps von mmWave-Sensoren: der Grundriss ist die Seite.
 
-**Übersicht.** Eine Kachel je Raum mit Mini-Karte, Live-Punkten, der Zahl
-erkannter Personen und den belegten Zonen. Die Seitenleiste zeigt dieselbe
-Zahl je Raum; auf dem Handy wird sie zur Leiste unten.
+**Übersicht.** Oben **Zuhause jetzt**: wie viele Personen gerade erkannt
+sind und in welchen Räumen. Darunter eine Kachel je Raum mit Mini-Karte,
+Live-Punkten, der Zahl erkannter Personen, den belegten Zonen und einem
+Satz, was im Raum geschieht. Die Seitenleiste zeigt dieselbe Zahl je Raum;
+auf dem Handy wird sie zur Leiste unten.
+
+**Der Raum in Worten.** Unter dem Raumnamen steht, was gerade geschieht —
+etwa „Eine Person verweilt im Bereich „Sofa“.“ oder „Zwei Personen: eine
+ruhig im Bereich „Schreibtisch“ und eine in Bewegung.“ Der Satz sagt nur,
+was die Zielverfolgung weiß: wie viele, ob jemand ruht oder sich bewegt
+(ab 0,3 m/s), und in welcher Zone. Ob jemand sitzt oder steht, kann das
+Radar nicht sagen, also sagt es der Satz auch nicht.
 
 **Raum.** Die Karte in Metern, Raster 0,5 m. Darauf:
 
-- **Punkte** — gezählte Ziele, mit einer kurzen Spur der letzten Meldungen.
+- **Punkte** — gezählte Ziele, jedes mit seiner Spur der letzten 2,5 s.
+  Wer geht, zeigt mit einem Pfeil, wohin; wer ruht, atmet langsam.
   Das Modul vergibt keine Personen-IDs; Echolot folgt jedem Ziel von
   Meldung zu Meldung selbst (siehe „Wie gezählt wird“).
+- **Sichtbereich** — der Kegel des Sensors, zum Rand hin blasser, mit
+  einem Echo, das alle paar Sekunden hindurchläuft (nicht bei „Bewegung
+  reduzieren“ im System).
 - **Gestrichelte Punkte** — neue Ziele, noch nicht bestätigt. Sie zählen,
   sobald das Radar sie die Bestätigungszeit lang gemeldet hat.
 - **Hohle Punkte** — Ziele, die nicht zählen: hinter der Wand, in einer
@@ -393,14 +406,15 @@ beim Quergang kaum Bewegung; auch das sagt die Seite.
 - **Bestätigungszeit** (0–5 s, Standard 1 s): Ein neues Ziel zählt erst,
   wenn das Radar es so lange meldet, und zwar in mindestens der Hälfte der
   Meldungen. 0 s zählt jede Meldung sofort.
-- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel ein
-  Stück zur neuen Position, umso mehr, je länger die letzte zurückliegt —
-  mit einer Zeitkonstante von 0,29 s (normal) oder 0,70 s (stark). So
-  dauert die Glättung gleich lang, ob das Modul zwei- oder zehnmal in der
-  Sekunde meldet; bei fünf Meldungen je Sekunde ist das die Hälfte
-  (normal) oder ein Viertel (stark) des Wegs, wie vor 1.7. Ruhigere Punkte
-  an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas
-  später.
+- **Glättung** (aus / normal / stark): wie viel Streuung Echolot einer
+  einzelnen Meldung zutraut — 0,2 m (normal) oder 0,3 m (stark). Ein
+  Kalman-Filter kennt Position *und* Geschwindigkeit jedes Ziels: Er sagt
+  voraus, wo es bei der nächsten Meldung steht, und die Meldung korrigiert
+  die Vorhersage. Eine gehende Person wird so ohne Nachlauf verfolgt (bis
+  2.0 lief der Punkt bei „stark“ rund einen halben Meter hinterher).
+  Steht oder sitzt jemand (langsamer als 0,25 m/s), wird ruhiger gemittelt
+  — mit 1,2 s (normal) oder 1,8 s (stark) —, bis er wieder losgeht. „Aus“
+  nimmt jede Meldung, wie sie ist.
 - **Erfassungsbereich des Moduls** (ab Firmware 1.8): wie weit und über
   welchen Winkel das LD2460 überhaupt Ziele meldet — 0° ist geradeaus.
   Das Modul hält ihn selbst, je Montageart einen; ab Werk an der Wand
@@ -502,7 +516,7 @@ wer zu Hause ist: Dann lernt es alles außer den Störquellen.
 
 ## Wie gezählt wird
 
-Messdefinition 8 (seit 2.0). Was eine **neue Meldung** ist, entscheidet
+Messdefinition 9 (seit 3.0). Was eine **neue Meldung** ist, entscheidet
 die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
 Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
 sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
@@ -510,13 +524,23 @@ höchstens 2³¹ voraus liegt, ist neu (auch über den Überlauf bei 2³²
 hinweg; übersprungene Nummern werden gezählt), eine ältere wird
 verworfen. Nach jeder neuen Verbindung beginnt die Zählung neu. Bis zu 64
 Meldungen warten in einer Schlange; die Auswertung nimmt alle der Reihe
-nach, jede zu ihrer Empfangszeit — die Zeile trägt keine Gerätezeit, die
-Empfangszeit ist also die Zeit der Messung plus Übertragung.
+nach, jede zu der Zeit, zu der sie gemessen wurde. Ab Firmware 3.0 trägt
+jede Meldung die Uhrzeit des ESP: Echolot gleicht dessen Uhr mit der
+eigenen ab — an der Zeile, die am schnellsten nach ihrer Meldung ankam,
+über die letzten 30 s — und setzt jede Meldung auf ihre Gerätezeit. Ein
+WLAN, das Zeilen gebündelt und verspätet zustellt, verzerrt so weder
+Abstände noch Geschwindigkeiten. Mit älterer Firmware ist es die
+Empfangszeit, also Messung plus Übertragung.
 
 Jede neue Meldung geht zuerst durch die **Zielverfolgung**: Ziele, die
 länger als 1,5 s nicht gemeldet wurden, sind vergessen, bevor die neue
-Meldung zugeordnet wird. Jede gemeldete Position wird dann dem nächsten
-bekannten Ziel zugeordnet (bis 0,9 m), sonst entsteht ein neues. Ein Ziel,
+Meldung zugeordnet wird. Für jedes bekannte Ziel sagt ein Kalman-Filter
+voraus, wo es jetzt steht; die Positionen einer Meldung werden den Zielen
+alle zugleich zugeordnet, so dass die Abstände zur Vorhersage zusammen am
+kleinsten sind (ungarische Methode) — nur innerhalb dessen, was die
+Unsicherheit der Vorhersage erlaubt (0,6–1,6 m). Was keinem Ziel passt,
+wird ein neues. Zwei Personen, die aneinander vorbeigehen, behalten so
+ihre Ziele. Ein Ziel,
 das eine Meldung lang fehlt, bleibt so lange gemerkt, zählt in der Zeit
 aber nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
 **Bestätigungszeit** lang gemeldet hat, außerhalb der Störquellen — der
@@ -555,7 +579,11 @@ dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
-Definition 7 (1.7–1.8) kannte keine gelernten Störquellen und keine
+Definition 8 (2.0) verfolgte ein Ziel von seiner letzten geglätteten
+Position aus, ordnete jede Meldung der Reihe nach dem nächsten Ziel zu (bis
+0,9 m) und glättete mit einer Zeitkonstante: Eine gehende Person lief der
+Punkt um Geschwindigkeit mal Zeitkonstante hinterher und konnte verloren
+und neu bestätigt werden. Definition 7 (1.7–1.8) kannte keine gelernten Störquellen und keine
 gelernten Haltezeiten. Definition 6 (1.6) setzte solche Meldungen an den Fuß des Sensors und
 zählte sie dort, und glättete je Meldung um einen festen Anteil statt mit
 einer Zeitkonstante. Definition 5 (1.5) kannte keine Eingänge. Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
@@ -608,12 +636,17 @@ vorgeschlagenem Bereich) mit
 
 - `binary_sensor` *Anwesenheit* (Geräteklasse `occupancy`)
 - `sensor` *Personen*
+- `binary_sensor` *Bewegung* (Geräteklasse `motion`, seit 3.0): an, solange
+  jemand im Raum geht — ein gezähltes Ziel, gerade gemeldet, nicht ruhend,
+  mindestens 0,3 m/s —, und 2 s darüber hinaus. Für Automationen, die auf
+  Bewegung statt auf Anwesenheit reagieren sollen: Licht im Flur beim
+  Durchgehen, nicht über dem Sofa.
 
 und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen und Eingänge werden keine Entitäten. *Anwesenheit* des
 Raums schließt die Annahme an Eingängen ein, *Personen* nicht. Jede Entität
 trägt als Attribute die Regeln, nach denen ihr Wert entstand:
-`definition_version` (jetzt 8), `confirm_s`, `smoothing`, `entrances`,
+`definition_version` (jetzt 9), `confirm_s`, `smoothing`, `entrances`,
 `assume_present_s`, `interference_spots` (davon gelernt: `learned_spots`),
 `hold_s` (die Abwesenheitsverzögerung des Raums, wie gezählt wird —
 eingestellt oder gelernt) und das Sensormodell
@@ -669,15 +702,28 @@ Adresse (IP neu vergeben), Name nicht auflösbar, keine Antwort.
 
 Ein eigener ESPHome-Baustein, `echolot_ld2460`. Er liest die Zielmeldungen
 des Moduls (Kopf `F4 F3 F2 F1`, Funktion `04`, bis zu fünf Ziele in
-Dezimetern) und veröffentlicht jede Meldung als *eine* Zeile:
+Dezimetern) und veröffentlicht die Meldungen als Zeilen (Format 2, seit
+3.0):
 
 ```
-1|R|42|15,23;-1,39
+2|R|41@73120:15,23;-1,39/42@73220:16,23;-1,38
 ```
 
-Format 1, Zustand, laufende Nummer, Ziele. Eine Zeile pro Meldung, damit X
-und Y eines Ziels aus derselben Meldung stammen — das Modul liefert keine
-Ziel-IDs. Der Zustand:
+Format 2, Zustand, dann jede Meldung seit der letzten Zeile — laufende
+Nummer `@` Gerätezeit (Millisekunden seit dem Start des ESP, als die
+Meldung über die serielle Leitung ankam) `:` Ziele. Meldet das Modul
+schneller, als Zeilen hinausgehen (höchstens alle 100 ms), geht so keine
+verloren; passen nicht alle in eine Zeile (255 Zeichen, die Grenze von
+Home Assistant für einen Zustand), bleiben die neuesten, und die fehlenden
+Nummern zählen als übersprungen. Das Lebenszeichen jede Sekunde wiederholt
+nur die neueste Meldung. X und Y eines Ziels stammen immer aus derselben
+Meldung — das Modul liefert keine Ziel-IDs. Eine Die Sensorseite zeigt dazu, wie viele
+Meldungen je Sekunde ankommen (nach der Uhr des ESP) und um wie viel eine
+Zeile typischerweise später ankommt als die schnellste (*WLAN-Verzug*,
+Median über 10 s) — wie lange die schnellste selbst brauchte, lässt sich
+ohne gemeinsame Uhr nicht wissen. Eine Firmware vor 3.0 schreibt
+Format 1 (`1|R|42|15,23;-1,39`: eine Meldung je Zeile, ohne Zeit); Echolot
+liest beide. Der Zustand:
 
 | | Bedeutung |
 | --- | --- |

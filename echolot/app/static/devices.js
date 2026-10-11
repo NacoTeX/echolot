@@ -276,6 +276,7 @@
         ["Verbindung", l.connected ? '<span class="chip ok">verbunden</span>' : `<span class="chip err">getrennt</span>`],
         ["Radarmodul", l.link_state ? escapeHtml(states[l.link_state] || l.link_state) : "—"],
         ["Letzte Meldung", l.frame_age_s !== null && l.frame_age_s !== undefined ? `vor ${E.formatNumber(l.frame_age_s, 1)} s` : "—"],
+        ["Meldungen", E.linkRate(l)],
         ["WLAN-Signal", l.wifi_signal !== null && l.wifi_signal !== undefined ? `${Math.round(l.wifi_signal)} dBm` : "—"],
         ["Echolot-Firmware", runningFirmware(d.firmware_running)],
         ...(d.firmware_running && d.firmware_running.esphome

@@ -28,6 +28,8 @@ window.EcholotEmbed = (() => {
   const $ = (id) => document.getElementById(id);
   const number = (v) => Number(v).toLocaleString("de-DE", { maximumFractionDigits: 1 });
   const people = (n) => (n === 1 ? "1 Person" : `${n} Personen`);
+  const seconds = (s) => (s >= 60 ? `${Math.floor(s / 60)} min` : `${Math.round(s)} s`);
+  let currentRoom = null;
 
   // Only the frame's own parent: the card, on Home Assistant's origin.
   function tellCard(message) {
@@ -85,6 +87,7 @@ window.EcholotEmbed = (() => {
     const json = JSON.stringify(room);
     if (json === roomJson) return;
     roomJson = json;
+    currentRoom = room;
     $("embed-name").textContent = room.name;
     document.title = `Echolot · ${room.name}`;
     $("embed-dims").textContent = `${number(room.width)} × ${number(room.height)} m`;
@@ -102,6 +105,8 @@ window.EcholotEmbed = (() => {
       const [kind, text] = status(live);
       $("embed-chip").className = `chip ${kind}`;
       $("embed-chip").textContent = text;
+      const said = window.EcholotStory ? window.EcholotStory.describe(currentRoom, live, seconds) : null;
+      if ($("embed-story").textContent !== (said || "")) $("embed-story").textContent = said || "";
       note(live && !live.available ? live.reason_text : "");
       failures = 0;
     } catch {

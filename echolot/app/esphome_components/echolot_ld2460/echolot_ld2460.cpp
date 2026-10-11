@@ -100,14 +100,25 @@ void EcholotLd2460::read_uart_(uint32_t now) {
     this->rx_bytes_ += chunk;
     for (size_t i = 0; i < chunk; ++i) {
       switch (this->parser_.feed(buffer[i])) {
-        case proto::Event::REPORT:
+        case proto::Event::REPORT: {
           this->latest_ = this->parser_.report();
           this->reports_++;
+          this->last_report_ms_ = now;
           if (this->latest_.count == 0)
             this->empty_reports_++;
+          if (this->recent_used_ == RECENT_SIZE) {
+            for (uint8_t k = 1; k < RECENT_SIZE; ++k)
+              this->recent_[k - 1] = this->recent_[k];
+            this->recent_used_--;
+          }
+          proto::Stamped &slot = this->recent_[this->recent_used_++];
+          slot.seq = this->reports_;
+          slot.ms = now;
+          slot.report = this->latest_;
           this->clock_.have_report = true;
           this->clock_.last_report_ms = now;
           break;
+        }
         case proto::Event::ACK:
           this->handle_ack_(now);
           break;
@@ -248,8 +259,26 @@ void EcholotLd2460::publish_frame_(uint32_t now, LinkState state) {
                    (fresh_report && since >= this->frame_interval_ms_);
   if (!due)
     return;
-  char text[proto::FRAME_TEXT_CAPACITY];
-  if (proto::encode_frame(text, sizeof(text), state, this->reports_, this->latest_) == 0)
+  // Fresh reports: every one since the last line, with its device time.
+  // A heartbeat or a change of state: the newest alone — repeating older
+  // ones would make them arrive twice, the second time out of order.
+  proto::Stamped batch[RECENT_SIZE];
+  size_t count = 0;
+  if (fresh_report && state == LinkState::RECEIVING) {
+    for (uint8_t k = 0; k < this->recent_used_; ++k) {
+      const uint32_t ahead = this->recent_[k].seq - this->published_seq_;
+      if (!this->frame_published_ || (ahead != 0 && ahead < 0x80000000UL))
+        batch[count++] = this->recent_[k];
+    }
+  }
+  if (count == 0) {
+    batch[0].seq = this->reports_;
+    batch[0].ms = this->last_report_ms_;
+    batch[0].report = this->latest_;
+    count = 1;
+  }
+  char text[proto::FRAME2_TEXT_CAPACITY];
+  if (proto::encode_frame2(text, sizeof(text), state, batch, count) == 0)
     return;
   this->frame_sensor_->publish_state(text);
   this->published_seq_ = this->reports_;

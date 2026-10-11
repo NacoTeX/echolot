@@ -1,4 +1,4 @@
-"""Measurement definition 2: targets followed from report to report.
+"""Targets followed from report to report (measurement definitions 2–9).
 
 What it has to get right: a reflection that flashes up does not count, a
 reflector learned in the empty room does not count, a person does — and
@@ -20,7 +20,9 @@ from app.radar_frame import parse_frame  # noqa: E402
 from app.radar_link import LinkSnapshot  # noqa: E402
 from app.room_engine import MEASUREMENT_VERSION, RoomEngine  # noqa: E402
 from app.rooms import InterferenceSpot, Room  # noqa: E402
-from app.tracking import SMOOTHING_TAU, Tracker  # noqa: E402
+from app.tracking import SMOOTHING_NOISE_M, Tracker  # noqa: E402
+
+import trackbench  # noqa: E402
 
 
 class Clock:
@@ -213,65 +215,124 @@ def test_spots_learned_with_another_sensor_do_not_apply():
     assert result["filter"]["interference_spots"] == 0
 
 
-def test_smoothing_moves_a_target_part_of_the_way():
-    """At five reports a second, "normal" moves a target half of the way,
-    as the fixed share before definition 7 did; "strong" a quarter."""
-    normal, strong = SMOOTHING_TAU["normal"], SMOOTHING_TAU["strong"]
+def walk_along(tracker, setting, speed=1.2, rate=10, seconds=3.0, start=0.0, x0=-1.5, y=2.0):
+    """A person walking along x at `speed`, reported exactly `rate` times a
+    second; returns (time, true x) of the last report."""
+    noise = SMOOTHING_NOISE_M[setting]
+    steps = int(seconds * rate)
+    for i in range(steps + 1):
+        now = start + i / rate
+        tracker.update([(x0 + speed * i / rate, y)], now, confirm_s=0, noise=noise)
+    return now, x0 + speed * steps / rate
+
+
+@pytest.mark.parametrize("setting", ["normal", "strong"])
+@pytest.mark.parametrize("rate", [4, 10])
+def test_a_walker_is_followed_without_lag(setting, rate):
+    """Definition 8 trailed a walker by speed × time constant: at 1.2 m/s
+    0.35 m with "normal", 0.83 m with "strong". The filter knows the
+    velocity and stays on them."""
     tracker = Tracker()
-    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=normal)
-    tracker.update([(0.4, 2.0)], 0.2, confirm_s=0, tau=normal)
+    _now, true_x = walk_along(tracker, setting, rate=rate)
     (track,) = tracker.visible()
-    assert track.x == pytest.approx(0.2)
-    tracker.update([(0.4, 2.0)], 0.4, confirm_s=0, tau=normal)
-    assert tracker.visible()[0].x == pytest.approx(0.3)
-    slow = Tracker()
-    slow.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=strong)
-    slow.update([(0.4, 2.0)], 0.2, confirm_s=0, tau=strong)
-    assert slow.visible()[0].x == pytest.approx(0.1)
+    assert abs(track.x - true_x) < 0.1
+    assert track.vx == pytest.approx(1.2, abs=0.15)
 
 
-def step_response(rate, tau):
-    """Seconds from the first report of a target 0.5 m farther on until
-    it has come 90 % of the way, the module reporting `rate` times a
-    second."""
+def test_a_resting_target_is_averaged_calmly():
+    """Scatter around somebody sitting moves their target far less than a
+    plain filter would; "strong" calmer than "normal"."""
+    moved = {}
+    for setting in ("normal", "strong"):
+        tracker = Tracker()
+        noise = SMOOTHING_NOISE_M[setting]
+        rng = random.Random(4)
+        for i in range(60):
+            tracker.update([(0.5 + rng.gauss(0, 0.1), 3.0 + rng.gauss(0, 0.1))], i * 0.1, confirm_s=0, noise=noise)
+        (track,) = tracker.visible()
+        assert track.rest_since is not None
+        before = track.x
+        tracker.update([(0.5 + 0.3, 3.0)], 6.0, confirm_s=0, noise=noise)
+        moved[setting] = tracker.visible()[0].x - before
+    assert 0 < moved["strong"] < moved["normal"] < 0.1
+
+
+def test_resting_ends_when_the_person_walks_off():
     tracker = Tracker()
-    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=tau)
-    for i in range(1, 60):
-        now = i / rate
-        tracker.update([(0.5, 2.0)], now, confirm_s=0, tau=tau)
-        if tracker.visible()[0].x >= 0.45:
-            return now - 1 / rate
-    return None
+    for i in range(30):
+        tracker.update([(0.0, 2.0)], i * 0.1, confirm_s=0, noise=SMOOTHING_NOISE_M["strong"])
+    assert tracker.visible()[0].rest_since is not None
+    _now, true_x = walk_along(tracker, "strong", seconds=1.5, start=3.0, x0=0.0)
+    (track,) = tracker.visible()
+    assert track.rest_since is None
+    assert abs(track.x - true_x) < 0.2
 
 
-def test_the_smoothing_takes_the_same_time_however_often_the_module_reports():
-    """A fixed share per report took 1.5 s to catch up at two reports a
-    second and 0.3 s at ten. With a time constant it is the same time, but
-    for the step between two reports."""
-    for setting, (low, high) in (("normal", (0.4, 0.8)), ("strong", (1.2, 1.8))):
-        times = {rate: step_response(rate, SMOOTHING_TAU[setting]) for rate in (2, 5, 10)}
-        assert all(low <= t <= high for t in times.values()), (setting, times)
-        assert max(times.values()) - min(times.values()) <= 0.5, (setting, times)
-    # Off is off: every report as it is.
-    assert step_response(10, SMOOTHING_TAU["off"]) == pytest.approx(0.0)
+def test_off_takes_each_report_as_it_is():
+    tracker = Tracker()
+    walk_along(tracker, "off", seconds=1.0)
+    tracker.update([(3.0, 2.3)], 1.1, confirm_s=0, noise=0.0)
+    assert (tracker.visible()[0].x, tracker.visible()[0].y) == (3.0, 2.3)
 
 
 def test_reports_arriving_together_still_move_a_target():
-    """A burst after a stall arrives with one receive time; the second
-    report must not be lost to a gap of zero."""
+    """Two reports with the same time (a burst after a stall): the second
+    still moves the target."""
     tracker = Tracker()
-    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=SMOOTHING_TAU["normal"])
-    tracker.update([(0.4, 2.0)], 1.0, confirm_s=0, tau=SMOOTHING_TAU["normal"])
+    noise = SMOOTHING_NOISE_M["normal"]
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, noise=noise)
+    tracker.update([(0.4, 2.0)], 1.0, confirm_s=0, noise=noise)
     before = tracker.visible()[0].x
-    tracker.update([(0.4, 2.0)], 1.0, confirm_s=0, tau=SMOOTHING_TAU["normal"])
+    tracker.update([(0.4, 2.0)], 1.0, confirm_s=0, noise=noise)
     assert tracker.visible()[0].x > before + 0.001
+
+
+def test_two_people_passing_close_keep_their_own_targets():
+    """Head-on, 2 cm apart sideways, 15 cm per report. Just past each other
+    each report is nearer to the *other* target's last position — matched
+    to where each target is going, they keep their own."""
+    tracker = Tracker()
+    for i in range(21):
+        a = (-1.5 + 0.15 * i, 2.0)
+        b = (1.6 - 0.15 * i, 2.02)
+        tracker.update([a, b] if i % 2 else [b, a], i * 0.1, confirm_s=0, noise=0.0)
+        if i == 0:
+            left_id = min(tracker.visible(), key=lambda t: t.x).id
+        # At every report, the target on the walker from the left is theirs.
+        (mine,) = [t for t in tracker.visible() if t.reported == a]
+        assert mine.id == left_id, i
+    assert len(tracker.tracks) == 2
+
+
+def test_a_report_goes_where_the_whole_report_fits_best():
+    """Two people standing 0.5 m apart; the next report has one of them
+    0.22 m to the left and the other 0.3 m to the right. Nearest first
+    would give the left report to the right target and leave the left
+    target without one — a new target for somebody who was there all
+    along. All at once, each keeps theirs."""
+    tracker = Tracker()
+    for i in range(10):
+        tracker.update([(0.0, 2.0), (-0.5, 2.0)], i * 0.1, confirm_s=0, noise=0.0)
+    ids = {t.id for t in tracker.visible()}
+    tracker.update([(-0.22, 2.0), (0.3, 2.0)], 1.0, confirm_s=0, noise=0.0)
+    assert {t.id for t in tracker.visible()} == ids and len(tracker.tracks) == 2
+
+
+def test_the_assignment_is_the_cheapest_overall():
+    """Nearest-first would pair 0 with 0 (1) and leave 1 with 1 (10)."""
+    from app.tracking import assign
+    assert assign([[1.0, 2.0], [1.5, 10.0]]) == [(0, 1), (1, 0)]
+    # Pairs outside the gate are never made; every possible pair is.
+    assert assign([[None, 0.5], [0.2, None], [None, None]]) == [(0, 1), (1, 0)]
+    assert assign([[1.0], [0.2], [5.0]]) == [(1, 0)]
+    assert assign([]) == [] and assign([[None]]) == []
 
 
 def test_two_people_keep_their_own_targets_when_the_module_swaps_the_order():
     tracker = Tracker()
-    tracker.update([(-1.0, 2.0), (1.0, 2.0)], 0.0, confirm_s=0, tau=0.0)
+    tracker.update([(-1.0, 2.0), (1.0, 2.0)], 0.0, confirm_s=0, noise=0.0)
     ids = {round(t.x): t.id for t in tracker.visible()}
-    tracker.update([(1.1, 2.0), (-1.1, 2.0)], 0.2, confirm_s=0, tau=0.0)
+    tracker.update([(1.1, 2.0), (-1.1, 2.0)], 0.2, confirm_s=0, noise=0.0)
     assert {round(t.x): t.id for t in tracker.visible()} == ids
 
 
@@ -404,10 +465,10 @@ def test_a_target_not_reported_for_longer_than_the_ttl_is_a_new_one():
     """Reproduced in the review: reports at t=0 and t=10 at the same spot
     kept id and confirmation although the TTL is 1.5 s."""
     tracker = Tracker()
-    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, tau=0.0)
+    tracker.update([(0.0, 2.0)], 0.0, confirm_s=0, noise=0.0)
     (first,) = tracker.visible()
     assert first.confirmed
-    tracker.update([(0.0, 2.0)], 10.0, confirm_s=1.0, tau=0.0)
+    tracker.update([(0.0, 2.0)], 10.0, confirm_s=1.0, noise=0.0)
     (second,) = tracker.visible()
     assert second.id != first.id and not second.confirmed
 
@@ -561,10 +622,14 @@ def test_a_newcomer_counts_as_new_even_once_past_the_door():
 
 
 def test_leaving_is_judged_where_last_reported_not_where_smoothing_lags():
+    """The last report lands in the door; the estimate, pulled only part of
+    the way by one report, is still short of it."""
     rig = Rig(with_door(calibration={"confirm_s": 1.0, "smoothing": "strong"}))
     seated(rig, times=12)
-    out = walk(rig, (-15, 30), (25, 15), steps=24)
+    walk(rig, (-15, 30), (12, 18), steps=16)
+    out = rig.report("25,15")
     assert out["count"] == 1 and out["targets"][0]["x"] < 5.2  # the smoothed target is short of the door
+    assert out["targets"][0]["reported"] == [2.5, 1.5]
     result = lost(rig)
     assert result["occupied"] is False and result["unaccounted"] == 0
 
@@ -685,7 +750,54 @@ def test_estimate_measurement_and_report_are_kept_apart():
     (target,) = rig.report("-8,30")["targets"]  # 0.7 m on, within the gate
     assert target["reported"] == [-0.8, 3.0]
     assert target["measured"] == [2.2, 3.0]  # the sensor at (3, 0) looking down
-    # The estimate lags behind: a quarter of the way at five reports a second.
-    assert target["sensor"] == [pytest.approx(-1.325), pytest.approx(3.0)]
-    assert (target["x"], target["y"]) == (pytest.approx(1.675), pytest.approx(3.0))
+    # The estimate is pulled only part of the way by one report.
+    sx, sy = target["sensor"]
+    assert -1.5 < sx < -0.8 and sy == pytest.approx(3.0)
+    assert (target["x"], target["y"]) == (pytest.approx(3 + sx, abs=1e-3), pytest.approx(3.0))
     assert (target["raw_x"], target["raw_y"]) == tuple(target["sensor"])
+
+
+# --- the test track (tests/trackbench.py) ----------------------------------------
+
+
+@pytest.mark.parametrize("scenario", trackbench.SCENARIOS, ids=lambda s: s.name)
+def test_on_the_test_track_targets_stay_on_people(scenario):
+    """What definition 9 was built for, with margin: walkers followed
+    within a few decimetres (definition 8: up to 0.6 m), people crossing
+    keep their targets, somebody sitting is held steady."""
+    for setting in ("normal", "strong"):
+        noise = SMOOTHING_NOISE_M[setting]
+        score = trackbench.run(Tracker, lambda tr, pts, now: tr.update(pts, now, confirm_s=0.5, noise=noise),
+                               scenario, seeds=range(8))
+        limit = 0.10 if scenario.name == "Still sitzen" else 0.20
+        assert score.rms_m < limit, (setting, str(score))
+        assert score.switches <= 2, (setting, str(score))
+        assert score.covered > 0.8, (setting, str(score))
+
+
+def test_a_target_carries_its_velocity_in_the_room():
+    """Sensor at (3, 0) looking down: sensor +x is room +x. Walking 0.1 m
+    per report at five reports a second is 0.5 m/s along the room's x."""
+    rig = Rig(room(calibration={"confirm_s": 1.0, "smoothing": "normal"}))
+    for i in range(15):
+        result = rig.report(f"{-15 + i},30")
+    (target,) = result["targets"]
+    assert target["velocity"][0] == pytest.approx(0.5, abs=0.08)
+    assert abs(target["velocity"][1]) < 0.08 and target["resting"] is False
+    for _ in range(25):
+        result = rig.report("0,30")
+    assert result["targets"][0]["resting"] is True
+
+
+def test_somebody_walking_is_motion_and_it_holds_a_moment():
+    """The room's "Bewegung": a counted target walking, held for
+    MOTION_HOLD_S after it stops — not somebody resting."""
+    from app.room_engine import MOTION_HOLD_S
+
+    rig = Rig(room(calibration={"confirm_s": 1.0, "smoothing": "normal"}))
+    for i in range(15):
+        result = rig.report(f"{-15 + i},30")
+    assert result["moving"] == 1 and result["motion"] is True and result["targets"][0]["moving"] is True
+    for _ in range(int(MOTION_HOLD_S / 0.2) + 25):
+        result = rig.report("0,30")
+    assert result["moving"] == 0 and result["motion"] is False and result["count"] == 1
