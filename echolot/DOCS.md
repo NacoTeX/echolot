@@ -393,14 +393,15 @@ beim Quergang kaum Bewegung; auch das sagt die Seite.
 - **Bestätigungszeit** (0–5 s, Standard 1 s): Ein neues Ziel zählt erst,
   wenn das Radar es so lange meldet, und zwar in mindestens der Hälfte der
   Meldungen. 0 s zählt jede Meldung sofort.
-- **Glättung** (aus / normal / stark): Jede Meldung zieht ein Ziel ein
-  Stück zur neuen Position, umso mehr, je länger die letzte zurückliegt —
-  mit einer Zeitkonstante von 0,29 s (normal) oder 0,70 s (stark). So
-  dauert die Glättung gleich lang, ob das Modul zwei- oder zehnmal in der
-  Sekunde meldet; bei fünf Meldungen je Sekunde ist das die Hälfte
-  (normal) oder ein Viertel (stark) des Wegs, wie vor 1.7. Ruhigere Punkte
-  an Zonengrenzen, dafür folgt der Punkt einer gehenden Person etwas
-  später.
+- **Glättung** (aus / normal / stark): wie viel Streuung Echolot einer
+  einzelnen Meldung zutraut — 0,2 m (normal) oder 0,3 m (stark). Ein
+  Kalman-Filter kennt Position *und* Geschwindigkeit jedes Ziels: Er sagt
+  voraus, wo es bei der nächsten Meldung steht, und die Meldung korrigiert
+  die Vorhersage. Eine gehende Person wird so ohne Nachlauf verfolgt (bis
+  2.0 lief der Punkt bei „stark“ rund einen halben Meter hinterher).
+  Steht oder sitzt jemand (langsamer als 0,25 m/s), wird ruhiger gemittelt
+  — mit 1,2 s (normal) oder 1,8 s (stark) —, bis er wieder losgeht. „Aus“
+  nimmt jede Meldung, wie sie ist.
 - **Erfassungsbereich des Moduls** (ab Firmware 1.8): wie weit und über
   welchen Winkel das LD2460 überhaupt Ziele meldet — 0° ist geradeaus.
   Das Modul hält ihn selbst, je Montageart einen; ab Werk an der Wand
@@ -502,7 +503,7 @@ wer zu Hause ist: Dann lernt es alles außer den Störquellen.
 
 ## Wie gezählt wird
 
-Messdefinition 8 (seit 2.0). Was eine **neue Meldung** ist, entscheidet
+Messdefinition 9 (seit 3.0). Was eine **neue Meldung** ist, entscheidet
 die Folgenummer jeder Zeile: Dieselbe Nummer mit demselben Inhalt ist die
 Wiederholung, die die Firmware jede Sekunde als Lebenszeichen schickt —
 sie hält die Verbindung frisch, ist aber keine Messung. Eine Nummer, die
@@ -515,8 +516,13 @@ Empfangszeit ist also die Zeit der Messung plus Übertragung.
 
 Jede neue Meldung geht zuerst durch die **Zielverfolgung**: Ziele, die
 länger als 1,5 s nicht gemeldet wurden, sind vergessen, bevor die neue
-Meldung zugeordnet wird. Jede gemeldete Position wird dann dem nächsten
-bekannten Ziel zugeordnet (bis 0,9 m), sonst entsteht ein neues. Ein Ziel,
+Meldung zugeordnet wird. Für jedes bekannte Ziel sagt ein Kalman-Filter
+voraus, wo es jetzt steht; die Positionen einer Meldung werden den Zielen
+alle zugleich zugeordnet, so dass die Abstände zur Vorhersage zusammen am
+kleinsten sind (ungarische Methode) — nur innerhalb dessen, was die
+Unsicherheit der Vorhersage erlaubt (0,6–1,6 m). Was keinem Ziel passt,
+wird ein neues. Zwei Personen, die aneinander vorbeigehen, behalten so
+ihre Ziele. Ein Ziel,
 das eine Meldung lang fehlt, bleibt so lange gemerkt, zählt in der Zeit
 aber nicht. Ein neues Ziel wird bestätigt, sobald das Radar es die
 **Bestätigungszeit** lang gemeldet hat, außerhalb der Störquellen — der
@@ -555,7 +561,11 @@ dem Plan lässt sie bestätigt; ein anderer Sensor, eine andere
 Bestätigungszeit oder neue Störquellen beginnen die Bestätigung neu, ebenso
 jeder Ausfall.
 
-Definition 7 (1.7–1.8) kannte keine gelernten Störquellen und keine
+Definition 8 (2.0) verfolgte ein Ziel von seiner letzten geglätteten
+Position aus, ordnete jede Meldung der Reihe nach dem nächsten Ziel zu (bis
+0,9 m) und glättete mit einer Zeitkonstante: Eine gehende Person lief der
+Punkt um Geschwindigkeit mal Zeitkonstante hinterher und konnte verloren
+und neu bestätigt werden. Definition 7 (1.7–1.8) kannte keine gelernten Störquellen und keine
 gelernten Haltezeiten. Definition 6 (1.6) setzte solche Meldungen an den Fuß des Sensors und
 zählte sie dort, und glättete je Meldung um einen festen Anteil statt mit
 einer Zeitkonstante. Definition 5 (1.5) kannte keine Eingänge. Definition 4 (1.4) zählte nur die Ziele der letzten Meldung; eine
@@ -613,7 +623,7 @@ und je Erkennungszone ein weiteres Paar *\<Zone\>* und *\<Zone\> Personen*.
 Ausschlusszonen und Eingänge werden keine Entitäten. *Anwesenheit* des
 Raums schließt die Annahme an Eingängen ein, *Personen* nicht. Jede Entität
 trägt als Attribute die Regeln, nach denen ihr Wert entstand:
-`definition_version` (jetzt 8), `confirm_s`, `smoothing`, `entrances`,
+`definition_version` (jetzt 9), `confirm_s`, `smoothing`, `entrances`,
 `assume_present_s`, `interference_spots` (davon gelernt: `learned_spots`),
 `hold_s` (die Abwesenheitsverzögerung des Raums, wie gezählt wird —
 eingestellt oder gelernt) und das Sensormodell

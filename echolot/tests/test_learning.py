@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app import geometry, learning  # noqa: E402
 from app.rooms import Furniture, Room, SensorPlacement, Zone  # noqa: E402
-from app.tracking import SMOOTHING_TAU, Tracker  # noqa: E402
+from app.tracking import SMOOTHING_NOISE_M, Tracker  # noqa: E402
 from simhome import Ghost, Placement, Simulation, bedroom, living_room, to_sensor  # noqa: E402
 
 HOUR = 3600.0
@@ -40,7 +40,7 @@ def drive(home, hours, seed=1, grace=600.0):
     observer = learning.Observer(state)
     away_since = None
     for t, points, truth in sim.run(hours * HOUR):
-        tracker.update(points, t, confirm_s=1.0, tau=SMOOTHING_TAU["normal"])
+        tracker.update(points, t, confirm_s=1.0, noise=SMOOTHING_NOISE_M["normal"])
         if truth.home:
             away_since = None
         elif away_since is None:
