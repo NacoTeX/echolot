@@ -598,3 +598,44 @@ def test_every_line_and_every_connection_is_passed_on_for_recording():
         assert links_seen[:3] == [("dev", True, False), ("dev", False, False), ("dev", True, False)]
         await links.stop_all()
     asyncio.run(run())
+
+
+# --- format 2: device time ---------------------------------------------------
+
+
+def test_reports_are_taken_at_the_device_s_time_not_when_the_line_arrived():
+    """Two lines, the second delayed by Wi-Fi: its reports keep their own
+    spacing (100 ms), however late the line arrives."""
+    snap = radar_link.LinkSnapshot(device_id="d")
+    assert snap.take_line("2|R|1@5000:10,20", 100.0) == 1
+    assert snap.take_line("2|R|2@5100:11,20/3@5200:12,20", 100.45) == 2
+    times = [at for _i, at, _f in snap.pending(0)]
+    assert times == pytest.approx([100.0, 100.1, 100.2])
+    assert snap.timed is True
+
+
+def test_the_quickest_line_sets_the_clock():
+    """A line that arrives sooner after its report than the ones before
+    shows the clocks' offset better; reports are never later than they
+    arrived."""
+    clock = radar_link.DeviceClock()
+    assert clock.time_of(1000, 50.3) == pytest.approx(50.3)
+    assert clock.time_of(1100, 50.25) == pytest.approx(50.25)   # 150 ms quicker
+    assert clock.time_of(1200, 50.6) == pytest.approx(50.35)
+    # A device that restarted starts over.
+    assert clock.time_of(10, 60.0) == pytest.approx(60.0)
+
+
+def test_a_heartbeat_repeat_of_a_format_2_line_is_no_new_measurement():
+    snap = radar_link.LinkSnapshot(device_id="d")
+    snap.take_line("2|R|1@5000:10,20/2@5100:11,20", 10.0)
+    assert snap.take_line("2|R|2@5100:11,20", 11.0) == 0
+    assert snap.duplicates == 1 and snap.out_of_order == 0
+
+
+def test_a_new_session_forgets_the_device_clock():
+    snap = radar_link.LinkSnapshot(device_id="d")
+    snap.take_line("2|R|1@5000:10,20", 10.0)
+    snap.new_session()
+    snap.take_line("2|R|1@900000:10,20", 20.0)
+    assert snap.pending(0)[-1][1] == pytest.approx(20.0)

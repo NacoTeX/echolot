@@ -18,7 +18,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from app.radar_frame import RECEIVING, RadarFrame, parse_frame
+from app.radar_frame import RECEIVING, RadarFrame, parse_line
 
 logger = logging.getLogger("echolot.radar")
 
@@ -78,6 +78,41 @@ class RangeError(MountingError):
     """The detection range cannot be written, for the same reasons."""
 
 
+class DeviceClock:
+    """The device's milliseconds on this side's clock.
+
+    A line arrives some time after the report it carries — Wi-Fi delivers
+    late and in bunches. What arrives soonest after its report shows the
+    two clocks' offset best: the smallest `received - device` over the
+    last WINDOW_S is taken as the offset (a sliding minimum). A report's
+    time is its device time plus that, never later than it arrived. A
+    device clock that goes back (a restart, the 49-day wrap) starts over.
+    """
+
+    WINDOW_S = 30.0
+
+    def __init__(self) -> None:
+        #: (received, offset) with offsets increasing: the sliding minimum.
+        self._window: deque = deque()
+        self._last_ms: int | None = None
+
+    def reset(self) -> None:
+        self._window.clear()
+        self._last_ms = None
+
+    def time_of(self, device_ms: int, received: float) -> float:
+        if self._last_ms is not None and device_ms < self._last_ms:
+            self.reset()
+        self._last_ms = device_ms if self._last_ms is None else max(self._last_ms, device_ms)
+        offset = received - device_ms / 1000.0
+        while self._window and self._window[-1][1] >= offset:
+            self._window.pop()
+        self._window.append((received, offset))
+        while self._window[0][0] < received - self.WINDOW_S:
+            self._window.popleft()
+        return min(received, device_ms / 1000.0 + self._window[0][1])
+
+
 @dataclass
 class LinkSnapshot:
     device_id: str
@@ -92,9 +127,9 @@ class LinkSnapshot:
     #: time.monotonic() when the last frame line arrived, repeats
     #: included: the link and the module are alive. None before the first.
     frame_at: float | None = None
-    #: time.monotonic() when the last *new* measurement arrived. Both are
-    #: receive times: frame format 1 carries no time of its own, and the
-    #: delay between the module's report and its arrival here is unknown.
+    #: When the last *new* measurement was made: with frame format 2 the
+    #: device's time of the report on this side's clock (DeviceClock),
+    #: with format 1 — which carries no time — when it arrived.
     measured_at: float | None = None
     #: Which connection the frames belong to. A new one — reconnect, or
     #: the device rebooted — starts the sequence afresh.
@@ -140,6 +175,10 @@ class LinkSnapshot:
     #: A report with targets or without arrived on this connection: the
     #: line from the module to the ESP works.
     reports_seen: bool = False
+    #: Format 2 lines carry the device's time of each report.
+    clock: DeviceClock = field(default_factory=DeviceClock)
+    #: The firmware sends format 2: reports carry their own time.
+    timed: bool = False
 
     def commands_unanswered(self, now: float | None = None) -> bool:
         """The module reports, but has answered none of the firmware's
@@ -170,7 +209,22 @@ class LinkSnapshot:
             return None
         return {"distance_m": self.range_distance_m, "start_deg": self.range_start_deg, "end_deg": self.range_end_deg}
 
-    def record(self, frame: RadarFrame, now: float) -> bool:
+    def take_line(self, text: str, now: float) -> int:
+        """One frame line as it arrived at `now`: every report in it,
+        oldest first, each at the time it was measured (format 2: by the
+        device's clock; format 1: when the line arrived). Returns how many
+        were new measurements; raises ValueError for a line off-format."""
+        frames = parse_line(text)
+        new = 0
+        for frame in frames:
+            at = now
+            if frame.device_ms is not None:
+                self.timed = True
+                at = self.clock.time_of(frame.device_ms, now)
+            new += self.record(frame, now, measured=at)
+        return new
+
+    def record(self, frame: RadarFrame, now: float, measured: float | None = None) -> bool:
         """Take one frame line; True when it is a new measurement.
 
         Sequence rules, within one connection (see `new_session`):
@@ -200,14 +254,15 @@ class LinkSnapshot:
             if ahead > 1:
                 self.reports_skipped += ahead - 1
         self.frame = frame
-        self.measured_at = now
+        at = now if measured is None else measured
+        self.measured_at = at
         self.frames_received += 1
         if frame.state == RECEIVING:
             self.reports_seen = True
         self.index += 1
         if len(self.queue) == self.queue.maxlen:
             self.dropped += 1
-        self.queue.append((self.index, now, frame))
+        self.queue.append((self.index, at, frame))
         return True
 
     def new_session(self) -> None:
@@ -221,6 +276,7 @@ class LinkSnapshot:
         self.mount_mode = self.mount_height_m = self.mount_angle_deg = None
         self.range_distance_m = self.range_start_deg = self.range_end_deg = None
         self.reports_seen = False
+        self.clock.reset()
 
     def pending(self, after_index: int) -> list:
         """New measurements after `after_index`, oldest first."""
@@ -442,11 +498,11 @@ class RadarLink:
             if self._on_line is not None:
                 self._on_line(self.device_id, text, now)
             try:
-                frame = parse_frame(text)
+                new = snap.take_line(text, now)
             except ValueError as err:
                 logger.debug("Radar %s: Zeile verworfen: %s", self.name, err)
                 return
-            if snap.record(frame, now) and self._on_frame is not None:
+            if new and self._on_frame is not None:
                 self._on_frame(self.device_id)
         elif role == "wifi_signal":
             snap.wifi_signal = float(value) if value == value else None  # NaN -> None

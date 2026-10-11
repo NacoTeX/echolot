@@ -292,6 +292,20 @@ def firmware(tmp_path_factory):
         link.unlink(missing_ok=True)
 
 
+def reports(line):
+    """A frame line as (state letter, seq, targets, device ms) per report."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from app.radar_frame import parse_line
+
+    letters = {"receiving": "R", "quiet": "Q", "unknown": "U"}
+    return [(letters[f.state], f.seq, f.targets_dm, f.device_ms) for f in parse_line(line)]
+
+
+def newest(line):
+    state, seq, targets, _ms = reports(line)[-1]
+    return state, seq, targets
+
+
 def test_the_whole_conversation(firmware):
     """One sequence, because each step depends on the state the last one
     left behind — exactly as on a device."""
@@ -299,7 +313,7 @@ def test_the_whole_conversation(firmware):
 
     # Nothing from the module yet: unknown, and asking.
     fw.pump(2.6)
-    assert fw.values("FRAME_A")[:1] == ["1|U|0|"]
+    assert fw.values("FRAME_A")[:1] == ["2|U|0@0:"]
     assert fw.values("COUNT_A")[:1] == ["nan"]
     assert fw.wire["a"].startswith(PROBE)
     assert VERSION_QUERY in fw.wire["a"], "no version query after two seconds"
@@ -310,7 +324,7 @@ def test_the_whole_conversation(firmware):
     fw.send("a", ACK_REPORTING_ON)
     fw.send("b", ACK_REPORTING_ON)
     fw.pump(0.6)
-    assert fw.values("FRAME_A")[-1] == "1|Q|0|"
+    assert fw.values("FRAME_A")[-1] == "2|Q|0@0:"
     assert fw.values("COUNT_A")[-1] == "nan", "quiet must not read as empty unless configured"
     assert fw.values("COUNT_B")[-1] == "0", "quiet_means_empty did not make quiet read as empty"
 
@@ -321,12 +335,25 @@ def test_the_whole_conversation(firmware):
     # A report, then a second one with a negative X.
     fw.send("a", REPORT_ONE)
     fw.pump(0.4)
-    assert "1|R|1|15,23" in fw.values("FRAME_A")
+    assert ("R", 1, ((15, 23),)) in [newest(f) for f in fw.values("FRAME_A")]
     assert fw.values("COUNT_A")[-1] == "1"
     fw.send("a", REPORT_TWO)
     fw.pump(0.4)
-    assert fw.values("FRAME_A")[-1] == "1|R|2|15,23;-1,39"
+    assert newest(fw.values("FRAME_A")[-1]) == ("R", 2, ((15, 23), (-1, 39)))
     assert fw.values("COUNT_A")[-1] == "2"
+
+    # Two reports in one go, faster than lines go out: one line carries
+    # both, oldest first, each with the device time it arrived. The
+    # heartbeat after it repeats the newest alone.
+    before = len(fw.values("FRAME_A"))
+    fw.send("a", REPORT_ONE + REPORT_TWO)
+    fw.pump(1.3)
+    lines = fw.values("FRAME_A")[before:]
+    batch = reports(lines[0])
+    assert [(r[0], r[1], r[2]) for r in batch] == [("R", 3, ((15, 23),)), ("R", 4, ((15, 23), (-1, 39)))]
+    assert batch[0][3] <= batch[1][3] and batch[0][3] > 0
+    assert len(lines) > 1
+    assert all(len(reports(line)) == 1 and newest(line)[1] == 4 for line in lines[1:]), lines
 
     # The module goes quiet. Within the acknowledgement's validity the
     # link is quiet — without coordinates, since the last report is no
@@ -334,23 +361,25 @@ def test_the_whole_conversation(firmware):
     probes_before = fw.wire["a"].count(PROBE)
     fw.pump(4.5)
     frames = fw.values("FRAME_A")
-    after_reports = frames[frames.index("1|R|2|15,23;-1,39") + 1:]
-    assert after_reports[0] == "1|Q|2|"
-    assert after_reports[-1] == "1|U|2|"
-    assert all(not f.startswith("1|R|") for f in after_reports)
+    last_r = max(i for i, f in enumerate(frames) if newest(f)[0] == "R")
+    after_reports = frames[last_r + 1:]
+    assert newest(after_reports[0]) == ("Q", 4, ())
+    assert newest(after_reports[-1]) == ("U", 4, ())
+    assert all(newest(f)[0] != "R" for f in after_reports)
     assert fw.values("COUNT_A")[-1] == "nan"
     assert fw.wire["a"].count(PROBE) > probes_before, "silence did not trigger a probe"
 
 
 def test_the_add_on_can_read_every_line_the_component_wrote(firmware):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app.radar_frame import parse_frame
+    from app.radar_frame import parse_line
 
     firmware.pump(1.2)  # at least one heartbeat, if this runs on its own
     lines = firmware.values("FRAME_A")
     assert lines
     for line in lines:
-        parse_frame(line)
+        assert len(line) <= 255  # Home Assistant's limit for a state
+        parse_line(line)
 
 
 def test_the_mounting_is_read_from_the_module_and_only_its_answer_counts(firmware):

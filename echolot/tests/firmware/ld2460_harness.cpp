@@ -130,6 +130,36 @@ int main() {
       char text[FRAME_TEXT_CAPACITY];
       const size_t n = encode_frame(text, sizeof(text), s, uint32_t(seq), report);
       std::cout << (n ? text : "<empty>") << "\n";
+    } else if (command == "encode2") {
+      // encode2 <state> <seq>@<ms>:<targets or ->[/...] — oldest first.
+      std::string state, list;
+      in >> state >> list;
+      LinkState s = state == "R" ? LinkState::RECEIVING : state == "Q" ? LinkState::QUIET : LinkState::UNKNOWN;
+      Stamped reports[8];
+      size_t count = 0;
+      std::istringstream items(list);
+      std::string item;
+      while (std::getline(items, item, '/') && count < 8) {
+        const size_t at = item.find('@');
+        const size_t colon = item.find(':');
+        Stamped &r = reports[count++];
+        r.seq = uint32_t(std::strtoul(item.substr(0, at).c_str(), nullptr, 10));
+        r.ms = uint32_t(std::strtoul(item.substr(at + 1, colon - at - 1).c_str(), nullptr, 10));
+        const std::string targets = item.substr(colon + 1);
+        if (targets != "-") {
+          std::istringstream pairs(targets);
+          std::string pair;
+          while (std::getline(pairs, pair, ';') && r.report.count < MAX_TARGETS) {
+            const size_t comma = pair.find(',');
+            r.report.targets[r.report.count].x_dm = int16_t(std::atoi(pair.substr(0, comma).c_str()));
+            r.report.targets[r.report.count].y_dm = int16_t(std::atoi(pair.substr(comma + 1).c_str()));
+            r.report.count++;
+          }
+        }
+      }
+      char text[FRAME2_TEXT_CAPACITY];
+      const size_t n = encode_frame2(text, sizeof(text), s, reports, count);
+      std::cout << (n ? text : "<empty>") << "\n";
     } else if (command == "setmode") {
       int mode = 0;
       in >> mode;

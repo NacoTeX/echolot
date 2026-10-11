@@ -387,3 +387,60 @@ def test_a_range_acknowledgement_changes_nothing_until_read_back(harness):
     # Nor does the mounting reader take a range for its own.
     harness("mounting-reset")
     assert mounting(harness, "fdfcfbfa1210003c0cfef40104030201") == ["none mode=unknown known=0 h=0 a=0"]
+
+
+# --- format 2: every report since the last line, with its device time ------
+
+
+def test_format_2_carries_every_report_with_its_time(harness):
+    from app.radar_frame import parse_line
+
+    [line] = harness("encode2 R 7@1000:15,23;-15,-7/8@1100:16,23")
+    assert line == "2|R|7@1000:15,23;-15,-7/8@1100:16,23"
+    frames = parse_line(line)
+    assert [(f.seq, f.device_ms, f.targets_dm) for f in frames] == [
+        (7, 1000, ((15, 23), (-15, -7))), (8, 1100, ((16, 23),))]
+    [quiet] = parse_line(harness("encode2 Q 8@1100:15,23")[0])
+    assert (quiet.state, quiet.seq, quiet.targets_dm, quiet.device_ms) == (QUIET, 8, (), 1100)
+    # A single report reads back to the same line.
+    [line] = harness("encode2 R 9@1200:-")
+    assert parse_line(line)[0].as_line() == line
+
+
+def test_format_2_keeps_the_newest_reports_within_home_assistant_s_limit(harness):
+    from app.radar_frame import parse_line
+
+    full = ";".join(["-32768,-32768"] * 5)
+    batch = "/".join(f"{4294967290 + i}@{4294967290 + i}:{full}" for i in range(4))
+    [line] = harness(f"encode2 R {batch}")
+    assert len(line) <= 255
+    seqs = [f.seq for f in parse_line(line)]
+    # Ten-digit numbers and times, five targets each: two fit.
+    assert seqs == [4294967292, 4294967293], "not the newest that fit, oldest first"
+    short = "/".join(f"{i}@{i}:{full}" for i in range(4))
+    assert [f.seq for f in parse_line(harness(f"encode2 R {short}")[0])] == [1, 2, 3]
+
+
+def test_format_1_lines_still_read():
+    from app.radar_frame import parse_line
+
+    [frame] = parse_line("1|R|12|15,23")
+    assert (frame.seq, frame.targets_dm, frame.device_ms) == (12, ((15, 23),), None)
+
+
+@pytest.mark.parametrize("line", [
+    "2|R|7@1000",                    # no targets field
+    "2|R|7:15,23",                   # no time
+    "2|R|-7@1000:",                  # negative number
+    "2|R|7@1000:1,2/6@1100:1,2",     # out of order within a line
+    "2|Q|7@1000:/8@1100:",           # several reports without a current one
+    "2|Q|7@1000:15,23",              # coordinates without a report
+    "2|X|7@1000:",                   # unknown state
+    "3|R|7@1000:",                   # unknown format
+    "2|R|7@4294967296:",             # time out of range
+])
+def test_format_2_off_format_is_refused(line):
+    from app.radar_frame import parse_line
+
+    with pytest.raises(ValueError):
+        parse_line(line)

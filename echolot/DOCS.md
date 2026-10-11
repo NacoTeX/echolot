@@ -511,8 +511,13 @@ höchstens 2³¹ voraus liegt, ist neu (auch über den Überlauf bei 2³²
 hinweg; übersprungene Nummern werden gezählt), eine ältere wird
 verworfen. Nach jeder neuen Verbindung beginnt die Zählung neu. Bis zu 64
 Meldungen warten in einer Schlange; die Auswertung nimmt alle der Reihe
-nach, jede zu ihrer Empfangszeit — die Zeile trägt keine Gerätezeit, die
-Empfangszeit ist also die Zeit der Messung plus Übertragung.
+nach, jede zu der Zeit, zu der sie gemessen wurde. Ab Firmware 3.0 trägt
+jede Meldung die Uhrzeit des ESP: Echolot gleicht dessen Uhr mit der
+eigenen ab — an der Zeile, die am schnellsten nach ihrer Meldung ankam,
+über die letzten 30 s — und setzt jede Meldung auf ihre Gerätezeit. Ein
+WLAN, das Zeilen gebündelt und verspätet zustellt, verzerrt so weder
+Abstände noch Geschwindigkeiten. Mit älterer Firmware ist es die
+Empfangszeit, also Messung plus Übertragung.
 
 Jede neue Meldung geht zuerst durch die **Zielverfolgung**: Ziele, die
 länger als 1,5 s nicht gemeldet wurden, sind vergessen, bevor die neue
@@ -679,15 +684,24 @@ Adresse (IP neu vergeben), Name nicht auflösbar, keine Antwort.
 
 Ein eigener ESPHome-Baustein, `echolot_ld2460`. Er liest die Zielmeldungen
 des Moduls (Kopf `F4 F3 F2 F1`, Funktion `04`, bis zu fünf Ziele in
-Dezimetern) und veröffentlicht jede Meldung als *eine* Zeile:
+Dezimetern) und veröffentlicht die Meldungen als Zeilen (Format 2, seit
+3.0):
 
 ```
-1|R|42|15,23;-1,39
+2|R|41@73120:15,23;-1,39/42@73220:16,23;-1,38
 ```
 
-Format 1, Zustand, laufende Nummer, Ziele. Eine Zeile pro Meldung, damit X
-und Y eines Ziels aus derselben Meldung stammen — das Modul liefert keine
-Ziel-IDs. Der Zustand:
+Format 2, Zustand, dann jede Meldung seit der letzten Zeile — laufende
+Nummer `@` Gerätezeit (Millisekunden seit dem Start des ESP, als die
+Meldung über die serielle Leitung ankam) `:` Ziele. Meldet das Modul
+schneller, als Zeilen hinausgehen (höchstens alle 100 ms), geht so keine
+verloren; passen nicht alle in eine Zeile (255 Zeichen, die Grenze von
+Home Assistant für einen Zustand), bleiben die neuesten, und die fehlenden
+Nummern zählen als übersprungen. Das Lebenszeichen jede Sekunde wiederholt
+nur die neueste Meldung. X und Y eines Ziels stammen immer aus derselben
+Meldung — das Modul liefert keine Ziel-IDs. Eine Firmware vor 3.0 schreibt
+Format 1 (`1|R|42|15,23;-1,39`: eine Meldung je Zeile, ohne Zeit); Echolot
+liest beide. Der Zustand:
 
 | | Bedeutung |
 | --- | --- |
