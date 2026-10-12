@@ -68,3 +68,26 @@ def target(status="counted", zones=(), velocity=(0, 0), resting=False):
 ])
 def test_the_room_is_told_by_what_the_result_says(live, expected):
     assert say(live) == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_a_room_is_redrawn_for_what_it_shows_not_for_learning_s_counters():
+    """3.0.0 redrew the room every five seconds — learning.observed_s moves
+    on every load — and the page jumped as its sentence was built anew."""
+    script = (f"const S = require({json.dumps(str(STORY))});"
+              "const a = {id: 'r', name: 'Wohnzimmer', zones: [], learning: {observed_s: 10}};"
+              "const b = {...a, learning: {observed_s: 16, proposals: 1}};"
+              "const c = {...a, name: 'Wohnraum'};"
+              "process.stdout.write(JSON.stringify([S.roomShape(a) === S.roomShape(b),"
+              " S.roomShape(a) === S.roomShape(c), S.roomShape(null)]));")
+    same, renamed_same, nothing = json.loads(
+        subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert same is True and renamed_same is False and nothing == ""
+
+
+def test_pages_redraw_rooms_by_their_shape():
+    """The room page and the overview compare rooms with roomShape, not the
+    whole room."""
+    rooms_js = (STATIC / "rooms.js").read_text(encoding="utf-8")
+    assert "JSON.stringify(room)" not in rooms_js
+    assert rooms_js.count("E.roomShape") >= 3

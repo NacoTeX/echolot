@@ -1,4 +1,5 @@
-// A room's state in words, for the overview and the room page. Plain
+// A room's state in words, for the overview and the room page, and what
+// of a room makes a page redraw it. Plain
 // script for the browser (window.EcholotStory) and a module for node, so
 // tests/test_frontend.py holds it to its cases.
 
@@ -44,7 +45,17 @@
     return `${NUMBERS[parts.length] || `${parts.length} Personen`}: ${list}.`;
   }
 
-  const api = { describe, WALK_SPEED };
+  // What a room looks like on a page — everything but `learning`, whose
+  // counters (observed_s) move on every load. Pages redraw a room only
+  // when this changes: redrawing on every load (five seconds) made the
+  // room page jump and the overview rebuild its maps.
+  function roomShape(room) {
+    if (!room) return "";
+    const { learning, ...rest } = room;
+    return JSON.stringify(rest);
+  }
+
+  const api = { describe, roomShape, WALK_SPEED };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EcholotStory = api;
 })(typeof window !== "undefined" ? window : globalThis);

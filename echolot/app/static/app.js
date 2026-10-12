@@ -215,6 +215,11 @@ const Echolot = (() => {
     return `${formatNumber(link.report_rate_hz, 1)} / s${delay !== null && delay !== undefined ? ` · WLAN-Verzug ${delay} ms` : ""}`;
   }
 
+  // What a room looks like on a page (story.js).
+  function roomShape(room) {
+    return window.EcholotStory.roomShape(room);
+  }
+
   // What is happening in a room, as a sentence (story.js).
   function describe(room, live) {
     return window.EcholotStory.describe(room, live, formatSeconds);
@@ -337,7 +342,7 @@ const Echolot = (() => {
   return {
     deafText,
     state, api, escapeHtml, icon, toast, confirmDialog, openSheet, formatNumber, formatSeconds,
-    people, roomStatus, describe, linkRate, register, go, start, loadInfo, ROOM_ICONS,
+    people, roomStatus, describe, linkRate, roomShape, register, go, start, loadInfo, ROOM_ICONS,
     refresh: loadData,
   };
 })();
