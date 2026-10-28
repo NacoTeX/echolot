@@ -22,8 +22,8 @@ from matplotlib.path import Path as MplPath  # noqa: E402
 import gehaeuse as g  # noqa: E402
 
 WHITE = (0.92, 0.92, 0.91)
-LID = (0.78, 0.79, 0.80)
-BRACKET = (0.86, 0.86, 0.84)
+PLATE = (0.80, 0.81, 0.82)
+WEDGE = (0.86, 0.86, 0.84)
 RADAR = (0.22, 0.47, 0.33)
 ESP = (0.16, 0.18, 0.24)
 USB = (0.72, 0.72, 0.74)
@@ -140,34 +140,40 @@ def save(img: np.ndarray, path: Path, caption: str = "") -> None:
 
 
 def upright(part):
-    """Gehäusekoordinaten -> aufgestellt: Front nach -y, oben nach +z (eine
+    """Schalenkoordinaten -> aufgestellt: Front nach -y, oben nach +z (eine
     Drehung; von vorn gesehen ist rechts, wo es am Sensor rechts ist)."""
     return part.transform([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]])
 
 
-def parts():
-    shell, lid = g.shell(), g.lid()
+def in_room(part, corner=False):
+    """Schalenkoordinaten -> Raum."""
+    return g.apply(part, g.shell_to_room(corner))
+
+
+def plate_in_room(part, corner=False):
+    return g.apply(part, g.plate_pose(corner))
+
+
+def dummies():
+    """Radar in Schalenkoordinaten; ESP und Buchse in Plattenkoordinaten."""
     radar = g.box(-g.RADAR_W / 2, g.RADAR_W / 2, g.RADAR_Y - g.RADAR_H / 2, g.RADAR_Y + g.RADAR_H / 2,
                   g.Z_RADAR_FRONT, g.Z_RADAR_BACK)
-    esp = g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_Y0, g.ESP_Y0 + g.ESP_L, g.Z_ESP_BOTTOM - g.ESP_PCB, g.Z_ESP_BOTTOM)
-    usb = g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_Y0 - g.USB_OVERHANG, g.ESP_Y0 + 7.3,
-                g.Z_ESP_BOTTOM - g.ESP_H, g.Z_ESP_BOTTOM - g.ESP_PCB)
-    return shell, lid, radar, esp, usb
+    top = g.ESP_SO + g.ESP_PCB
+    esp = g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_B0, g.ESP_B0 + g.ESP_L, g.ESP_SO, top)
+    usb = g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_B0 - g.USB_OVERHANG, g.ESP_B0 + 7.3, top, g.ESP_SO + g.ESP_H)
+    return radar, esp, usb
 
 
 def front_view(out: Path) -> None:
-    shell, lid, *_ = parts()
-    img = render([mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)], azim=-58, elev=16)
-    save(img, out / "ansicht.png", f"{g.W:.0f} × {g.H:.0f} × {g.D:.1f} mm · Fenster gleichmäßig {g.FRONT:.1f} mm, "
-         f"Name im Kinn {g.NAME_DEPTH:.1f} mm tief eingeprägt")
+    img = render([mesh_of(upright(g.shell()), WHITE)], azim=-58, elev=16)
+    save(img, out / "ansicht.png", f"{g.W:.0f} × {g.H:.0f} mm, {g.Z_B0:.0f} mm tief unten, {g.D_TOP:.0f} mm oben · "
+         f"Fenster gleichmäßig {g.FRONT:.1f} mm, Name im Kinn {g.NAME_DEPTH:.1f} mm tief eingeprägt")
 
 
 def straight_front(out: Path) -> None:
     """Von vorn: einfarbig mit Prägung, und zweifarbig mit der Einlage."""
-    shell, lid, *_ = parts()
-    plain = render([mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)], azim=-90, elev=0,
-                   width=800, height=760)
-    items = [mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)]
+    plain = render([mesh_of(upright(g.shell()), WHITE)], azim=-90, elev=0, width=800, height=760)
+    items = [mesh_of(upright(g.shell()), WHITE)]
     if g.NAME:
         items.append(mesh_of(upright(g.name_inlay()), INLAY))
     inlaid = render(items, azim=-90, elev=0, width=800, height=760)
@@ -183,32 +189,49 @@ def straight_front(out: Path) -> None:
 
 
 def back_view(out: Path) -> None:
-    shell, lid, *_ = parts()
-    img = render([mesh_of(upright(shell), WHITE), mesh_of(upright(lid), LID)], azim=118, elev=22)
-    save(img, out / "rueckseite.png", "Rückseite: Nut für die Schiene (unten offen), Rastdeckel, USB-C unten")
+    """Die offene Rückseite der Schale, und die Platte mit dem ESP daneben."""
+    radar, esp, usb = dummies()
+    shell = render([mesh_of(upright(g.shell()), WHITE), mesh_of(upright(radar), RADAR)], azim=122, elev=24,
+                   width=900, height=900)
+    plate = render([mesh_of(plate_in_room(g.plate()), PLATE), mesh_of(plate_in_room(esp), ESP),
+                    mesh_of(plate_in_room(usb), USB),
+                    quad((-40, 0, -6), (40, 0, -6), (40, 0, 66), (-40, 0, 66), WALL)],
+                   azim=52, elev=14, width=900, height=900)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6.4), dpi=150)
+    for ax, img, title in ((axes[0], shell, "Schale von hinten: Radar liegt in der Tasche"),
+                           (axes[1], plate, "Wandplatte mit ESP, USB-C unten, zwei Rippen")):
+        ax.imshow(img)
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=11, color="0.3")
+    fig.tight_layout()
+    fig.savefig(out / "rueckseite.png", facecolor="white")
+    plt.close(fig)
 
 
 def exploded(out: Path) -> None:
-    shell, lid, radar, esp, usb = parts()
-    step = 18.0
+    radar, esp, usb = dummies()
+    m = g.shell_to_room(False)
+    f = -m[:3, :3] @ np.array([0.0, 0.0, 1.0])            # Blickrichtung der Front im Raum
+    n = g.plate_pose(False)[:3, 2]
     items = [
-        mesh_of(upright(shell), WHITE),
-        mesh_of(upright(radar.translate((0, 0, step))), RADAR),
-        mesh_of(upright(esp.translate((0, 0, 2 * step))), ESP),
-        mesh_of(upright(usb.translate((0, 0, 2 * step))), USB),
-        mesh_of(upright(lid.translate((0, 0, 3 * step))), LID),
+        mesh_of(plate_in_room(g.plate()), PLATE),
+        mesh_of(plate_in_room(esp).translate(tuple(n * 14)), ESP),
+        mesh_of(plate_in_room(usb).translate(tuple(n * 14)), USB),
+        mesh_of(in_room(radar).translate(tuple(f * 28)), RADAR),
+        mesh_of(in_room(g.shell()).translate(tuple(f * 62)), WHITE),
+        quad((-45, 0, -6), (45, 0, -6), (45, 0, 70), (-45, 0, 70), WALL),
     ]
-    img = render(items, azim=150, elev=24, width=1400, height=900)
-    save(img, out / "explosion.png", "Gehäuse · LD2460 · ESP32-C5-Zero (USB-C unten) · Rückdeckel")
+    img = render(items, azim=38, elev=14, width=1400, height=900)
+    save(img, out / "explosion.png", "Wand · Platte · ESP32-C5-Zero (USB-C unten) · LD2460 · Schale; "
+         "zwei M2-Schrauben seitlich")
 
 
 def mounted_scene(corner: bool):
-    shell, lid, *_ = parts()
-    body, lay = g.bracket(corner)
-    sensor = [g.place(g.sensor_to_rail(p), lay["ex"], lay["ey"], lay["f"], lay["origin"]) for p in (shell, lid)]
-    items = [mesh_of(sensor[0], WHITE), mesh_of(sensor[1], LID), mesh_of(body, BRACKET)]
-    lo = np.min([np.asarray(s.bounding_box()[:3]) for s in sensor + [body]], axis=0)
-    hi = np.max([np.asarray(s.bounding_box()[3:]) for s in sensor + [body]], axis=0)
+    items = [mesh_of(in_room(g.shell(), corner), WHITE), mesh_of(plate_in_room(g.plate(), corner), PLATE)]
+    if corner:
+        items.append(mesh_of(g.corner_wedge(), WEDGE))
+    pts = np.concatenate([v for v, *_ in items])
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
     z0, z1 = lo[2] - 10, hi[2] + 10
     if corner:
         far = max(hi[0], hi[1]) + 12
@@ -221,10 +244,12 @@ def mounted_scene(corner: bool):
 
 def mounted(out: Path) -> None:
     wall_img = render(mounted_scene(False), azim=32, elev=12, width=900, height=900)
-    corner_img = render(mounted_scene(True), azim=8, elev=16, width=900, height=900)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6.4), dpi=150)
-    for ax, img, title in ((axes[0], wall_img, f"Wandhalter: {g.TILT:.0f}° nach unten"),
-                           (axes[1], corner_img, f"Eckhalter: {g.CORNER_YAW:.0f}° in den Raum, {g.TILT:.0f}° nach unten")):
+    side_img = render(mounted_scene(False), azim=0, elev=0, width=900, height=900)
+    corner_img = render(mounted_scene(True), azim=18, elev=16, width=900, height=900)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.6), dpi=150)
+    for ax, img, title in ((axes[0], wall_img, f"Wand: {g.TILT:.0f}° nach unten"),
+                           (axes[1], side_img, "Wand, von der Seite"),
+                           (axes[2], corner_img, f"Ecke: {g.CORNER_YAW:.0f}° in den Raum, Eckkeil dahinter")):
         ax.imshow(img)
         ax.set_axis_off()
         ax.set_title(title, fontsize=11, color="0.3")
@@ -235,16 +260,14 @@ def mounted(out: Path) -> None:
 
 def section(out: Path) -> None:
     """Schnitt durch die Mitte (x = 0): Tiefe nach rechts, oben nach oben."""
-    shell, lid, radar, esp, usb = parts()
-    body, lay = g.bracket(False)
-    # Halter in Gehäusekoordinaten: Raum -> Schienenrahmen -> Gehäuse
-    turn = np.vstack([lay["ex"], lay["ey"], lay["f"]])
-    local = body.transform(np.column_stack([turn, -turn @ lay["origin"]]).tolist())
-    bracket = local.transform([[-1, 0, 0, 0], [0, 1, 0, g.RAIL_Y0], [0, 0, -1, g.D]])
+    radar, esp, usb = dummies()
+    shell = g.shell()
+    plate = g.apply(g.plate(), g.PLATE_TO_SHELL)
+    esp, usb = g.apply(esp, g.PLATE_TO_SHELL), g.apply(usb, g.PLATE_TO_SHELL)
     fig, ax = plt.subplots(figsize=(9, 6.5), dpi=150)
     legend = []
-    for part, rgb, name in ((shell, WHITE, "Gehäuse"), (radar, RADAR, "LD2460"), (esp, ESP, "ESP32-C5-Zero"),
-                            (usb, USB, "USB-C-Buchse"), (lid, LID, "Rückdeckel"), (bracket, BRACKET, "Wandhalter")):
+    for part, rgb, name in ((shell, WHITE, "Schale"), (radar, RADAR, "LD2460"), (esp, ESP, "ESP32-C5-Zero"),
+                            (usb, USB, "USB-C-Buchse"), (plate, PLATE, "Wandplatte")):
         cut = part.rotate((0, 90, 0)).slice(0.0)       # nach der Drehung: x = Tiefe, y = oben
         verts, codes = [], []
         for ring in cut.to_polygons():
@@ -254,15 +277,18 @@ def section(out: Path) -> None:
         if verts:
             ax.add_patch(PathPatch(MplPath(verts, codes), facecolor=rgb, edgecolor="0.25", linewidth=0.6))
             legend.append(Patch(facecolor=rgb, edgecolor="0.25", label=name))
+    # die Wand: Ebene h = -PLATE_T
+    wall = [g.apply_point(g.PLATE_TO_SHELL, (0, b, -g.PLATE_T)) for b in (-4.0, g.PLATE_H + 4.0)]
+    ax.plot([p[2] for p in wall], [p[1] for p in wall], color="0.45", linewidth=2.0)
     ax.set_aspect("equal")
     ax.autoscale_view()
     ax.set_xlabel("Tiefe ab Front (mm)")
-    ax.set_ylabel("Höhe (mm)")
+    ax.set_ylabel("Höhe in der Schale (mm)")
     ax.grid(True, linewidth=0.3, color="0.88")
     ax.legend(handles=legend, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False)
-    stack = (f"Fenster {g.FRONT:.1f} · Luft {g.GAP:.1f} · Radar {g.RADAR_PCB:.1f} · dahinter {g.RADAR_BACK:.1f} · "
-             f"ESP {g.ESP_H:.2f} · Rücken {g.SPINE_T:.1f} + {g.LID_T:.1f} = {g.D:.1f} mm")
-    ax.set_title(f"Schnitt in der Mitte, am Wandhalter ({g.TILT:.0f}°)\n{stack}", fontsize=9)
+    ax.set_title(f"Schnitt in der Mitte; graue Linie: die Wand ({g.TILT:.0f}° geneigt)\n"
+                 f"Fenster {g.FRONT:.1f} · Luft {g.GAP:.1f} · Radar {g.RADAR_PCB:.1f} · dahinter {g.RADAR_BACK:.1f} mm; "
+                 f"Tiefe unten {g.Z_B0:.0f}, oben {g.D_TOP:.0f} mm", fontsize=9)
     fig.savefig(out / "schnitt.png", bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
