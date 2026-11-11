@@ -3,11 +3,15 @@
     python pruefen.py
 
 - Jedes Teil ist ein geschlossener, zusammenhängender Körper.
+- Festen Sitz: Das Radar wird von Quetschrippen gehalten, auch wenn die
+  Platine am unteren oder oberen Ende ihrer Toleranz liegt; der ESP von
+  Quetschrippen, Anschlägen und Haltearmen. Beide passen noch mit der
+  größten Platine, ohne zu klemmen.
 - Zusammengebaut: Radar, ESP und USB-Stecker stoßen nirgends an, der
-  Stecker hat seine Aussparung, die Schale sitzt auf der Platte, und die
-  Löcher für die Seitenschrauben treffen die Rippen.
-- Montiert: Die Schale lässt sich über die ganze Strecke auf die Rippen
-  schieben; die Wandschrauben sind vor der Schale frei erreichbar; in der
+  Stecker hat seine Aussparung, das Gehäuse sitzt auf dem Deckel, und die
+  Löcher für die Seitenschrauben treffen die Kernlöcher in den Domen.
+- Montiert: Das Gehäuse lässt sich über die ganze Strecke auf die Rippen
+  schieben; die Wandschrauben sind vor dem Gehäuse frei erreichbar; in der
   Ecke berührt nichts die Wände, und die Schrauben haben Platz für den
   Schraubendreher.
 - Druck: in der Lage, in der gedruckt wird, nichts steiler als 50°
@@ -26,6 +30,7 @@ import gehaeuse as g
 
 OVERHANG_MAX = 50.0   # Grad gegen die Senkrechte
 BRIDGE_MAX = 20.0     # mm
+TOL = 0.2             # Fertigungstoleranz der Platinen, je Maß (Annahme für beide)
 
 problems: list[str] = []
 
@@ -57,7 +62,6 @@ def look() -> None:
     füllt die Prägung genau; nirgends zu dünne Wände."""
     shell = g.shell()
     outer = g.shell_outer()
-    # seitlich gemessen: ohne die Front (das Fenster ist gewollt 1 mm)
     outside = g.box(-100, 100, -100, 100, 0.0, g.Z_B0 - 0.01) - outer
     pocket = g.box(-g.IW / 2, g.IW / 2, g.RADAR_Y - g.IH / 2, g.RADAR_Y + g.IH / 2, g.FRONT, g.Z_POCKET_END)
     wall = pocket.min_gap(outside, 5.0)
@@ -83,26 +87,109 @@ def look() -> None:
           f"Einlage füllt die Prägung genau ({inlay.volume():.1f} mm³)")
 
 
-def dummies() -> dict[str, Manifold]:
-    """Was ins Gehäuse kommt: das Radar in Schalenkoordinaten, ESP und
-    Stecker in Plattenkoordinaten."""
-    esp_top = g.ESP_SO + g.ESP_PCB
-    return {
-        "radar": g.box(-g.RADAR_W / 2, g.RADAR_W / 2, g.RADAR_Y - g.RADAR_H / 2, g.RADAR_Y + g.RADAR_H / 2,
-                       g.Z_RADAR_FRONT, g.Z_RADAR_BACK),
-        # Bauteile, Lötstellen und Kabel hinter dem Radar
-        "behind": g.box(-g.RADAR_W / 2, g.RADAR_W / 2, g.RADAR_Y - g.RADAR_H / 2, g.RADAR_Y + g.RADAR_H / 2,
-                        g.Z_RADAR_BACK, g.Z_BEHIND),
-        "esp": g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_B0, g.ESP_B0 + g.ESP_L, g.ESP_SO, esp_top),
-        "usb": g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_B0 - g.USB_OVERHANG, g.ESP_B0 + 7.3, esp_top, g.ESP_SO + g.ESP_H),
+def fit_radar() -> None:
+    """Das Radar sitzt fest: bei jeder Platinengröße innerhalb der Toleranz
+    berühren die Rippen, und die größte Platine passt noch."""
+    shell = g.shell()
+    ribs = g.crush_ribs()
+    all_ribs = g.union([r for r, _ in ribs])
+    walls = shell - all_ribs
+    nominal = g.radar_box()
+    small = g.radar_box(g.RADAR_W - TOL, g.RADAR_H - TOL)
+    large = g.radar_box(g.RADAR_W + TOL, g.RADAR_H + TOL, g.RADAR_PCB + 0.2)
+    check(overlap(nominal, walls) < 1e-3, "Radar passt in die Tasche")
+    check(overlap(large, walls) < 1e-3, f"auch die größte Platine ({g.RADAR_W + TOL:.1f} × {g.RADAR_H + TOL:.1f} mm) passt")
+    v = overlap(nominal, all_ribs)
+    check(0.5 < v < 25.0, f"Quetschrippen drücken die Platine mit {g.CRUSH} mm je Seite ({v:.1f} mm³ zu verformen)")
+    vl = overlap(large, all_ribs)
+    check(vl < 60.0, f"größte Platine: {vl:.0f} mm³ zu verformen, kein Klemmen")
+    for label, sel in (("links", lambda n: n.startswith("x-")), ("rechts", lambda n: n.startswith("x+")),
+                       ("unten", lambda n: n.startswith("y-")), ("oben", lambda n: n.startswith("y+"))):
+        side = g.union([r for r, n in ribs if sel(n)])
+        gap = small.min_gap(side, 1.0)
+        check(gap < 0.01, f"kleinste Platine ({g.RADAR_W - TOL:.1f} × {g.RADAR_H - TOL:.1f} mm) berührt die Rippen {label}")
+    zones = g.radar_zones()
+    check(all_ribs.min_gap(zones["tall"], 20.0) >= 0.5, "Quetschrippen stehen nicht an den Stiftleisten")
+    pads = shell.trim_by_plane((0, 0, 1), g.FRONT + 0.01).trim_by_plane((0, 0, -1), -g.Z_SEAT + 0.01)
+    check(nominal.min_gap(pads, 1.0) < 0.02, f"Auflagen halten das Radar mit {g.Z_SEAT - g.FRONT:.1f} mm Abstand zum Fenster")
+    check(nominal.min_gap(shell.trim_by_plane((0, 0, -1), -g.FRONT), 1.0) > g.GAP - 0.01,
+          f"Chips auf der Antennenseite ({g.RADAR_FRONT:.1f} mm) haben {g.GAP:.1f} mm Luft zum Fenster")
+
+
+def esp_parts() -> dict[str, Manifold]:
+    """ESP in Deckelkoordinaten: Platine, Buchse und ein üblicher Stecker."""
+    top = g.ESP_SO + g.ESP_PCB
+    out = {
+        "esp": g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_B0, g.ESP_B0 + g.ESP_L, g.ESP_SO, top),
+        "usb": g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_B0 - g.USB_OVERHANG, g.ESP_B0 + 7.3, top, g.ESP_SO + g.ESP_H),
         # ein üblicher Stecker: Umspritzung 12,5 × 6,5 mm, bis an die Buchse
         "plug": g.box(-6.25, 6.25, -40.0, g.ESP_B0 - g.USB_OVERHANG - 0.05,
                       g.H_USB_MID - 3.25, g.H_USB_MID + 3.25),
     }
+    return out
+
+
+def fit_esp() -> None:
+    """Der ESP sitzt fest: Quetschrippen, Anschläge, Arme; die größte Platine
+    passt noch; er lässt sich einsetzen."""
+    p = esp_parts()
+    top = g.ESP_SO + g.ESP_PCB
+    pocket = g.esp_pocket()
+    bare = g.esp_pocket(with_ribs=False)
+    ribs_only = pocket - bare
+    nominal = p["esp"]
+    big = g.box(-(g.ESP_W + TOL) / 2, (g.ESP_W + TOL) / 2, g.ESP_B0 - TOL / 2, g.ESP_B0 + g.ESP_L + TOL / 2, g.ESP_SO, top)
+    small = g.box(-(g.ESP_W - TOL) / 2, (g.ESP_W - TOL) / 2, g.ESP_B0 + TOL / 2, g.ESP_B0 + g.ESP_L - TOL / 2, g.ESP_SO, top)
+    check(overlap(nominal, bare) < 1e-3 and overlap(p["usb"], bare) < 1e-3, "ESP und Buchse stoßen an keine Wand")
+    check(overlap(big, bare) < 1e-3, f"auch die größte Platine ({g.ESP_W + TOL:.1f} × {g.ESP_L + TOL:.1f} mm) passt")
+    v = overlap(nominal, ribs_only)
+    check(0.1 < v < 10.0, f"Quetschrippen drücken den ESP mit {g.ESP_CRUSH} mm je Seite ({v:.2f} mm³ zu verformen)")
+    for sa, label in ((-1, "links"), (1, "rechts")):
+        half = g.plate_box(0, sa * 30.0, 0, 80.0, -1, 20) if sa > 0 else g.plate_box(-30.0, 0, 0, 80.0, -1, 20)
+        side = ribs_only ^ half
+        check(small.min_gap(side, 1.0) < 0.01, f"kleinste Platine ({g.ESP_W - TOL:.1f} mm breit) berührt die Rippen {label}")
+    rest = nominal.translate((0, 0, -0.05))
+    check(overlap(rest, bare) > 0, "ESP liegt auf den Auflagen")
+    # Haltearme: über der Platine, mit Luft, und greifen über die Ecken
+    end0 = g.ESP_B0 + g.ESP_L
+    # was die Tasche wirklich über den Ecken der Platine hat (nicht die Funktion, die sie baut)
+    arms = bare ^ g.box(-g.ESP_W / 2, g.ESP_W / 2, end0 - g.ARM_L, end0, top + 0.01, top + 3.0)
+    check(arms.volume() > 2.0, f"Tasche hat Haltearme über den Ecken am Antennenende ({arms.volume():.1f} mm³ über der Platine)")
+    gap = nominal.min_gap(arms, 2.0)
+    check(abs(gap - g.ARM_GAP) < 0.02, f"Haltearme über der Platine, {gap:.2f} mm Luft")
+    lift = nominal.translate((0, 0, g.ARM_GAP + 0.2))
+    check(overlap(lift, arms) > 1.0, "Platine kann nicht hochkippen: Arme greifen über die Ecken")
+    # Stecker: schiebt die Platine nach oben, an den Anschlag; zieht man ihn, hält der untere Anschlag
+    check(overlap(nominal.translate((0, 0.12, 0)), bare) > 0, "oberer Anschlag hält die Platine beim Stecken")
+    check(overlap(nominal.translate((0, -0.12, 0)), bare) > 0, "unterer Anschlag hält die Platine beim Ziehen")
+    # Einsetzen: um 3° gekippt, das Antennenende voran, unter die Arme schieben; dann absenken
+    end = g.ESP_B0 + g.ESP_L
+    hits = []
+    for s in np.arange(-8.0, 0.01, 0.5):
+        if overlap(tilt_about_end(nominal, 3.0, end - 0.1 + s), bare) > 1e-3:
+            hits.append(f"{s:+.1f} mm")
+    for tilt in (3.0, 2.0, 1.0, 0.0):
+        if overlap(tilt_about_end(nominal, tilt, end - 0.1), bare) > 1e-3:
+            hits.append(f"{tilt:.0f}°")
+    check(not hits, "ESP lässt sich gekippt unter die Arme schieben und am USB-Ende absenken"
+          + (f" (stößt bei {hits[0]})" if hits else ""))
+
+
+def tilt_about_end(board: Manifold, deg: float, pivot_b: float) -> Manifold:
+    """Die Platine um die Unterkante ihres Antennenendes gekippt: das USB-Ende
+    steht höher, das Antennenende liegt bei pivot_b."""
+    end = g.ESP_B0 + g.ESP_L
+    moved = board.translate((0, pivot_b - end, 0))
+    return moved.translate((0, -pivot_b, -g.ESP_SO)).rotate((-deg, 0, 0)).translate((0, pivot_b, g.ESP_SO))
+
+
+def dummies() -> dict[str, Manifold]:
+    zones = g.radar_zones()
+    return {"radar": g.radar_box(), **zones}
 
 
 def in_shell(part: Manifold) -> Manifold:
-    """Plattenkoordinaten -> Schalenkoordinaten."""
+    """Deckelkoordinaten -> Gehäusekoordinaten."""
     return g.apply(part, g.PLATE_TO_SHELL)
 
 
@@ -110,67 +197,59 @@ def assembly() -> None:
     shell = g.shell()
     plate = in_shell(g.plate())
     d = dummies()
-    radar = d["radar"]
-    esp, usb, plug = (in_shell(d[k]) for k in ("esp", "usb", "plug"))
-    check(overlap(radar, shell) < 1e-3, "Radar passt in die Tasche")
-    side = radar.trim_by_plane((0, 0, 1), g.Z_RADAR_FRONT + 0.5)   # über den Auflagen: nur seitlich
-    play = side.min_gap(shell, 1.0)
-    check(play > g.FIT - 0.05, f"Spiel ums Radar {play:.2f} mm")
-    pads = shell.trim_by_plane((0, 0, 1), g.FRONT + 0.01).trim_by_plane((0, 0, -1), -g.Z_RADAR_FRONT + 0.01)
-    check(radar.min_gap(pads, 1.0) < 0.02, "Auflagen halten das Radar mit Abstand zum Fenster")
-    behind = d["behind"]
-    check(overlap(behind, shell) < 1e-3 and overlap(behind, plate) < 1e-3,
-          f"Platz hinter dem Radar ({g.RADAR_BACK:.0f} mm) frei")
-    ribs = in_shell(g.ribs())
-    rest = in_shell(g.union([g.esp_pocket(), g.Manifold.extrude(g.footprint(), g.PLATE_T).translate((0, 0, -g.PLATE_T))]))
-    gap = behind.min_gap(rest, 100.0)
-    check(gap >= 5.0, f"Platte liegt {gap:.0f} mm hinter dem Radar: Platz für die Kabel")
-    gap = behind.min_gap(ribs, 100.0)
-    check(gap >= 2.0, f"Rippen halten {gap:.1f} mm Abstand zum Bauraum hinter dem Radar")
-    check(overlap(esp, plate) < 1e-3 and overlap(esp, shell) < 1e-3, "ESP stößt nirgends an")
+    small_esp = g.box(-(g.ESP_W - TOL) / 2, (g.ESP_W - TOL) / 2, g.ESP_B0 + TOL / 2, g.ESP_B0 + g.ESP_L - TOL / 2,
+                      g.ESP_SO, g.ESP_SO + g.ESP_PCB)
+    esp, usb, plug = in_shell(small_esp), in_shell(esp_parts()["usb"]), in_shell(esp_parts()["plug"])
+    check(overlap(d["tall"], shell) < 1e-3 and overlap(d["tall"], plate) < 1e-3,
+          f"Platz für Stiftleisten samt Buchsen ({g.RADAR_BACK:.0f} mm) frei")
+    check(overlap(d["low"], shell) < 1e-3 and overlap(d["low"], plate) < 1e-3,
+          f"Platz für die übrigen Bauteile hinter dem Radar ({g.RADAR_LOW:.0f} mm) frei")
+    base = in_shell(g.Manifold.extrude(g.footprint(), g.PLATE_T).translate((0, 0, -g.PLATE_T)))
+    gap = d["tall"].min_gap(g.union([base, in_shell(g.esp_pocket())]), 100.0)
+    check(gap >= 4.0, f"Stiftleisten halten {gap:.0f} mm Abstand zum Deckel: Platz für die Leitungen")
+    check(esp.min_gap(d["low"], 20.0) >= 1.0 and usb.min_gap(d["low"], 20.0) >= 1.0,
+          f"ESP hält Abstand zum Radar ({min(esp.min_gap(d['low'], 20.0), usb.min_gap(d['low'], 20.0)):.1f} mm)")
+    esp_ribs = in_shell(g.esp_pocket() - g.esp_pocket(with_ribs=False))
+    bare_plate = plate - esp_ribs                            # ohne Quetschrippen: sie sollen ja drücken
+    check(overlap(esp, bare_plate) < 1e-3 and overlap(esp, shell) < 1e-3, "ESP stößt nirgends an")
     check(overlap(usb, plate) < 1e-3 and overlap(usb, shell) < 1e-3, "USB-Buchse stößt nirgends an")
-    check(esp.min_gap(behind, 20.0) >= 1.0 and usb.min_gap(behind, 20.0) >= 1.0,
-          f"ESP hält Abstand zum Radar ({min(esp.min_gap(behind, 20.0), usb.min_gap(behind, 20.0)):.1f} mm)")
-    pocket = g.esp_pocket()
-    esp_p = d["esp"]
-    walls_only = pocket.trim_by_plane((0, 0, 1), g.ESP_SO + 0.05)       # ohne die Auflagen
-    check(esp_p.min_gap(walls_only, 1.0) > g.ESP_FIT - 0.05, f"ESP hat in der Tasche {esp_p.min_gap(walls_only, 1.0):.2f} mm Spiel")
-    rest = esp_p.translate((0, 0, -0.05))
-    check(overlap(rest, pocket) > 0, "ESP liegt auf den Auflagen")
     check(overlap(plug, shell) < 1e-3 and overlap(plug, plate) < 1e-3, "USB-Stecker passt durch die Aussparung")
-    check(overlap(shell, plate) < 1e-3, "Schale sitzt auf der Platte, ohne Spannung")
+    check(overlap(shell, plate) < 1e-3, "Gehäuse sitzt auf dem Deckel, ohne Spannung")
     seat = shell.min_gap(plate, 1.0)
-    check(seat < 0.02, f"Schale liegt flach auf der Platte auf ({seat:.3f} mm)")
+    check(seat < 0.02, f"Gehäuse liegt flach auf dem Deckel auf ({seat:.3f} mm)")
+    ribs = in_shell(g.ribs())
     walls = ribs.min_gap(shell, 2.0)
-    check(walls >= g.RIB_GAP - 0.05, f"Rippen haben {walls:.2f} mm Spiel in der Schale")
-    # Seitenschraube: eine Sonde vom Außenrand durch das Loch in die Kernbohrung
-    p = (g.PLATE_TO_SHELL @ np.array([0.0, g.SS_B, g.SS_H, 1.0]))[:3]
-    inner = g.CAV_W / 2 - g.RIB_GAP - g.RIB_T
+    check(walls >= g.RIB_GAP - 0.05, f"Rippen haben {walls:.2f} mm Spiel im Gehäuse")
+    # Seitenschraube: eine Sonde vom Außenrand durch das Loch bis ans Ende des Kernlochs
+    p = g.apply_point(g.PLATE_TO_SHELL, [0.0, g.SS_B, g.SS_H])
+    outer = g.CAV_W / 2 - g.RIB_GAP
     for side_ in (-1, 1):
-        r = 0.8
-        start = np.array([side_ * 40.0, p[1], p[2]])
-        end_x = side_ * (inner + g.RIB_T - g.PILOT_L + 0.2)
-        probe = g.Manifold.cylinder(abs(start[0] - end_x), r).rotate((0, 90, 0)).translate((0, p[1], p[2]))
-        probe = probe.translate((min(start[0], end_x), 0, 0))
+        r = 1.0                                              # die Schraube (2,9 mm) mit Gewinde
+        x_end = side_ * (outer - g.PILOT_L + 0.1)
+        start = side_ * 40.0
+        probe = g.Manifold.cylinder(abs(start - x_end), r).rotate((0, 90, 0)).translate((min(start, x_end), p[1], p[2]))
         check(overlap(probe, shell) < 1e-3 and overlap(probe, plate) < 1e-3,
-              f"Seitenschraube {'links' if side_ < 0 else 'rechts'}: Loch und Kernbohrung fluchten")
-    # Fleisch um die Kernbohrung
-    for sa in (-1, 1):
-        a_in = sa * (inner - 3.0)
-        a_out = sa * (inner + g.RIB_T)
-        thick = abs(a_out - a_in) - g.PILOT_L
-        check(thick >= 0.5, f"Seitenschraube {'links' if sa < 0 else 'rechts'}: Pfeiler hinter der Kernbohrung {thick:.1f} mm")
-    # Wandschrauben: vor dem Aufsetzen der Schale frei erreichbar
+              f"Seitenschraube {'links' if side_ < 0 else 'rechts'}: Loch und Kernloch fluchten")
+    behind = g.DOM_L - g.PILOT_L
+    check(behind >= 1.0, f"Seitenschraube: {behind:.1f} mm Dom hinter dem Kernloch")
+    screw = 9.5                                              # Blechschraube 2,9 × 9,5
+    reach = screw - (g.WALL - g.CB_D) - g.RIB_GAP
+    check(reach <= g.PILOT_L + 0.5 and reach >= g.PILOT_L - 1.0,
+          f"Seitenschraube 2,9 × 9,5: {reach:.1f} mm im Dom, Kernloch {g.PILOT_L:.0f} mm")
+    check(g.WALL - g.CB_D >= 1.0, f"Seitenwand unter dem Schraubenkopf {g.WALL - g.CB_D:.1f} mm")
+    # Wandschrauben: vor dem Aufsetzen des Gehäuses frei erreichbar
     plate_p = g.plate()
     for k, sa in enumerate((-1, 1), 1):
         x, y = sa * g.WS_A, g.WS_B
         driver = Manifold.cylinder(80.0, g.CSK_R + 0.3).translate((x, y, 0.2))
         check(overlap(driver, plate_p) < 1e-3, f"Wandschraube {k}: frei erreichbar, Kopf bis {g.CSK_R:.1f} mm Radius")
-    # die Schale lässt sich entlang der Rippen aufschieben
+    # das Gehäuse lässt sich entlang der Rippen aufschieben
     n = g.N_PLATE
     hits = [k for k in np.arange(0.0, 45.0, 1.0) if overlap(shell.translate(tuple(k * n)), plate) > 1e-3]
-    check(not hits, "Schale lässt sich entlang der Rippen aufschieben"
+    check(not hits, "Gehäuse lässt sich entlang der Rippen aufschieben"
           + (f" (stößt bei {hits[0]:.0f} mm)" if hits else ""))
+    # und die Rippen stehen nicht an den Stiftleisten
+    check(ribs.min_gap(d["tall"], 20.0) >= 2.0, f"Rippen und Dome halten {ribs.min_gap(d['tall'], 20.0):.1f} mm Abstand zu den Stiftleisten")
 
 
 def cylinder_along(start, direction, r: float, length: float) -> Manifold:
@@ -305,10 +384,12 @@ def bridge_span(v: np.ndarray, t: np.ndarray, sel: np.ndarray) -> float:
 
 
 def main() -> int:
-    print(f"Schale {g.W:.1f} × {g.H:.1f} mm, unten {g.Z_B0:.1f} und oben {g.D_TOP:.1f} mm tief, "
+    print(f"Gehäuse {g.W:.1f} × {g.H:.1f} mm, unten {g.Z_B0:.1f} und oben {g.D_TOP:.1f} mm tief, "
           f"Radar {g.RADAR_W} × {g.RADAR_H} mm, Neigung {g.TILT:.0f}°")
     parts_valid()
     look()
+    fit_radar()
+    fit_esp()
     assembly()
     mount()
     printability()

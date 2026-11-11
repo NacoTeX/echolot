@@ -140,13 +140,13 @@ def save(img: np.ndarray, path: Path, caption: str = "") -> None:
 
 
 def upright(part):
-    """Schalenkoordinaten -> aufgestellt: Front nach -y, oben nach +z (eine
+    """Gehäusekoordinaten -> aufgestellt: Front nach -y, oben nach +z (eine
     Drehung; von vorn gesehen ist rechts, wo es am Sensor rechts ist)."""
     return part.transform([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]])
 
 
 def in_room(part, corner=False):
-    """Schalenkoordinaten -> Raum."""
+    """Gehäusekoordinaten -> Raum."""
     return g.apply(part, g.shell_to_room(corner))
 
 
@@ -155,9 +155,8 @@ def plate_in_room(part, corner=False):
 
 
 def dummies():
-    """Radar in Schalenkoordinaten; ESP und Buchse in Plattenkoordinaten."""
-    radar = g.box(-g.RADAR_W / 2, g.RADAR_W / 2, g.RADAR_Y - g.RADAR_H / 2, g.RADAR_Y + g.RADAR_H / 2,
-                  g.Z_RADAR_FRONT, g.Z_RADAR_BACK)
+    """Radar in Gehäusekoordinaten; ESP und Buchse in Deckelkoordinaten."""
+    radar = g.radar_box()
     top = g.ESP_SO + g.ESP_PCB
     esp = g.box(-g.ESP_W / 2, g.ESP_W / 2, g.ESP_B0, g.ESP_B0 + g.ESP_L, g.ESP_SO, top)
     usb = g.box(-g.USB_W / 2, g.USB_W / 2, g.ESP_B0 - g.USB_OVERHANG, g.ESP_B0 + 7.3, top, g.ESP_SO + g.ESP_H)
@@ -189,7 +188,7 @@ def straight_front(out: Path) -> None:
 
 
 def back_view(out: Path) -> None:
-    """Die offene Rückseite der Schale, und die Platte mit dem ESP daneben."""
+    """Die offene Rückseite des Gehäuses, und der Deckel mit dem ESP daneben."""
     radar, esp, usb = dummies()
     shell = render([mesh_of(upright(g.shell()), WHITE), mesh_of(upright(radar), RADAR)], azim=122, elev=24,
                    width=900, height=900)
@@ -198,8 +197,8 @@ def back_view(out: Path) -> None:
                     quad((-40, 0, -6), (40, 0, -6), (40, 0, 66), (-40, 0, 66), WALL)],
                    azim=52, elev=14, width=900, height=900)
     fig, axes = plt.subplots(1, 2, figsize=(12, 6.4), dpi=150)
-    for ax, img, title in ((axes[0], shell, "Schale von hinten: Radar liegt in der Tasche"),
-                           (axes[1], plate, "Wandplatte mit ESP, USB-C unten, zwei Rippen")):
+    for ax, img, title in ((axes[0], shell, "Gehäuse von hinten: Radar liegt in der Tasche"),
+                           (axes[1], plate, "Deckel mit ESP, USB-C unten, zwei Rippen mit Domen")):
         ax.imshow(img)
         ax.set_axis_off()
         ax.set_title(title, fontsize=11, color="0.3")
@@ -222,8 +221,8 @@ def exploded(out: Path) -> None:
         quad((-45, 0, -6), (45, 0, -6), (45, 0, 70), (-45, 0, 70), WALL),
     ]
     img = render(items, azim=38, elev=14, width=1400, height=900)
-    save(img, out / "explosion.png", "Wand · Platte · ESP32-C5-Zero (USB-C unten) · LD2460 · Schale; "
-         "zwei M2-Schrauben seitlich")
+    save(img, out / "explosion.png", "Wand · Deckel · ESP32-C5-Zero (USB-C unten) · LD2460 · Gehäuse; "
+         "zwei Blechschrauben 2,9 mm seitlich")
 
 
 def mounted_scene(corner: bool):
@@ -266,8 +265,8 @@ def section(out: Path) -> None:
     esp, usb = g.apply(esp, g.PLATE_TO_SHELL), g.apply(usb, g.PLATE_TO_SHELL)
     fig, ax = plt.subplots(figsize=(9, 6.5), dpi=150)
     legend = []
-    for part, rgb, name in ((shell, WHITE, "Schale"), (radar, RADAR, "LD2460"), (esp, ESP, "ESP32-C5-Zero"),
-                            (usb, USB, "USB-C-Buchse"), (plate, PLATE, "Wandplatte")):
+    for part, rgb, name in ((shell, WHITE, "Gehäuse"), (radar, RADAR, "LD2460"), (esp, ESP, "ESP32-C5-Zero"),
+                            (usb, USB, "USB-C-Buchse"), (plate, PLATE, "Deckel")):
         cut = part.rotate((0, 90, 0)).slice(0.0)       # nach der Drehung: x = Tiefe, y = oben
         verts, codes = [], []
         for ring in cut.to_polygons():
@@ -283,7 +282,7 @@ def section(out: Path) -> None:
     ax.set_aspect("equal")
     ax.autoscale_view()
     ax.set_xlabel("Tiefe ab Front (mm)")
-    ax.set_ylabel("Höhe in der Schale (mm)")
+    ax.set_ylabel("Höhe im Gehäuse (mm)")
     ax.grid(True, linewidth=0.3, color="0.88")
     ax.legend(handles=legend, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False)
     ax.set_title(f"Schnitt in der Mitte; graue Linie: die Wand ({g.TILT:.0f}° geneigt)\n"

@@ -1,7 +1,7 @@
 # Gehäuse für LD2460 + ESP32-C5-Zero
 
-Eine schlanke Schale (58 × 51 mm) für das HLK-LD2460, gestaltet in der Art
-von Apple-Geräten, mit dem ESP32-C5-Zero auf einer Wandplatte dahinter:
+Ein schlankes Gehäuse (56,9 × 47,4 mm) für das HLK-LD2460, gestaltet in der
+Art von Apple-Geräten, mit dem ESP32-C5-Zero auf einem Deckel dahinter:
 
 - Squircle-Ecken: Die Krümmung setzt sanft ein, ohne Knick.
 - Eine weich gerundete Vorderkante.
@@ -10,23 +10,23 @@ von Apple-Geräten, mit dem ESP32-C5-Zero auf einer Wandplatte dahinter:
   **Echolot** in Inter Display.
 - Hinter einem gleichmäßig 1 mm dünnen Fenster sitzt das Radar.
 
-**Die Schale ist der Neigungskeil.** Ihre Rückseite liegt 30° schräg, also
-neigt sie sich von selbst nach unten. Es gibt keine Schiene, keinen Halter
-und keine Rastnasen. Drei Teile, zwei Schrauben:
+**Das Gehäuse ist der Neigungskeil.** Seine Rückseite liegt 30° schräg, also
+neigt es sich von selbst nach unten. Es gibt keine Schiene, keinen Halter
+und keine Rastnasen. Zwei Teile, vier Schrauben:
 
-1. Die **Wandplatte** kommt mit zwei Schrauben an die Wand. Auf ihr liegt
-   der ESP in einer Tasche, das USB-C-Kabel geht unten heraus.
-2. Die **Schale** mit dem Radar wird auf zwei Rippen der Platte geschoben.
-3. Zwei **M2-Schrauben** durch die Seitenwände der Schale halten sie fest.
+1. Der **Deckel** kommt mit zwei Senkkopfschrauben an die Wand. Auf ihm
+   liegt der ESP in einer Tasche, das USB-C-Kabel geht unten heraus.
+2. Das **Gehäuse** mit dem Radar wird auf zwei Rippen des Deckels geschoben.
+3. Zwei **Blechschrauben 2,9 mm** durch die Seitenwände halten es am Deckel.
 
-In einer Raumecke kommt ein **Eckkeil** zwischen Wand und Platte. Die
-Schale ist dieselbe.
+In einer Raumecke kommt ein **Eckkeil** zwischen Wand und Deckel. Das
+Gehäuse ist dasselbe.
 
 ![Ansicht](bilder/ansicht.png)
 
 ![Front, ein- und zweifarbig](bilder/front.png)
 
-![Schale von hinten und Wandplatte](bilder/rueckseite.png)
+![Gehäuse von hinten und Deckel](bilder/rueckseite.png)
 
 ![Explosionszeichnung](bilder/explosion.png)
 
@@ -37,16 +37,40 @@ Schale ist dieselbe.
 Alle Bilder sind aus genau der Geometrie gerechnet, die in den STL-Dateien
 steht.
 
+## Woher die Maße stammen
+
+| Bauteil | Maß | Quelle |
+| --- | --- | --- |
+| LD2460 | Platine 49,5 × 32,0 mm, Eckenradius etwa 1,8 mm | Hi-Link, *HLK-LD2460 Manual V1.1*, Abschnitt 3.1 (Maßzeichnung) |
+| LD2460 | Stiftleisten im 2,0-mm-Raster: **J1** 2 × 4 Pins (3,3 V, GND, Tx2, Rx2 und IO1–4), **JP103** 2 × 2 Pins (5 V, GND, Tx1, Rx1); Lage in der Zeichnung | dort, Abschnitt 3.1 und 3.2 |
+| LD2460 | **keine Bohrungen** | am Modul geprüft |
+| ESP32-C5-Zero | Platine 18,0 × 28,0 mm, 1,6 mm stark, USB-C bis 4,85 mm über der Rückseite, Lötaugen im Raster 2,54 mm an beiden Längskanten (neun je Seite, das erste 1,59 mm vom USB-Ende), U.FL-Buchse am anderen Ende | Waveshare, `esp32-c5-zero-2D.dxf` |
+
+Nicht im Handbuch stehen die **Platinenstärke** und die **Bauteilhöhen** des
+LD2460. Das Gehäuse rechnet deshalb mit Annahmen, die auf der sicheren Seite
+liegen. Sie stehen oben in `gehaeuse.py`:
+
+| Annahme | Wert | Wozu |
+| --- | --- | --- |
+| `RADAR_PCB` | 1,6 mm | Platinenstärke |
+| `RADAR_FRONT` | 1,0 mm | zwei kleine Chips auf der Antennenseite (auf Hi-Links Produktfoto zu sehen), QFN-Gehäuse |
+| `RADAR_BACK` | 9,0 mm | die beiden Stiftleisten samt aufgesteckter Buchse |
+| `RADAR_LOW` | 4,0 mm | alles andere hinter der Platine |
+
+Wer nachmisst und kleinere Werte findet, kann sie eintragen. Das Gehäuse
+wird dann nur flacher. Sind sie größer, passt es nicht mehr, und
+`pruefen.py` meldet es.
+
 ## Teile
 
 | Datei | Teil | Lage beim Druck |
 | --- | --- | --- |
-| `stl/0_passprobe_radar.stl` | die vorderen 5 mm der Schale, zum Probieren | wie im Slicer, Front unten |
+| `stl/0_passprobe_radar.stl` | die vorderen 5,8 mm des Gehäuses, zum Probieren | wie im Slicer, Front unten |
 | `stl/0_toleranzstreifen.stl` | Streifen, um das Spiel des eigenen Druckers zu finden | liegt flach |
-| `stl/1_schale.stl` | Schale | Front unten |
-| `stl/2_wandplatte.stl` | Wandplatte mit ESP-Tasche und Rippen | Wandseite unten |
+| `stl/1_gehaeuse.stl` | Gehäuse | Front unten |
+| `stl/2_deckel.stl` | Deckel mit ESP-Tasche und Rippen | Wandseite unten |
 | `stl/3_eckkeil.stl` | nur für die Ecke: Keil zwischen den Wänden | Schrägfläche unten |
-| `stl/4_schriftzug_einlage.stl` | nur für zweifarbigen Druck: der Name, 0,4 mm | genau in der Prägung der Schale |
+| `stl/4_schriftzug_einlage.stl` | nur für zweifarbigen Druck: der Name, 0,4 mm | genau in der Prägung des Gehäuses |
 
 Die Dateien liegen schon richtig herum auf dem Bett. Alle Teile drucken
 ohne Stützen: Kein Überhang ist steiler als 50°.
@@ -55,42 +79,64 @@ Außerdem:
 
 | | |
 | --- | --- |
-| 2 × M2 × 5 mm | Seitenschrauben, selbstschneidend, Linsenkopf bis 3,8 mm |
-| 2 × 3,5 mm Senkkopf | Wandplatte an die Wand, mit passenden Dübeln |
+| 2 × Blechschraube 2,9 × 9,5 mm | Gehäuse am Deckel, Linsenkopf bis 5,5 mm (DIN 7981 / ISO 7049) |
+| 2 × 3,5 mm Senkkopf | Deckel an die Wand, mit passenden Dübeln |
 | Ecke: 2 × 3,5 × 40 mm | Eckkeil in die Wände, Kopf bis 7,5 mm |
-| Ecke: 2 × 3,5 × 14 mm | Platte auf den Eckkeil, Senkkopf |
-| 4-adrige Leitung, etwa 10 cm | Radar ↔ ESP (siehe *Zusammenbau*) |
+| Ecke: 2 × 3,5 × 14 mm | Deckel auf den Eckkeil, Senkkopf |
+| 4-adrige Leitung, etwa 10 cm, mit Buchsen im 2,0-mm-Raster | Radar ↔ ESP (siehe *Zusammenbau*) |
+
+## Festen Sitz
+
+Beide Platinen sitzen ohne Kleber, Klebeband und Bohrungen:
+
+**LD2460**
+
+- Die Platine liegt vorn auf vier Auflagen in den Ecken, auf der
+  Antennenseite frei von Bauteilen. Zwischen Chips und Fenster bleiben
+  0,6 mm.
+- Zehn **Quetschrippen** an den vier Taschenwänden nehmen das Spiel: Die
+  Tasche ist je Seite 0,2 mm weiter als die Platine, die Rippen drücken sie
+  mit 0,15 mm. Sie verformen sich beim Hineindrücken.
+- Es spielt keine Rolle, ob die Platine am oberen oder unteren Ende ihrer
+  Toleranz liegt: `pruefen.py` rechnet mit ±0,2 mm. Die kleinste Platine
+  berührt noch alle vier Wände, die größte passt noch hinein, ohne zu
+  klemmen.
+- Die Rippen stehen nicht an den Stiftleisten.
+
+**ESP32-C5-Zero**
+
+- Er liegt auf vier Auflagen unter den Enden. Die Auflagen liegen frei
+  von den Lötaugen; die Platine schwebt 1,5 mm über dem Deckel, damit
+  Lötstellen an den Lötaugen Platz haben.
+- Die Taschenwände stehen 0,9 mm von den Längskanten entfernt, ebenfalls wegen
+  der Lötstellen. Je vier **Quetschrippen** an den Wänden stehen genau
+  zwischen den Lötaugen und drücken die Platine mit 0,15 mm.
+- Zwei Anschläge unten neben der Buchse halten sie beim Ziehen des Kabels,
+  zwei oben beim Stecken. Der Stecker hat 12,5 mm Platz.
+- Zwei **Haltearme** über den Ecken am Antennenende lassen sie nicht hochkippen.
+  Dort liegen keine Lötaugen: Das letzte ist 6 mm vom Ende entfernt.
+- Einsetzen: um 3° gekippt, das Antennenende (U.FL) voran unter die Arme
+  schieben, dann das USB-Ende absenken.
 
 ## Erst messen, dann drucken
 
-Für das **LD2460** fand sich keine Maßzeichnung von Hi-Link. Händler
-nennen 50 × 35 mm, einer 49,5 × 32 mm. Das Modell rechnet mit 50 × 35.
-Deshalb vor dem Druck:
-
-1. Das eigene Modul messen und oben in `gehaeuse.py` unter *MESSEN*
-   eintragen:
-   - `RADAR_W` und `RADAR_H`: Kantenlängen der Platine.
-   - `RADAR_BACK`: das höchste Teil auf der Rückseite, samt Lötstellen
-     und Kabelansatz.
-   - `RADAR_FRONT`: falls auf der Antennenseite etwas übersteht.
+1. Das Modul nachmessen, vor allem die **Höhe der Stiftleisten samt
+   Buchse** und die **Platinenstärke**, und oben in `gehaeuse.py` unter
+   *LD2460* eintragen.
 2. `python gehaeuse.py` aufrufen, dann `python pruefen.py`.
 3. **Die Passprobe drucken** (`0_passprobe_radar.stl`, wenige Minuten):
-   - Das Modul soll mit etwa 0,3 mm Spiel hineinfallen.
+   - Das Modul soll sich von hinten mit leichtem Druck hineindrücken
+     lassen und dann fest sitzen.
    - Es liegt nur in den vier Ecken auf 3 × 3 mm großen Auflagen. Die
-     Ecken der Platine müssen dort frei von Bauteilen sein.
+     Ecken der Platine müssen auf der Antennenseite frei von Bauteilen sein.
 4. **Den Toleranzstreifen drucken** (`0_toleranzstreifen.stl`, etwa 10
-   Minuten). Er zeigt, wie dein Drucker kleine Löcher und Schlitze
-   trifft:
-   - Die fünf Kernlöcher sind 1,5 bis 1,9 mm weit. Dreh eine M2 hinein:
-     Sie soll sich satt schneiden, ohne zu klemmen oder durchzudrehen.
-     Das Modell rechnet mit 1,7 mm (`PILOT_R`).
-   - Die fünf Schlitze sind 1,65 bis 1,95 mm breit. Mit dem Messschieber
-     siehst du, wie viel schmaler dein Drucker sie druckt. Die Rippen der
-     Platte passen mit 0,15 mm Spiel in die Schale (`RIB_GAP`).
-
-Die Maße des **ESP32-C5-Zero** (28 × 18 mm, 1,6 mm Platine, 4,85 mm bis
-Oberkante USB-C, Buchse 1,24 mm über der Kante) stammen aus Waveshares
-Maßzeichnung.
+   Minuten). Er zeigt, wie dein Drucker kleine Löcher und Schlitze trifft:
+   - Die fünf Kernlöcher sind 2,2 bis 2,6 mm weit. Dreh eine Blechschraube
+     2,9 mm hinein: Sie soll sich satt schneiden, ohne zu klemmen oder
+     durchzudrehen. Das Modell rechnet mit 2,4 mm (`PILOT_R`).
+   - Die fünf Schlitze sind 2,0 bis 2,3 mm breit. Mit dem Messschieber
+     siehst du, wie viel schmaler dein Drucker sie druckt. Die Rippen des
+     Deckels passen mit 0,15 mm Spiel in das Gehäuse (`RIB_GAP`).
 
 ## Der Name
 
@@ -100,9 +146,9 @@ dick. Die Front liegt beim Druck auf dem Bett, deshalb werden die
 Buchstaben so glatt wie die Druckplatte. Eine glatte Platte gibt eine
 feine, saubere Prägung; eine strukturierte Platte prägt ihr Muster mit.
 
-- **Eine Farbe:** nur `1_schale.stl` drucken.
+- **Eine Farbe:** nur `1_gehaeuse.stl` drucken.
 - **Zwei Farben** (Drucker mit mehreren Filamenten):
-  - `1_schale.stl` und `4_schriftzug_einlage.stl` zusammen laden.
+  - `1_gehaeuse.stl` und `4_schriftzug_einlage.stl` zusammen laden.
   - Die Frage nach „einem Objekt mit mehreren Teilen“ bejahen. Die
     Einlage liegt dann schon an der richtigen Stelle.
   - Der Einlage die zweite Farbe geben, etwa Weiß mit Space Grau.
@@ -117,18 +163,20 @@ Rasmus Andersson, frei unter der SIL Open Font License (`schrift/`).
 
 ## Druckeinstellungen
 
-- **Material:** PLA oder PETG, matt, für den Apple-Look in Weiß oder
-  Hellgrau.
+- **Material:** PETG oder PLA, matt, für den Apple-Look in Weiß oder
+  Hellgrau. PETG verträgt die Quetschrippen besser.
 - **Kein Filament mit Metall- oder Kohlefaseranteil**, auch keine
   Glitzer- oder Metallicfarbe. Das Radar sendet bei 24 GHz durch die Front.
 - **Front massiv:** Die Front ist 1,0 mm dick. Mit 0,2 mm Schichten also
   mindestens 5 Boden-Schichten, damit kein Füllmuster im Fenster liegt.
   Ein Füllmuster im Fenster wäre ungleichmäßig.
 - **Schichthöhe** 0,2 mm, 3 Wände.
-- **Wandplatte:** Die Rippen sind 1,65 mm dünn. Mit 0,4er Düse sind das
-  vier Linien; die Rippen stehen senkrecht auf dem Bett und sollten
-  mindestens 3 Wände bekommen.
-- **Eckkeil:** massiv 63 cm³. 15–20 % Füllung reicht; die Schrägfläche
+- **Deckel:** Die Rippen sind 2,0 mm dick und stehen senkrecht auf dem
+  Bett; mindestens 3 Wände. Die Haltearme am ESP sind 0,9 mm dick: etwa 2 Linien
+  mit 0,4er Düse.
+- **Quetschrippen:** langsam und mit kräftiger Kühlung drucken. Die am Radar
+  sind nur 0,35 mm hoch, die am ESP 1,05 mm.
+- **Eckkeil:** massiv 58 cm³. 15–20 % Füllung reicht; die Schrägfläche
   liegt unten und wird glatt.
 
 Ob das Fenster die Reichweite mindert, ist nicht gemessen. Zum Vergleich:
@@ -137,45 +185,45 @@ lassen und schauen, ob Ziele an der Raumgrenze gleich weit erkannt werden.
 
 ## Zusammenbau und Montage
 
-1. **Verkabeln:** wie in der Echolot-Dokumentation unter *Verkabelung*
-   (5 V, GND, TX → Rx2, RX ← Tx2).
-   - Das Radar sitzt in der Schale, der ESP auf der Platte. Die vier
-     Leitungen dazwischen sollten etwa 10 cm lang sein, damit sich die
-     Schale zum Warten abnehmen lässt.
-   - Hinter dem Radar sind `RADAR_BACK` = 5 mm Platz; die Platte liegt
-     mindestens 5 mm weiter hinten.
-2. **Platte vorbereiten:** den ESP mit den Bauteilen nach oben in die
-   Tasche legen, USB-C nach unten, und das Kabel aufstecken.
-   - Er liegt auf vier kleinen Auflagen. Am USB-C-Ende halten ihn zwei
-     Anschläge, am anderen Ende zwei weitere; an den Längskanten sind
-     Wandstücke, und in der Mitte bleibt es für Lötstellen frei.
-   - Er hält durch die Passung. Wer es fester will: ein Tropfen
-     Heißkleber an einer Ecke.
-3. **Platte montieren:**
-   - **Wand:** an die Stelle halten, durch die beiden Senklöcher
-     anzeichnen, bohren, dübeln, mit zwei Senkkopfschrauben festschrauben.
-     Das USB-C-Kabel geht unten heraus.
+1. **Verkabeln:** wie in der Echolot-Dokumentation unter *Verkabelung*.
+   Nach Hi-Links Handbuch liegen am Modul:
+   - **5 V und GND** am Stecker **JP103** (Pin 1 und 2) und
+   - **Tx2 und Rx2** am Stecker **J1** (Pin 7 und 8, untere Reihe der
+     Zeichnung). Tx1/Rx1 am JP103 sind nicht die Radardaten.
+   - Beide Stecker liegen an den kurzen Kanten der Platine. Das Gehäuse
+     lässt dafür hinter dem Radar 9 mm frei.
+   - Die vier Leitungen zwischen Radar und ESP sollten etwa 10 cm lang
+     sein, damit sich das Gehäuse zum Warten abnehmen lässt.
+2. **ESP einsetzen:** mit den Bauteilen nach oben, das Antennenende (U.FL)
+   um 3° gekippt unter die zwei Arme schieben, dann am USB-Ende absenken.
+   Das USB-C-Kabel aufstecken.
+3. **Deckel montieren:**
+   - **Wand:** an die Stelle halten, durch die beiden Senklöcher anzeichnen,
+     bohren, dübeln, mit zwei Senkkopfschrauben festschrauben. Das
+     USB-C-Kabel geht unten heraus.
    - **Ecke:** erst den Eckkeil mit den zwei Schrauben in die Wände
      schrauben (die Köpfe sitzen in Senkungen auf der Schrägfläche), dann
-     die Platte mit den zwei kurzen Senkkopfschrauben auf den Keil.
-     Der Eckkeil hält den Sensor mit Blick in die Winkelhalbierende.
-   - Die Schrauben sitzen hinter der Schale. Wer nicht bohren will, klebt
-     die Wandfläche der Platte mit Montageklebeband an.
-4. **Radar** mit der Antennenseite nach vorn in die Tasche der Schale
-   legen. Die lange Seite liegt waagerecht.
+     den Deckel mit den zwei kurzen Senkkopfschrauben auf den Keil. Der
+     Eckkeil hält den Sensor mit Blick in die Winkelhalbierende.
+   - Die Schrauben sitzen hinter dem Gehäuse. Wer nicht bohren will, klebt
+     die Wandfläche des Deckels mit Montageklebeband an.
+4. **Radar** von hinten in die Tasche des Gehäuses drücken, die Antennenseite
+   nach vorn, die lange Seite waagerecht. Von hinten gesehen liegt **JP103
+   links** und **J1 rechts**.
+   - Mit den Daumen nur auf die Ecken der Platine drücken, nicht auf Bauteile,
+     bis sie auf den Auflagen sitzt.
    - Nach dem Einbau in Echolot *Kalibrieren → Achsen* gehen. Das prüft,
      ob links und rechts stimmen.
-   - Das ist besonders wichtig, wenn das Modul anders liegt als vorher.
 5. **Leitungen** vom Radar zum ESP anschließen.
-6. **Schale** von vorn auf die Platte schieben: Die Rippen laufen innen an
+6. **Gehäuse** von vorn auf den Deckel schieben: Die Rippen laufen innen an
    den Seitenwänden, das USB-Kabel geht durch die Aussparung unten.
-   Dann je eine M2 × 5 durch die Seitenwand in die Rippe, nicht
-   überdrehen.
-   - Abnehmen: beide M2 lösen, die Schale gerade von der Wand ziehen.
+   Dann je eine Blechschraube 2,9 × 9,5 durch die Seitenwand in den Dom,
+   nicht überdrehen.
+   - Abnehmen: beide Schrauben lösen, das Gehäuse gerade von der Wand ziehen.
 7. In Echolot unter **Kalibrieren → Montage** angeben:
    - Wand („side“) oder Ecke („corner“).
    - Die Höhe, in der der Sensor hängt.
-   - Neigung **30°**, also dieselbe wie an der Schale.
+   - Neigung **30°**, also dieselbe wie am Gehäuse.
    - Hi-Link empfiehlt an der Wand 2,2–2,7 m Höhe und 25–40° Neigung.
 
 ## Anpassen
@@ -184,12 +232,13 @@ Alle Maße stehen oben in `gehaeuse.py`. Zum Beispiel:
 
 | Parameter | Bedeutung |
 | --- | --- |
-| `TILT` | Neigung nach unten; ändert die Schrägfläche der Schale |
+| `TILT` | Neigung nach unten; ändert die Schrägfläche des Gehäuses |
 | `CORNER_YAW` | Drehung in der Ecke |
-| `Z_B0` | Tiefe der Schale an der Unterkante; oben ist sie um 51 mm · tan(`TILT`) tiefer |
-| `FIT` | Spiel ums Radar |
-| `RIB_GAP`, `PILOT_R` | Spiel der Rippen, Kernloch der M2 |
-| `ESP_FIT`, `ESP_B0` | Spiel der ESP-Tasche, Lage des ESP auf der Platte |
+| `Z_B0` | Tiefe des Gehäuses an der Unterkante; oben ist es um 47 mm · tan(`TILT`) tiefer |
+| `RADAR_PCB`, `RADAR_FRONT`, `RADAR_BACK` | die drei Annahmen über das LD2460 |
+| `FIT_R`, `CRUSH` | Spiel der Tasche und Übermaß der Quetschrippen am Radar |
+| `ESP_GAP`, `ESP_CRUSH`, `ESP_RIBS` | Abstand der Taschenwände, Quetschung und Lage der Rippen am ESP |
+| `RIB_GAP`, `PILOT_R` | Spiel der Rippen, Kernloch der Blechschraube |
 | `NAME`, `NAME_CAP`, `NAME_DEPTH` | Name, Schrifthöhe, Prägetiefe |
 | `R_OUT`, `SQUIRCLE`, `EDGE_R`, `CHIN` | Form: Ecken, Kantenrundung, Kinn |
 
@@ -203,20 +252,26 @@ python pruefen.py             # muss mit „Alles passt.“ enden
 
 `pruefen.py` setzt alles virtuell zusammen und prüft dabei:
 
+- **Festen Sitz:**
+  - Das Radar und der ESP passen mit der größten Platine innerhalb ±0,2 mm,
+    und die Quetschrippen berühren noch die kleinste.
+  - Die Haltearme liegen mit 0,4 mm Luft über dem ESP und greifen über die
+    Ecken; der ESP lässt sich gekippt darunter schieben und absenken.
+  - Die Anschläge halten beim Stecken und beim Ziehen.
 - **Passung:**
   - Radar, ESP und ein üblicher USB-C-Stecker (12,5 × 6,5 mm) stoßen
     nirgends an; der Stecker hat seine Aussparung.
-  - Der ESP liegt auf den Auflagen und hat in der Tasche Spiel.
-  - Die Schale liegt flach auf der Platte; die Rippen haben Spiel in den
-    Seitenwänden und Abstand zum Radar.
-  - Die Löcher der Seitenschrauben treffen die Kernlöcher der Rippen.
+  - Für die Stiftleisten bleibt 9 mm Platz, für alles andere hinter dem
+    Radar 4 mm; der Deckel liegt mindestens 4 mm weiter hinten.
+  - Das Gehäuse liegt flach auf dem Deckel; die Rippen haben Spiel in den
+    Seitenwänden und stehen nicht an den Stiftleisten.
+  - Die Löcher der Seitenschrauben treffen die Kernlöcher in den Domen.
 - **Montage:**
-  - Die Schale lässt sich über die ganze Strecke auf die Rippen schieben.
-  - Die Wandschrauben sind vor dem Aufsetzen der Schale frei erreichbar.
+  - Das Gehäuse lässt sich über die ganze Strecke auf die Rippen schieben.
+  - Die Wandschrauben sind vor dem Gehäuse frei erreichbar.
   - Neigung und Blickrichtung an Wand und Ecke stimmen.
-  - Im Eckkeil liegen die Schraubenköpfe unter der Fläche, die Platte
-    liegt ganz auf, und der Griff des Schraubendrehers passt neben die
-    andere Wand.
+  - Im Eckkeil liegen die Schraubenköpfe unter der Fläche, der Deckel liegt
+    ganz auf, und der Griff des Schraubendrehers passt neben die andere Wand.
 - **Form:**
   - Der Name liegt im Kinn und auf der ebenen Front.
   - Die Einlage füllt die Prägung genau.
@@ -228,44 +283,43 @@ python pruefen.py             # muss mit „Alles passt.“ enden
 - **Nicht gedruckt:** Das Gehäuse ist am Rechner entworfen und geprüft,
   aber noch nicht gedruckt und nicht mit echter Hardware anprobiert.
   Deshalb zuerst Passprobe und Toleranzstreifen drucken.
-- **Radarmaße:** Die Maße des LD2460 stammen nicht vom Hersteller (siehe
-  oben).
-- **Groß:** Die Schale ist ein Keil: Unten ist sie 12 mm tief, oben
-  41 mm. Das ergibt sich aus 30° Neigung bei 51 mm Höhe und ist nicht
-  schlanker zu machen. Eine kleinere `TILT` macht sie flacher.
-- **Das Radar sitzt lose:** Es liegt auf vier Auflagen mit 0,3 mm Spiel
-  und wird von der Schwerkraft nach vorn gedrückt (die Front zeigt schräg
-  nach unten). Gegen Herausfallen beim Hantieren hält es nichts. Ein Tupfer
-  Heißkleber oder ein Streifen Schaumstoff in einer Ecke hilft.
-- **ESP:** Er hält durch die Passung, nicht durch Haken. Die Wandstücke
-  der Tasche stehen an den Längskanten, wo bei einem Board mit anderer
-  Bestückung Lötstellen oder Bauteile liegen könnten: vor dem Druck mit
-  dem eigenen Board vergleichen.
-- **Leitung zum Radar:** Wie das LD2460 angeschlossen wird (Stiftleiste,
-  Stecker, Lötpads), ist hier nicht festgelegt. Die Platte hat keinen
-  Kabelhalter.
-- **Seitenschrauben:** Sie schneiden in 1,65 mm dünne Rippen mit einem
-  Pfeiler dahinter. Wie oft sich das öffnen lässt, ist nicht erprobt.
-- **WLAN:** Der ESP sitzt jetzt auf der Platte direkt an der Wand, hinter
-  der Radarplatine. Zum Raum hin schirmt ihre Massefläche das WLAN des ESP
-  ab, nach hinten nicht. Ist der Empfang schwach, hilft die U.FL-Buchse des
-  C5-Zero mit externer Antenne. Für deren Kabel ist kein Durchlass
-  vorgesehen.
-- **Wärme:** Das LD2460 zieht bis gut 1 W. Lüftungsschlitze gibt es nicht;
-  Luft kommt nur durch die Aussparung für das USB-Kabel unten. Wie warm es
-  innen wird, ist nicht gemessen.
-- **Ecke:** Der Eckkeil ist ein massiver Block von 63 cm³ und braucht
+- **Annahmen über das LD2460:** Platinenstärke, die Höhe der Chips auf der
+  Antennenseite und die der Stiftleisten stehen nicht im Handbuch (siehe
+  oben). Die Prüfung rechnet mit ±0,2 mm Platinentoleranz; auch das ist eine
+  Annahme.
+- **Festen Sitz** sichern die Quetschrippen durch Reibung. Wie fest, hängt
+  von Material und Drucker ab; der Toleranzstreifen und die Passprobe zeigen
+  es, bevor das ganze Gehäuse gedruckt wird. Das Radar hält nicht in
+  Zugrichtung nach hinten, wenn die Platine sehr klein ausfällt; ein Tupfer
+  Heißkleber in einer Ecke hilft dann.
+- **ESP:** Er hält durch Quetschrippen, Anschläge und Arme. Ob dein Board an
+  den Lötaugen Drähte oder Stifte trägt, ist offen: Die Wände stehen 0,9 mm
+  von den Kanten, und die Auflagen liegen nicht an den Lötaugen. Ob das Board
+  eine Platinenantenne hat oder nur die U.FL-Buchse (die Zeichnung zeigt nur
+  sie), steht hier nicht fest; die Mitte am Antennenende bleibt frei.
+- **Groß:** Das Gehäuse ist ein Keil: Unten ist es 14 mm tief, oben 41 mm.
+  Das ergibt sich aus 30° Neigung bei 47 mm Höhe. Eine kleinere `TILT`
+  macht es flacher.
+- **Seitenschrauben:** Sie schneiden in Dome aus Kunststoff. Wie oft sich das
+  öffnen lässt, ist nicht erprobt.
+- **WLAN:** Der ESP sitzt auf dem Deckel direkt an der Wand, hinter der
+  Radarplatine. Zum Raum hin schirmt ihre Massefläche das WLAN des ESP ab,
+  nach hinten nicht. Ist der Empfang schwach, hilft eine externe Antenne an der
+  U.FL-Buchse. Für deren Kabel ist kein Durchlass vorgesehen.
+- **Wärme:** Das LD2460 zieht nach Hi-Link höchstens 250 mA bei 5 V, also etwa
+  1,25 W. Lüftungsschlitze gibt es nicht; Luft kommt nur durch die
+  Aussparung für das USB-Kabel unten. Wie warm es innen wird, ist nicht
+  gemessen.
+- **Ecke:** Der Eckkeil ist ein massiver Block von 58 cm³ und braucht
   Schrauben von 40 mm. Wände, die nicht rechtwinklig sind, passen nicht.
 
 ## Quellen
 
-- ESP32-C5-Zero: Waveshare, `hardware/dimensions/esp32-c5-zero-Size.pdf`
-  und `esp32-c5-zero-2D.dxf` im Repository
-  [waveshareteam/ESP32-C5-Zero](https://github.com/waveshareteam/ESP32-C5-Zero)
-- LD2460: [Hi-Link Produktseite](https://www.hlktech.net/index.php?id=1335),
-  Händlerangaben
-  [Amazon](https://www.amazon.com/HLK-LD2460-High-Precision-Presence-Multi-Target-Detection/dp/B0GSFRX9PF),
-  [AliExpress](https://www.aliexpress.us/item/3256806150334371.html),
-  [AliExpress](https://www.aliexpress.us/item/3256806222784744.html)
+- LD2460: Hi-Link, *HLK-LD2460 2T4R Multi Target Trajectory Tracking Module
+  Manual V1.1*
+  ([PDF](https://revspace.nl/images/9/9d/HLK-LD2460_2T4R_Multi_Target_Trajectory_Tracking_Module_Manual_V1.1.pdf)),
+  [Hi-Link Produktseite](https://www.hlktech.net/index.php?id=1335)
+- ESP32-C5-Zero: Waveshare, `hardware/dimensions/esp32-c5-zero-2D.dxf` im
+  Repository [waveshareteam/ESP32-C5-Zero](https://github.com/waveshareteam/ESP32-C5-Zero)
 - Montagehöhe und Neigung: Echolot-Dokumentation, Abschnitt *Kalibrieren*
-  (nach Hi-Links Handbuch)
+  (nach Hi-Links Handbuch, Abschnitt 6)
