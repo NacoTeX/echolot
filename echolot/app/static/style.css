@@ -755,7 +755,8 @@ body.embed { color: var(--text); }
 
 .story { margin: 6px 0 0; font-size: 17px; line-height: 1.4; color: var(--muted); font-weight: 500;
   letter-spacing: -.01em; max-width: 60ch; min-height: 1.4em; transition: color .3s; }
-.story:empty { display: none; }
+/* An empty sentence keeps its line: the page must not jump when it comes and goes. */
+.story:empty::before { content: "\00a0"; }
 
 .hero { display: flex; align-items: center; gap: 22px; margin: 0 0 18px; padding: 22px 24px;
   border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow);

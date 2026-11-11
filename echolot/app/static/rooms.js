@@ -23,13 +23,21 @@
       this.render();
     },
     unmount() { this.thumbs.forEach((t) => t.plan.destroy()); this.thumbs = []; },
-    onData() { this.render(); },
+    onData() {
+      // Only when a room changed, or one came or went: a new list every
+      // five seconds is no reason to rebuild every map.
+      const shape = state.rooms.map(E.roomShape).join("\n");
+      if (shape === this.shape && this.el.querySelector("#tiles")) { this.updateTiles(); return; }
+      this.shape = shape;
+      this.render();
+    },
     onLive() {
       for (const t of this.thumbs) t.plan.setLive(state.live[t.id] || null);
       this.updateTiles();
     },
     render() {
       this.unmount();
+      this.shape = state.rooms.map(E.roomShape).join("\n");
       const rooms = state.rooms;
       const devices = state.devices;
       const total = rooms.reduce((n, r) => n + (E.roomStatus(r.id).count || 0), 0);
@@ -177,8 +185,8 @@
     onData() {
       const room = state.rooms.find((r) => r.id === this.id);
       if (!room) { this.render(); return; }
-      if (this.plan && JSON.stringify(room) !== this.roomJson) {
-        this.roomJson = JSON.stringify(room);
+      if (this.plan && E.roomShape(room) !== this.roomJson) {
+        this.roomJson = E.roomShape(room);
         this.plan.setRoom(room);
         if (this.learn) this.learn.drawPlan();
         this.renderHead(room);
@@ -192,7 +200,7 @@
         this.el.innerHTML = `<div class="empty-state card pad">Diesen Raum gibt es nicht mehr. <a href="#/">Zur Übersicht</a></div>`;
         return;
       }
-      this.roomJson = JSON.stringify(room);
+      this.roomJson = E.roomShape(room);
       this.el.innerHTML = `
         <div class="page-head" id="room-head"></div>
         <div class="room-layout">
@@ -229,7 +237,7 @@
     renderHead(room) {
       this.el.querySelector("#room-head").innerHTML = `
         <div><div class="eyebrow">${escapeHtml(roomType(room))}</div><h1>${escapeHtml(room.name)}</h1>
-          <p class="story" id="room-story" aria-live="polite"></p></div>
+          <p class="story" id="room-story" aria-live="polite">${escapeHtml(E.describe(room, state.live[room.id]) || "")}</p></div>
         <div class="head-actions">
           <button class="btn" type="button" id="room-dashboard">${icon("dashboard")}Im Dashboard</button>
           <a class="btn" href="#/room/${encodeURIComponent(room.id)}/record">${icon("record")}Aufzeichnen</a>

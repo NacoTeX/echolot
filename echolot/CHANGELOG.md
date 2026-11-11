@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.1
+
+- **Die Raumseite springt nicht mehr.** Alle fünf Sekunden baute sie Kopf
+  und Plan neu auf, weil der Zähler, wie lange Echolot schon lernt, mit
+  jedem Abruf weiterlief und den Raum „geändert“ aussehen ließ. Der Satz
+  unter dem Raumnamen war dabei kurz leer, und die Seite rutschte um eine
+  Zeile hoch. Neu gezeichnet wird ein Raum jetzt nur, wenn sich ändert, was
+  die Seite zeigt; die Zeile behält ihre Höhe. Auch die Übersicht baut ihre
+  Mini-Karten nicht mehr alle fünf Sekunden neu auf.
+
 ## 3.0.0
 
 **Zielverfolgung mit Kalman-Filter (Messdefinition 9).** Bis 2.0 lief der
